@@ -1,0 +1,19 @@
+Put lanes in X-axis for lane wise distribution.
+
+Put day/hoiday/festivals in dates displayed in X-axis.
+
+Initially create company(plaza) and SPV and link them.
+
+In website provide three sections 
+
+1. Traffic Data
+
+2. Audit
+
+3. Upload
+
+
+On selecting plaza, first display cumulative vehicle count and class wise count, so user can see clearly what kind of vehicles are high in volumne. 
+
+In compare section display how much volumn is reduced or increaed based on compare periods.
+

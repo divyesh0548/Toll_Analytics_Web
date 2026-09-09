@@ -1,0 +1,2 @@
+# This single-database configuration can be altered to support multiple databases.
+# Leave empty; Flask-Migrate uses env.py.

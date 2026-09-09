@@ -1,0 +1,42 @@
+{
+  "3WHEELER": {
+    "db_column": "vc_3wheeler",
+    "aliases": ["3WHEELER", "3 WHEELER"]
+  },
+  "BUS-2-AXLE": {
+    "db_column": "vc_bus_2_axle",
+    "aliases": ["BUS-2-AXLE", "BUS-2 AXLE"]
+  },
+  "BUS-3-AXLE": {
+    "db_column": "vc_bus_3_axle",
+    "aliases": ["BUS-3-AXLE", "BUS-3 AXLE"]
+  },
+  "CAR/JEEP": {
+    "db_column": "vc_car_jeep",
+    "aliases": ["CAR\\JEEP", "CAR", "JEEP"]
+  },
+  "LCV": {
+    "db_column": "vc_lcv",
+    "aliases": ["LCV"]
+  },
+  "OSV": {
+    "db_column": "vc_osv",
+    "aliases": ["OSV"]
+  },
+  "TRACTOR": {
+    "db_column": "vc_tractor",
+    "aliases": ["TRACTOR"]
+  },
+  "TRUCK 4-6 AXLE": {
+    "db_column": "vc_truck_4_6_axle",
+    "aliases": ["TRUCK 4-6 AXLE", "TRUCK 4 6 AXLE"]
+  },
+  "TRUCK-2-AXLE": {
+    "db_column": "vc_truck_2_axle",
+    "aliases": ["TRUCK-2-AXLE", "TRUCK-2 AXLE"]
+  },
+  "TRUCK-3-AXLE": {
+    "db_column": "vc_truck_3_axle",
+    "aliases": ["TRUCK-3-AXLE", "TRUCK-3 AXLE"]
+  }
+}

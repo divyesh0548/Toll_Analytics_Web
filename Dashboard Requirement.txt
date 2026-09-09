@@ -1,0 +1,47 @@
+Module A — Traffic Volume & Flow
+Hourly/daily/monthly vehicle count by lane and class (Done)
+
+--> Peak vs. off-peak distribution (identify staffing/lane-opening mismatches)
+
+Benefit: Detects lanes kept closed during high-traffic windows (revenue suppression) or artificially inflated "low traffic" claims used to justify toll hikes/subsidies.
+
+
+Module B — Vehicle Classification Mix
+% share by class (Car/LCV/Bus/Truck/Multi-axle) (Done)
+
+--> Classification accuracy cross-check (WIM data vs. charged class)
+
+Benefit: Under-classification (e.g., multi-axle truck billed as LCV) is the single largest revenue leakage vector in Indian toll audits. This is your #1 audit flag.
+
+
+Module C — Headway/Gap Analysis   (average of time gap per lane and also average of vehicle)
+
+Average and distribution of time-gap between vehicles per lane
+
+--> Flag gaps below physical minimum (e.g., <2 sec = potential tailgating fraud or sensor miscounting)
+--> Flag abnormally long gaps during peak hours (lane malfunction or deliberate slow-processing)
+Benefit: This is your primary fraud-detection layer — tailgating (multiple vehicles passing on one transaction) is undetectable from revenue totals alone; only headway data exposes it.
+
+
+Module D — Transaction Mode Reconciliation  (use VRN files for this)
+FASTag vs. Cash vs. Exempt ratio, trended over time  (Done)
+--> Cash-lane revenue per shift vs. expected volume (from ANPR independent count)
+Benefit: Cash-lane leakage (operator collusion, unrecorded cash) is exposed only when compared against an independent (camera/ANPR) vehicle count — not the cash register itself.
+
+
+Module E — Exempt/VIP Pass Audit
+Volume and % of exempt-category vehicles by lane, by time
+Trend over time (spikes = misuse)
+Benefit: Exempt pass abuse is a common concealment route for revenue diversion; sudden spikes on specific lanes/shifts indicate manual override abuse.
+
+
+Module F — Revenue Reconciliation
+Expected revenue (traffic count × class-wise toll rate) vs. Actual reported revenue
+Variance %, by lane, by day, by shift
+Benefit: This is the audit's bottom line — the variance is your quantified leakage estimate. Every other module feeds into explaining why the variance exists.
+
+
+Module G — Anomaly & Outlier Flags
+Statistical outliers: sudden volume drops, classification shifts, unusual exempt spikes
+Lane downtime logs (system offline periods) cross-checked against manual toll collection records during downtime
+Benefit: System downtime is a known window for manual, unrecorded cash collection — must be independently verified.

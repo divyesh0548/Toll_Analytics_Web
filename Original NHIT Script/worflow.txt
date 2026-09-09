@@ -1,0 +1,11 @@
+First remove duplicate entries from VRN file.
+
+Compare vrhicle numbers with checkpostmaster table. Then differentiate the found and not found.
+
+Fetch weight of found vehicles, and run web-sraping script for not-found vehicles.
+
+Filter out vehicles with weight less than 100, tht is seating capacity.
+
+Add another column in VRN for weight.
+
+Then identify class based on weight. And compare that class with provided class in excel.

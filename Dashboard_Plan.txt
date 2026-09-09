@@ -1,0 +1,26 @@
+1. A simple chart with hour/day/month in X-axis (based on selection). And in Y axis vehicle number count per class. And another chart with same config with vehicle count per lane. 
+
+There will be different color lines for differet vehicle classes and lanes. On hover highlight that line and display count.
+
+user can pick minimum of 6 hour timeframe. If hour selected then the ask user to pick date and 6 hour timeframe. 
+
+If day is selected then ask user to select at least 6 days
+
+If month is selected then just one month data will be displayed by splitting month in 6 equal parts, means each point in X-axis will display 5 days total.
+
+Implement this : Default to top 5 lanes by volume; toggle for “show all lanes”;
+
+Sort hours by converting them to numericals.
+
+
+2. A bar chart with all vehicle classes in X-axis and counts on Y-axis with a selection dropdown Hourly/Daily/Monthly.
+
+In hourly ask user to select hours of a selected date.
+In Daily ask user to select date-range
+In monthly ask user to just select a month.
+
+On top of the bar display the percentage of that class.
+
+3. Distribution of "FASTag / Cash / Exempt over time", display this in same manner as in first point. 
+
+Keep time related data in X-axis and MOP count on Y-axis. 
