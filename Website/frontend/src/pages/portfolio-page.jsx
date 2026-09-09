@@ -105,12 +105,20 @@ export function PortfolioPage() {
             Select a company card to review master details.
           </p>
         </div>
-        <Button asChild>
-          <Link to="/companies/new">
-            <Plus className="h-4 w-4" />
-            New company
-          </Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link to="/spvs/new">
+              <Plus className="h-4 w-4" />
+              New SPV
+            </Link>
+          </Button>
+          <Button asChild>
+            <Link to="/companies/new">
+              <Plus className="h-4 w-4" />
+              New company
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">

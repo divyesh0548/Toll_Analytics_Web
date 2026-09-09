@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Plus, Trash2 } from 'lucide-react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { ChevronDown, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,7 +8,15 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 import { createCompany, getCompany, updateCompany } from '@/lib/api'
-import { formatLocalDateTime } from '@/lib/utils'
+import {
+  INDIAN_STATES,
+  extractPanFromGstin,
+  validateCin,
+  validateCompanyContacts,
+  validateGstin,
+  validatePan,
+} from '@/lib/company-validation'
+import { cn, formatLocalDateTime } from '@/lib/utils'
 
 const emptyContact = () => ({ name: '', email: '', phone: '' })
 
@@ -37,6 +45,7 @@ export function CompanyMasterPage() {
   const [loading, setLoading] = useState(isEdit)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
 
   useEffect(() => {
     if (!isEdit) return
@@ -86,6 +95,28 @@ export function CompanyMasterPage() {
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }))
+    setFieldErrors((prev) => ({ ...prev, [key]: '' }))
+  }
+
+  function handleGstinChange(rawValue) {
+    const gstin = rawValue.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 15)
+    const pan = extractPanFromGstin(gstin)
+    setForm((prev) => ({
+      ...prev,
+      gstin,
+      pan: pan.length === 10 ? pan : prev.pan,
+    }))
+    setFieldErrors((prev) => ({ ...prev, gstin: '', pan: '' }))
+  }
+
+  function handlePanChange(rawValue) {
+    const pan = rawValue.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 10)
+    updateField('pan', pan)
+  }
+
+  function handleCinChange(rawValue) {
+    const cin = rawValue.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 21)
+    updateField('cin', cin)
   }
 
   function updateContact(index, key, value) {
@@ -95,6 +126,7 @@ export function CompanyMasterPage() {
       )
       return { ...prev, contacts }
     })
+    setFieldErrors((prev) => ({ ...prev, contacts: '' }))
   }
 
   function addContact() {
@@ -108,13 +140,49 @@ export function CompanyMasterPage() {
     })
   }
 
+  function resetForm() {
+    if (isEdit) return
+    setForm(emptyForm())
+    setFieldErrors({})
+    setError('')
+  }
+
+  function validateForm() {
+    const nextErrors = {
+      gstin: validateGstin(form.gstin),
+      pan: validatePan(form.pan, { required: true }),
+      cin: validateCin(form.cin),
+      contacts: validateCompanyContacts(form.contacts),
+    }
+
+    if (form.gstin && form.pan) {
+      const extracted = extractPanFromGstin(form.gstin)
+      if (extracted && extracted !== form.pan.trim().toUpperCase()) {
+        nextErrors.pan = 'PAN must match the PAN segment inside GSTIN'
+      }
+    }
+
+    setFieldErrors(nextErrors)
+    return !Object.values(nextErrors).some(Boolean)
+  }
+
   async function handleSubmit(event) {
     event.preventDefault()
-    setSaving(true)
     setError('')
+    if (!validateForm()) {
+      setError('Please fix the highlighted validation errors.')
+      return
+    }
+
+    setSaving(true)
     const payload = {
       ...form,
-      contacts: form.contacts.filter((c) => c.name.trim()),
+      gstin: form.gstin.trim().toUpperCase(),
+      pan: form.pan.trim().toUpperCase(),
+      cin: form.cin.trim().toUpperCase(),
+      contacts: form.contacts.filter(
+        (c) => c.name.trim() && (c.email.trim() || c.phone.trim()),
+      ),
     }
     try {
       if (isEdit) {
@@ -122,7 +190,7 @@ export function CompanyMasterPage() {
       } else {
         await createCompany(payload)
       }
-      navigate('/')
+      navigate('/portfolio')
     } catch (err) {
       setError(err.message || 'Save failed')
     } finally {
@@ -136,17 +204,25 @@ export function CompanyMasterPage() {
 
   return (
     <form className="space-y-6" onSubmit={handleSubmit}>
-      <div className="space-y-1">
-        <p className="text-small text-muted-foreground">{breadcrumb}</p>
-        <h1 className="text-display">Company master</h1>
-        <p className="text-body text-muted-foreground">
-          Capture identity, registered office, group reporting, and key contacts.
-        </p>
-        {isEdit && (
-          <p className="text-small text-muted-foreground">
-            Created {formatLocalDateTime(meta.created_at)} · Updated{' '}
-            {formatLocalDateTime(meta.updated_at)}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <p className="text-small text-muted-foreground">{breadcrumb}</p>
+          <h1 className="text-display">Company master</h1>
+          <p className="text-body text-muted-foreground">
+            Capture identity, registered office, group reporting, and key contacts.
           </p>
+          {isEdit && (
+            <p className="text-small text-muted-foreground">
+              Created {formatLocalDateTime(meta.created_at)} · Updated{' '}
+              {formatLocalDateTime(meta.updated_at)}
+            </p>
+          )}
+        </div>
+        {!isEdit && (
+          <Button type="button" variant="outline" onClick={resetForm}>
+            <RotateCcw className="h-4 w-4" />
+            Reset
+          </Button>
         )}
       </div>
 
@@ -176,14 +252,31 @@ export function CompanyMasterPage() {
               required
             />
           </Field>
-          <Field label="CIN">
-            <Input value={form.cin} onChange={(e) => updateField('cin', e.target.value)} />
+          <Field label="GSTIN" required error={fieldErrors.gstin}>
+            <Input
+              value={form.gstin}
+              onChange={(e) => handleGstinChange(e.target.value)}
+              placeholder="22AAAAA0000A1Z5"
+              maxLength={15}
+              required
+            />
           </Field>
-          <Field label="PAN">
-            <Input value={form.pan} onChange={(e) => updateField('pan', e.target.value)} />
+          <Field label="PAN" required error={fieldErrors.pan}>
+            <Input
+              value={form.pan}
+              onChange={(e) => handlePanChange(e.target.value)}
+              placeholder="Auto-filled from GSTIN"
+              maxLength={10}
+              required
+            />
           </Field>
-          <Field label="GSTIN">
-            <Input value={form.gstin} onChange={(e) => updateField('gstin', e.target.value)} />
+          <Field label="CIN" error={fieldErrors.cin}>
+            <Input
+              value={form.cin}
+              onChange={(e) => handleCinChange(e.target.value)}
+              placeholder="L12345MH2000PLC123456"
+              maxLength={21}
+            />
           </Field>
         </CardContent>
       </Card>
@@ -203,7 +296,24 @@ export function CompanyMasterPage() {
             </Field>
           </div>
           <Field label="State">
-            <Input value={form.state} onChange={(e) => updateField('state', e.target.value)} />
+            <div className="relative">
+              <select
+                className={cn(
+                  'flex h-10 w-full appearance-none rounded-sm border border-input bg-background py-2 pl-3 pr-10 text-body',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                )}
+                value={form.state}
+                onChange={(e) => updateField('state', e.target.value)}
+              >
+                <option value="">Select state</option>
+                {INDIAN_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {state}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            </div>
           </Field>
           <Field label="City">
             <Input value={form.city} onChange={(e) => updateField('city', e.target.value)} />
@@ -246,16 +356,21 @@ export function CompanyMasterPage() {
         <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
           <div className="space-y-1.5">
             <CardTitle>Key contacts</CardTitle>
-            <CardDescription>People to reach for this company.</CardDescription>
+            <CardDescription>
+              At least one contact with an email or phone is required.
+            </CardDescription>
           </div>
           <Button type="button" variant="outline" size="sm" onClick={addContact}>
             <Plus className="h-4 w-4" />
             Add
           </Button>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-5">
+          {fieldErrors.contacts && (
+            <p className="text-small text-destructive">{fieldErrors.contacts}</p>
+          )}
           {form.contacts.map((contact, index) => (
-            <div key={index} className="space-y-3 rounded-sm border border-border p-4">
+            <div key={index} className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-subheader">Contact {index + 1}</p>
                 <Button
@@ -280,15 +395,18 @@ export function CompanyMasterPage() {
                     type="email"
                     value={contact.email}
                     onChange={(e) => updateContact(index, 'email', e.target.value)}
+                    placeholder="name@example.com"
                   />
                 </Field>
                 <Field label="Phone">
                   <Input
                     value={contact.phone}
                     onChange={(e) => updateContact(index, 'phone', e.target.value)}
+                    placeholder="10–15 digit phone"
                   />
                 </Field>
               </div>
+              {index < form.contacts.length - 1 && <Separator />}
             </div>
           ))}
         </CardContent>
@@ -297,18 +415,15 @@ export function CompanyMasterPage() {
       <Separator />
 
       <div className="flex flex-wrap justify-end gap-3">
-        <Button type="button" variant="outline" asChild>
-          <Link to="/">Cancel</Link>
-        </Button>
         <Button type="submit" disabled={saving}>
-          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Save company'}
+          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create'}
         </Button>
       </div>
     </form>
   )
 }
 
-function Field({ label, required, children }) {
+function Field({ label, required, error, children }) {
   return (
     <div className="space-y-2">
       <Label>
@@ -316,6 +431,7 @@ function Field({ label, required, children }) {
         {required ? ' *' : ''}
       </Label>
       {children}
+      {error ? <p className="text-small text-destructive">{error}</p> : null}
     </div>
   )
 }

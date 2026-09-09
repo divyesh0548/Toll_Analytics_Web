@@ -24,13 +24,18 @@ def create_app(config_name: str | None = None) -> Flask:
     # Import models so Flask-Migrate can detect them.
     from app import models  # noqa: F401
 
-    from app.routes import auth_bp, companies_bp
+    from app.routes import auth_bp, companies_bp, spvs_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(companies_bp, url_prefix="/api/companies")
+    app.register_blueprint(spvs_bp, url_prefix="/api/spvs")
 
     @app.get("/api/health")
     def health():
         return {"status": "ok"}
+
+    from app.services.siteadmin_bootstrap import bootstrap_siteadmin_on_startup
+
+    bootstrap_siteadmin_on_startup(app)
 
     return app

@@ -51,6 +51,13 @@ class Company(db.Model):
         foreign_keys="CompanyContact.company_identifier",
         primaryjoin="Company.company_identifier == CompanyContact.company_identifier",
     )
+    spvs = db.relationship(
+        "Spv",
+        back_populates="company",
+        lazy="select",
+        foreign_keys="Spv.company_identifier",
+        primaryjoin="Company.company_identifier == Spv.company_identifier",
+    )
 
     def to_dict(self, *, include_contacts: bool = True) -> dict:
         payload = {

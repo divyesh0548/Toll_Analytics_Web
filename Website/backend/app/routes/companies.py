@@ -7,8 +7,15 @@ from flask import Blueprint, jsonify, request
 from app.extensions import db
 from app.models.company import Company
 from app.models.company_contact import CompanyContact
+from app.services.auth_tokens import get_current_user
 
 companies_bp = Blueprint("companies", __name__)
+
+
+@companies_bp.before_request
+def _require_auth():
+    if not get_current_user():
+        return {"error": "Authentication required"}, 401
 
 
 def _apply_company_fields(company: Company, data: dict) -> None:

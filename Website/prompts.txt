@@ -1,0 +1,5 @@
+Increase the widht of the website more.
+
+Remove those New company and SPV buttons from navbar. 
+
+Add hover effects on navbar buttons like toggle mode and logout.
