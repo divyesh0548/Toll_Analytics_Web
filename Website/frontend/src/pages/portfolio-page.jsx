@@ -102,12 +102,12 @@ export function PortfolioPage() {
           </p>
           <h1 className="text-display">Companies</h1>
           <p className="text-body text-muted-foreground">
-            Select a company card to review master details.
+            Open a company to view SPVs and details.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
-            <Link to="/spvs/new">
+            <Link to="/companies/spvs/new">
               <Plus className="h-4 w-4" />
               New SPV
             </Link>
@@ -144,7 +144,7 @@ export function PortfolioPage() {
                 <div className="grid grid-cols-3 gap-2">
                   <div>
                     <p className="text-small text-muted-foreground">SPVs</p>
-                    <p className="text-subheader">—</p>
+                    <p className="text-subheader">{company.spv_count ?? 0}</p>
                   </div>
                   <div>
                     <p className="text-small text-muted-foreground">Plazas</p>

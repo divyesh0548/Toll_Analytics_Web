@@ -1,5 +1,27 @@
-Increase the widht of the website more.
+Display notification on top-right corner. And display them for various creation and updation process. Like user creation, company updatation, etc.
 
-Remove those New company and SPV buttons from navbar. 
+Chnage the url of companies and spvs. 
 
-Add hover effects on navbar buttons like toggle mode and logout.
+It goes like /companies/company_id/spvs/spv_id
+It should be like /companies/spvs/spv_id
+
+Create a plaza table with following details. 
+
+1. Plaza Name
+2. Plaza Code
+3. Chainage
+4. District/state
+5. Lat/Long
+6. Tolling start date (date)
+7. Total Lanes (int)
+8. LHS / RHS split
+9. Hybrid / ETC-only
+10. Shift pattern
+11. Toll day cut-off
+12. O&M contractor
+13. Source — Daily TMS report (text field for now)
+14. Event calendar (holidays / mela window) (text field for now)
+
+Keep one column which will be foreign key to link spvs. (spv_identifier)
+
+One spv can have more then one plaza.

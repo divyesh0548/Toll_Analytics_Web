@@ -9,7 +9,8 @@ from flask import Blueprint, jsonify, request
 from app.extensions import db
 from app.models.company import Company
 from app.models.spv import Spv
-from app.services.auth_tokens import get_current_user
+from app.services.auth_tokens import deny_viewer_writes, get_current_user
+from app.utils.api_log import log_fail, log_ok
 
 spvs_bp = Blueprint("spvs", __name__)
 
@@ -17,7 +18,12 @@ spvs_bp = Blueprint("spvs", __name__)
 @spvs_bp.before_request
 def _require_auth():
     if not get_current_user():
+        log_fail("spvs: auth required")
         return {"error": "Authentication required"}, 401
+    denied = deny_viewer_writes()
+    if denied:
+        log_fail("spvs: viewer write blocked")
+        return denied
 
 
 def _parse_date(value):
@@ -103,12 +109,14 @@ def list_spvs():
     if company_identifier:
         query = query.filter_by(company_identifier=company_identifier)
     spvs = query.order_by(Spv.spv_name.asc()).all()
+    log_ok(f"listed {len(spvs)} spvs")
     return jsonify({"spvs": [s.to_dict() for s in spvs]})
 
 
 @spvs_bp.get("/<spv_identifier>")
 def get_spv(spv_identifier: str):
     spv = Spv.query.filter_by(spv_identifier=spv_identifier).first_or_404()
+    log_ok(f"fetched spv {spv.spv_name}")
     return jsonify(spv.to_dict())
 
 
@@ -122,10 +130,13 @@ def create_spv():
         db.session.commit()
     except ValueError as exc:
         db.session.rollback()
+        log_fail(f"spv create failed: {exc}")
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
         db.session.rollback()
+        log_fail(f"spv create failed: {exc}")
         return jsonify({"error": str(exc)}), 400
+    log_ok(f"{spv.spv_name} created successfully")
     return jsonify(spv.to_dict()), 201
 
 
@@ -138,8 +149,11 @@ def update_spv(spv_identifier: str):
         db.session.commit()
     except ValueError as exc:
         db.session.rollback()
+        log_fail(f"spv update failed: {exc}")
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
         db.session.rollback()
+        log_fail(f"spv update failed: {exc}")
         return jsonify({"error": str(exc)}), 400
+    log_ok(f"{spv.spv_name} updated successfully")
     return jsonify(spv.to_dict())

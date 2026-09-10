@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
+import { useToast } from '@/components/toast-provider'
 import { createCompany, getCompany, updateCompany } from '@/lib/api'
 import {
   INDIAN_STATES,
@@ -40,6 +41,7 @@ export function CompanyMasterPage() {
   const { companyIdentifier } = useParams()
   const isEdit = Boolean(companyIdentifier)
   const navigate = useNavigate()
+  const { showToast } = useToast()
   const [form, setForm] = useState(emptyForm)
   const [meta, setMeta] = useState({ created_at: null, updated_at: null })
   const [loading, setLoading] = useState(isEdit)
@@ -89,7 +91,7 @@ export function CompanyMasterPage() {
   }, [companyIdentifier, isEdit])
 
   const breadcrumb = useMemo(
-    () => (isEdit ? 'Portfolio › Company master' : 'Portfolio › New company'),
+    () => (isEdit ? 'Portfolio › Company › Edit' : 'Portfolio › New company'),
     [isEdit],
   )
 
@@ -187,10 +189,13 @@ export function CompanyMasterPage() {
     try {
       if (isEdit) {
         await updateCompany(companyIdentifier, payload)
+        showToast('Company updated successfully')
+        navigate(`/companies/${companyIdentifier}`)
       } else {
-        await createCompany(payload)
+        const created = await createCompany(payload)
+        showToast('Company created successfully')
+        navigate(`/companies/${created.company_identifier}`)
       }
-      navigate('/portfolio')
     } catch (err) {
       setError(err.message || 'Save failed')
     } finally {

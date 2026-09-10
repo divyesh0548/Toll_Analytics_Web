@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { createSpv, listCompanies } from '@/lib/api'
+import { useToast } from '@/components/toast-provider'
+import { createSpv, getSpv, listCompanies, updateSpv } from '@/lib/api'
 
 const emptyForm = () => ({
   company_identifier: '',
@@ -32,11 +33,40 @@ const emptyForm = () => ({
   premium_escalation: '',
 })
 
+function toForm(spv) {
+  return {
+    company_identifier: spv.company_identifier || '',
+    spv_name: spv.spv_name || '',
+    project_stretch_name: spv.project_stretch_name || '',
+    nh_no: spv.nh_no || '',
+    chainage_from: spv.chainage_from || '',
+    chainage_to: spv.chainage_to || '',
+    length_km: spv.length_km ?? '',
+    rate_notification_no_date: spv.rate_notification_no_date || '',
+    annual_revision_pct: spv.annual_revision_pct ?? '',
+    wpi_linkage: spv.wpi_linkage || '',
+    effective_from: spv.effective_from || '',
+    rate_card_upload: spv.rate_card_upload || '',
+    exempt_categories_policy: spv.exempt_categories_policy || '',
+    local_monthly_pass_rules: spv.local_monthly_pass_rules || '',
+    lead_bank_lender: spv.lead_bank_lender || '',
+    facility_limit: spv.facility_limit || '',
+    escrow_bank: spv.escrow_bank || '',
+    revenue_share_premium_pct: spv.revenue_share_premium_pct ?? '',
+    premium_escalation: spv.premium_escalation || '',
+  }
+}
+
 export function SpvMasterPage() {
   const navigate = useNavigate()
+  const { spvIdentifier } = useParams()
+  const [searchParams] = useSearchParams()
+  const companyFromQuery = searchParams.get('company') || ''
+  const isEdit = Boolean(spvIdentifier)
+  const { showToast } = useToast()
   const [companies, setCompanies] = useState([])
   const [form, setForm] = useState(emptyForm)
-  const [loadingCompanies, setLoadingCompanies] = useState(true)
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -44,18 +74,27 @@ export function SpvMasterPage() {
     let active = true
     ;(async () => {
       try {
-        const data = await listCompanies()
-        if (active) setCompanies(data.companies || [])
+        const companyData = await listCompanies()
+        if (!active) return
+        setCompanies(companyData.companies || [])
+
+        if (isEdit) {
+          const spv = await getSpv(spvIdentifier)
+          if (!active) return
+          setForm(toForm(spv))
+        } else if (companyFromQuery) {
+          setForm((prev) => ({ ...prev, company_identifier: companyFromQuery }))
+        }
       } catch (err) {
-        if (active) setError(err.message || 'Failed to load companies')
+        if (active) setError(err.message || 'Failed to load SPV form')
       } finally {
-        if (active) setLoadingCompanies(false)
+        if (active) setLoading(false)
       }
     })()
     return () => {
       active = false
     }
-  }, [])
+  }, [companyFromQuery, spvIdentifier, isEdit])
 
   const companyOptions = useMemo(
     () =>
@@ -72,6 +111,7 @@ export function SpvMasterPage() {
   }
 
   function resetForm() {
+    if (isEdit) return
     setForm(emptyForm())
     setError('')
   }
@@ -92,40 +132,59 @@ export function SpvMasterPage() {
       return
     }
 
+    const payload = {
+      ...form,
+      length_km: form.length_km === '' ? null : Number(form.length_km),
+      annual_revision_pct:
+        form.annual_revision_pct === '' ? null : Number(form.annual_revision_pct),
+      revenue_share_premium_pct:
+        form.revenue_share_premium_pct === ''
+          ? null
+          : Number(form.revenue_share_premium_pct),
+    }
+
     setSaving(true)
     try {
-      await createSpv({
-        ...form,
-        length_km: form.length_km === '' ? null : Number(form.length_km),
-        annual_revision_pct:
-          form.annual_revision_pct === '' ? null : Number(form.annual_revision_pct),
-        revenue_share_premium_pct:
-          form.revenue_share_premium_pct === ''
-            ? null
-            : Number(form.revenue_share_premium_pct),
-      })
-      navigate('/portfolio')
+      if (isEdit) {
+        await updateSpv(spvIdentifier, payload)
+        showToast('SPV updated successfully')
+        navigate(`/companies/spvs/${spvIdentifier}`)
+      } else {
+        const created = await createSpv(payload)
+        showToast('SPV created successfully')
+        navigate(`/companies/spvs/${created.spv_identifier}`)
+      }
     } catch (err) {
-      setError(err.message || 'Could not create SPV')
+      setError(err.message || 'Could not save SPV')
     } finally {
       setSaving(false)
     }
+  }
+
+  if (loading) {
+    return <p className="text-body text-muted-foreground">Loading SPV form…</p>
   }
 
   return (
     <form className="space-y-6" onSubmit={handleSubmit}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
-          <p className="text-small text-muted-foreground">Portfolio › New SPV</p>
-          <h1 className="text-display">SPV master</h1>
+          <p className="text-small text-muted-foreground">
+            {isEdit ? 'Portfolio › Company › SPV › Edit' : 'Portfolio › New SPV'}
+          </p>
+          <h1 className="text-display">{isEdit ? 'Edit SPV' : 'SPV master'}</h1>
           <p className="text-body text-muted-foreground">
-            Create a tollway SPV under an existing company. Plaza setup comes later.
+            {isEdit
+              ? 'Update tollway SPV details.'
+              : 'Create a tollway SPV under an existing company. Plaza setup comes later.'}
           </p>
         </div>
-        <Button type="button" variant="outline" onClick={resetForm}>
-          <RotateCcw className="h-4 w-4" />
-          Reset
-        </Button>
+        {!isEdit && (
+          <Button type="button" variant="outline" onClick={resetForm}>
+            <RotateCcw className="h-4 w-4" />
+            Reset
+          </Button>
+        )}
       </div>
 
       {error && (
@@ -145,10 +204,10 @@ export function SpvMasterPage() {
               options={companyOptions}
               value={form.company_identifier}
               onChange={(value) => updateField('company_identifier', value)}
-              placeholder={loadingCompanies ? 'Loading companies…' : 'Search company'}
+              placeholder={companyOptions.length ? 'Search company' : 'No companies'}
               searchPlaceholder="Search by name or short code"
               emptyText="No companies found"
-              disabled={loadingCompanies || companyOptions.length === 0}
+              disabled={companyOptions.length === 0}
             />
           </Field>
           <Field label="SPV name" required>
@@ -227,14 +286,10 @@ export function SpvMasterPage() {
           </Field>
           <Field label="Rate card upload">
             <Input
-              type="file"
-              onChange={(e) =>
-                updateField('rate_card_upload', e.target.files?.[0]?.name || '')
-              }
+              value={form.rate_card_upload}
+              onChange={(e) => updateField('rate_card_upload', e.target.value)}
+              placeholder="Rate card reference / path"
             />
-            {form.rate_card_upload ? (
-              <p className="text-small text-muted-foreground">Selected: {form.rate_card_upload}</p>
-            ) : null}
           </Field>
           <div className="sm:col-span-2">
             <Field label="Exempt categories policy">
@@ -300,7 +355,7 @@ export function SpvMasterPage() {
 
       <div className="flex justify-end">
         <Button type="submit" disabled={saving || companyOptions.length === 0}>
-          {saving ? 'Saving…' : 'Create'}
+          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create'}
         </Button>
       </div>
     </form>

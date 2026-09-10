@@ -62,6 +62,13 @@ class Spv(db.Model):
         foreign_keys=[company_identifier],
         primaryjoin="Spv.company_identifier == Company.company_identifier",
     )
+    plazas = db.relationship(
+        "Plaza",
+        back_populates="spv",
+        lazy="select",
+        foreign_keys="Plaza.spv_identifier",
+        primaryjoin="Spv.spv_identifier == Plaza.spv_identifier",
+    )
 
     def to_dict(self, *, include_company: bool = True) -> dict:
         payload = {

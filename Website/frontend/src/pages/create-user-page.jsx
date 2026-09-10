@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useToast } from '@/components/toast-provider'
 import { createUser, listUsers } from '@/lib/api'
 import { cn, formatLocalDateTime } from '@/lib/utils'
 
@@ -20,6 +21,7 @@ const emptyForm = () => ({
 })
 
 export function CreateUserPage() {
+  const { showToast } = useToast()
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -62,6 +64,7 @@ export function CreateUserPage() {
     setFormError('')
     try {
       await createUser(form)
+      showToast('User created successfully')
       closeCreateDialog()
       await loadUsers()
     } catch (err) {

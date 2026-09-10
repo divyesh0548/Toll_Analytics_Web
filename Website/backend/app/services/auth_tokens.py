@@ -73,3 +73,15 @@ def roles_required(*roles: str):
         return wrapped
 
     return decorator
+
+
+WRITE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+VIEWER_WRITE_ERROR = "Account is limited to read-only access"
+
+
+def deny_viewer_writes():
+    """Return a 403 response when a viewer attempts a mutating request."""
+    user = get_current_user()
+    if user and user.role == "viewer" and request.method in WRITE_HTTP_METHODS:
+        return jsonify({"error": VIEWER_WRITE_ERROR}), 403
+    return None

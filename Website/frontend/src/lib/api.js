@@ -1,5 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_URL || ''
 const TOKEN_KEY = 'toll_auth_token'
+const ROLE_KEY = 'toll_user_role'
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+const VIEWER_WRITE_ERROR = 'Account is limited to read-only access'
+const VIEWER_WRITE_ALLOWLIST = new Set(['/api/auth/login', '/api/auth/change-password'])
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY)
@@ -11,9 +15,34 @@ export function setToken(token) {
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
+  clearUserRole()
+}
+
+export function getUserRole() {
+  return localStorage.getItem(ROLE_KEY)
+}
+
+export function setUserRole(role) {
+  if (role) localStorage.setItem(ROLE_KEY, role)
+  else clearUserRole()
+}
+
+export function clearUserRole() {
+  localStorage.removeItem(ROLE_KEY)
 }
 
 async function request(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase()
+  if (
+    WRITE_METHODS.has(method) &&
+    !VIEWER_WRITE_ALLOWLIST.has(path) &&
+    getUserRole() === 'viewer'
+  ) {
+    const error = new Error(VIEWER_WRITE_ERROR)
+    error.status = 403
+    throw error
+  }
+
   const headers = {
     'Content-Type': 'application/json',
     ...(options.headers || {}),
@@ -39,6 +68,13 @@ export function login(email, password) {
   return request('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
+  })
+}
+
+export function changePassword(payload) {
+  return request('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 
@@ -95,4 +131,36 @@ export function createSpv(payload) {
 
 export function getSpv(spvIdentifier) {
   return request(`/api/spvs/${spvIdentifier}`)
+}
+
+export function updateSpv(spvIdentifier, payload) {
+  return request(`/api/spvs/${spvIdentifier}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function listPlazas(spvIdentifier) {
+  const query = spvIdentifier
+    ? `?spv_identifier=${encodeURIComponent(spvIdentifier)}`
+    : ''
+  return request(`/api/plazas${query}`)
+}
+
+export function createPlaza(payload) {
+  return request('/api/plazas', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getPlaza(plazaIdentifier) {
+  return request(`/api/plazas/${plazaIdentifier}`)
+}
+
+export function updatePlaza(plazaIdentifier, payload) {
+  return request(`/api/plazas/${plazaIdentifier}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
