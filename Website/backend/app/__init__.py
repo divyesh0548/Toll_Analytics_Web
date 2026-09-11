@@ -28,12 +28,13 @@ def create_app(config_name: str | None = None) -> Flask:
     # Import models so Flask-Migrate can detect them.
     from app import models  # noqa: F401
 
-    from app.routes import auth_bp, companies_bp, plazas_bp, spvs_bp
+    from app.routes import analytics_bp, auth_bp, companies_bp, plazas_bp, spvs_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(companies_bp, url_prefix="/api/companies")
     app.register_blueprint(spvs_bp, url_prefix="/api/spvs")
     app.register_blueprint(plazas_bp, url_prefix="/api/plazas")
+    app.register_blueprint(analytics_bp, url_prefix="/api/analytics")
 
     @app.get("/api/health")
     def health():

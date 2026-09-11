@@ -16,10 +16,10 @@ VEHICLE_CLASSES: dict[str, str] = {
 LANES: dict[str, str] = {f"L{i:02d}": f"l{i:02d}" for i in range(1, 13)}
 
 MOP_TYPES: dict[str, str] = {
-    "FASTag": "mop_fastag",
-    "Cash": "mop_cash",
-    "UPI": "mop_upi",
-    "Exempt": "mop_exempt",
+    "FASTag": "fastag",
+    "Cash": "cash",
+    "UPI": "upi",
+    "Exempt": "exempt",
 }
 
 MIN_HOUR_WINDOW = 3
@@ -27,7 +27,9 @@ MAX_HOUR_WINDOW = 24
 MIN_DAY_WINDOW = 3
 MAX_DAY_WINDOW = 50
 DEFAULT_TOP_LANES = 5
-CHART_HEIGHT = 760  # 30% taller than previous 585px layout height
-TOLL_ANALYSIS_MAIN_TABLE = "toll_analysis_main"
+CHART_HEIGHT = 760
+
+MOP_DISTRIBUTION_PER_CLASS_TABLE = "mop_distribution_per_class"
+CLASS_DISTRIBUTION_PER_LANE_TABLE = "class_distribution_per_lane"
+MOP_DISTRIBUTION_PER_LANE_TABLE = "mop_distribution_per_lane"
 GAP_DISTRIBUTION_TABLE = "gap_distribution_per_lane"
-EXEMPT_DISTRIBUTION_TABLE = "exempt_distribution_per_lane"

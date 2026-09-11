@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { ThemeProvider } from '@/components/theme-provider'
 import { AuthProvider } from '@/components/auth-provider'
 import { ToastProvider } from '@/components/toast-provider'
@@ -14,6 +14,11 @@ import { SpvDetailPage } from '@/pages/spv-detail-page'
 import { PlazaMasterPage } from '@/pages/plaza-master-page'
 import { PlazaDetailPage } from '@/pages/plaza-detail-page'
 import { CreateUserPage } from '@/pages/create-user-page'
+
+function LegacyPlazaDetailRedirect() {
+  const { plazaIdentifier } = useParams()
+  return <Navigate to={`/companies/spvs/plazas/${plazaIdentifier}`} replace />
+}
 
 export default function App() {
   return (
@@ -55,12 +60,16 @@ export default function App() {
                     </Route>
 
                     <Route
+                      path="companies/spvs/plazas/:plazaIdentifier"
+                      element={<PlazaDetailPage />}
+                    />
+                    <Route
                       path="companies/spvs/:spvIdentifier"
                       element={<SpvDetailPage />}
                     />
                     <Route
                       path="companies/spvs/:spvIdentifier/plazas/:plazaIdentifier"
-                      element={<PlazaDetailPage />}
+                      element={<LegacyPlazaDetailRedirect />}
                     />
                     <Route path="companies/:companyIdentifier" element={<CompanyDetailPage />} />
 

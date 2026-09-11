@@ -54,7 +54,7 @@ export function SpvDetailPage() {
 
   function goToSelectedPlaza() {
     if (!selectedPlaza) return
-    navigate(`/companies/spvs/${spvIdentifier}/plazas/${selectedPlaza}`)
+    navigate(`/companies/spvs/plazas/${selectedPlaza}`)
   }
 
   if (loading) {

@@ -1,5 +1,3 @@
-Put lanes in X-axis for lane wise distribution.
-
 Put day/hoiday/festivals in dates displayed in X-axis.
 
 Initially create company(plaza) and SPV and link them.

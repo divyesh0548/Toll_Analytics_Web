@@ -13,14 +13,15 @@ class GapDistributionPerLane(db.Model):
     __tablename__ = "gap_distribution_per_lane"
     __table_args__ = (
         db.UniqueConstraint(
-            "plaza_name",
+            "plaza_identifier",
             "date",
             "hour",
-            name="uq_gap_distribution_plaza_date_hour",
+            name="uq_gap_distribution_per_lane",
         ),
     )
 
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    plaza_identifier = db.Column(db.Text, nullable=False, index=True)
     plaza_name = db.Column(db.Text, nullable=False, index=True)
     date = db.Column(db.Date, nullable=False, index=True)
     hour = db.Column(db.Text, nullable=False)
@@ -52,4 +53,4 @@ class GapDistributionPerLane(db.Model):
     l12_lt2_count = db.Column(db.Integer, **_INT0)
 
     def __repr__(self) -> str:
-        return f"<GapDistributionPerLane {self.plaza_name} {self.date} {self.hour}>"
+        return f"<GapDistributionPerLane {self.plaza_identifier} {self.date} {self.hour}>"

@@ -164,3 +164,15 @@ export function updatePlaza(plazaIdentifier, payload) {
     body: JSON.stringify(payload),
   })
 }
+
+export function getPlazaNumbers(plazaIdentifier, period = 'mtd', range = {}) {
+  const params = new URLSearchParams()
+  params.set('period', period)
+  if (range?.start) params.set('start', range.start)
+  if (range?.end) params.set('end', range.end)
+  return request(`/api/analytics/plazas/${plazaIdentifier}/numbers?${params.toString()}`)
+}
+
+export function getPortfolioVolume() {
+  return request('/api/analytics/portfolio/volume')
+}

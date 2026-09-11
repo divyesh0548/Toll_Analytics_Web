@@ -8,15 +8,14 @@ import pandas as pd
 import psycopg2
 
 from app.utils.analytics_config import (
-    EXEMPT_DISTRIBUTION_TABLE,
     GAP_DISTRIBUTION_TABLE,
     LANES,
-    TOLL_ANALYSIS_MAIN_TABLE,
+    MOP_DISTRIBUTION_PER_CLASS_TABLE,
+    MOP_DISTRIBUTION_PER_LANE_TABLE,
 )
 from app.utils.db import get_db_connection_kwargs
 
 DEFAULT_GAP_DISTRIBUTION_TABLE = GAP_DISTRIBUTION_TABLE
-DEFAULT_EXEMPT_DISTRIBUTION_TABLE = EXEMPT_DISTRIBUTION_TABLE
 LANE_DB_COLUMNS = dict(LANES)
 
 
@@ -28,31 +27,45 @@ def get_analytics_db_connection_kwargs() -> dict:
 
 def get_analytics_table_name() -> str:
     return (
-        os.environ.get("ANALYTICS_TABLE", "").strip() or TOLL_ANALYSIS_MAIN_TABLE
+        os.environ.get("ANALYTICS_TABLE", "").strip()
+        or MOP_DISTRIBUTION_PER_CLASS_TABLE
     )
+
+
+def _apply_common_filters(query: str, params: list, *, plaza_name=None, plaza_identifier=None, start_date=None, end_date=None):
+    if plaza_identifier:
+        query += " AND plaza_identifier = %s"
+        params.append(plaza_identifier)
+    elif plaza_name:
+        query += " AND plaza_name = %s"
+        params.append(plaza_name)
+    if start_date is not None:
+        query += " AND date >= %s"
+        params.append(start_date)
+    if end_date is not None:
+        query += " AND date <= %s"
+        params.append(end_date)
+    return query, params
 
 
 def fetch_analytics(
     plaza_name: str | None = None,
+    plaza_identifier: str | None = None,
     start_date=None,
     end_date=None,
 ) -> pd.DataFrame:
+    """Fetch class × MOP hourly rows (primary volume insight table)."""
     table_name = get_analytics_table_name()
     query = f"SELECT * FROM {table_name} WHERE 1=1"
     params: list = []
-
-    if plaza_name:
-        query += " AND plaza_name = %s"
-        params.append(plaza_name)
-
-    if start_date is not None:
-        query += " AND date >= %s"
-        params.append(start_date)
-
-    if end_date is not None:
-        query += " AND date <= %s"
-        params.append(end_date)
-
+    query, params = _apply_common_filters(
+        query,
+        params,
+        plaza_name=plaza_name,
+        plaza_identifier=plaza_identifier,
+        start_date=start_date,
+        end_date=end_date,
+    )
     query += " ORDER BY date, hour"
 
     with psycopg2.connect(**get_analytics_db_connection_kwargs()) as conn:
@@ -91,7 +104,11 @@ def melt_gap_wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
     if not value_cols:
         return df
 
-    id_vars = [col for col in ("plaza_name", "date", "hour") if col in df.columns]
+    id_vars = [
+        col
+        for col in ("plaza_identifier", "plaza_name", "date", "hour")
+        if col in df.columns
+    ]
     long_df = df.melt(
         id_vars=id_vars,
         value_vars=value_cols,
@@ -133,25 +150,21 @@ def melt_gap_wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
 
 def fetch_gap_distribution(
     plaza_name: str | None = None,
+    plaza_identifier: str | None = None,
     start_date=None,
     end_date=None,
 ) -> pd.DataFrame:
     table_name = get_gap_distribution_table_name()
     query = f"SELECT * FROM {table_name} WHERE 1=1"
     params: list = []
-
-    if plaza_name:
-        query += " AND plaza_name = %s"
-        params.append(plaza_name)
-
-    if start_date is not None:
-        query += " AND date >= %s"
-        params.append(start_date)
-
-    if end_date is not None:
-        query += " AND date <= %s"
-        params.append(end_date)
-
+    query, params = _apply_common_filters(
+        query,
+        params,
+        plaza_name=plaza_name,
+        plaza_identifier=plaza_identifier,
+        start_date=start_date,
+        end_date=end_date,
+    )
     query += " ORDER BY date, hour"
 
     with psycopg2.connect(**get_analytics_db_connection_kwargs()) as conn:
@@ -169,36 +182,32 @@ def fetch_gap_distribution(
     return long_df
 
 
-def get_exempt_distribution_table_name() -> str:
+def get_mop_lane_table_name() -> str:
     return (
-        os.environ.get("EXEMPT_DISTRIBUTION_TABLE", "").strip()
-        or DEFAULT_EXEMPT_DISTRIBUTION_TABLE
+        os.environ.get("MOP_DISTRIBUTION_PER_LANE_TABLE", "").strip()
+        or MOP_DISTRIBUTION_PER_LANE_TABLE
     )
 
 
 def fetch_exempt_distribution(
     plaza_name: str | None = None,
+    plaza_identifier: str | None = None,
     start_date=None,
     end_date=None,
 ) -> pd.DataFrame:
-    """Wide hourly exempt counts per lane (l01…l12), same grain as analytics."""
-    table_name = get_exempt_distribution_table_name()
-    query = f"SELECT * FROM {table_name} WHERE 1=1"
-    params: list = []
-
-    if plaza_name:
-        query += " AND plaza_name = %s"
-        params.append(plaza_name)
-
-    if start_date is not None:
-        query += " AND date >= %s"
-        params.append(start_date)
-
-    if end_date is not None:
-        query += " AND date <= %s"
-        params.append(end_date)
-
-    query += " ORDER BY date, hour"
+    """Exempt counts by lane from mop_distribution_per_lane (mop = exempt)."""
+    table_name = get_mop_lane_table_name()
+    query = f"SELECT * FROM {table_name} WHERE mop = %s"
+    params: list = ["exempt"]
+    query, params = _apply_common_filters(
+        query,
+        params,
+        plaza_name=plaza_name,
+        plaza_identifier=plaza_identifier,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    query += " ORDER BY date, hour, lane"
 
     with psycopg2.connect(**get_analytics_db_connection_kwargs()) as conn:
         df = pd.read_sql(query, conn, params=params or None)
@@ -208,7 +217,4 @@ def fetch_exempt_distribution(
 
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df["hour"] = df["hour"].astype(str)
-    for col in LANE_DB_COLUMNS.values():
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
     return df

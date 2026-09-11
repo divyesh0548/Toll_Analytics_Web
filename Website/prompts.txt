@@ -1,27 +1,5 @@
-Display notification on top-right corner. And display them for various creation and updation process. Like user creation, company updatation, etc.
+Currently program is trying to fit all dates of a selected interval in X-axis. 
 
-Chnage the url of companies and spvs. 
+Instaed keep at max 60 points on x-axis, if selected interval is more then 60 days, then divide them by half and display alternate dates in x-axis. Same way divide it again if it increases more then 60.
 
-It goes like /companies/company_id/spvs/spv_id
-It should be like /companies/spvs/spv_id
-
-Create a plaza table with following details. 
-
-1. Plaza Name
-2. Plaza Code
-3. Chainage
-4. District/state
-5. Lat/Long
-6. Tolling start date (date)
-7. Total Lanes (int)
-8. LHS / RHS split
-9. Hybrid / ETC-only
-10. Shift pattern
-11. Toll day cut-off
-12. O&M contractor
-13. Source — Daily TMS report (text field for now)
-14. Event calendar (holidays / mela window) (text field for now)
-
-Keep one column which will be foreign key to link spvs. (spv_identifier)
-
-One spv can have more then one plaza.
+This applies to all graphs in this website.

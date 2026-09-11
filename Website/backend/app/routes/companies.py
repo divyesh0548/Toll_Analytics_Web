@@ -8,6 +8,7 @@ from sqlalchemy import func
 from app.extensions import db
 from app.models.company import Company
 from app.models.company_contact import CompanyContact
+from app.models.plaza import Plaza
 from app.models.spv import Spv
 from app.services.auth_tokens import deny_viewer_writes, get_current_user
 from app.utils.api_log import log_fail, log_ok
@@ -77,10 +78,17 @@ def list_companies():
         .group_by(Spv.company_identifier)
         .all()
     )
+    plaza_counts = dict(
+        db.session.query(Spv.company_identifier, func.count(Plaza.id))
+        .join(Plaza, Plaza.spv_identifier == Spv.spv_identifier)
+        .group_by(Spv.company_identifier)
+        .all()
+    )
     payload = []
     for company in companies:
         item = company.to_dict()
         item["spv_count"] = int(spv_counts.get(company.company_identifier, 0))
+        item["plaza_count"] = int(plaza_counts.get(company.company_identifier, 0))
         payload.append(item)
     log_ok(f"listed {len(payload)} companies")
     return jsonify({"companies": payload})

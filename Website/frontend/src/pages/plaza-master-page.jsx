@@ -122,11 +122,11 @@ export function PlazaMasterPage() {
       if (isEdit) {
         await updatePlaza(plazaIdentifier, payload)
         showToast('Plaza updated successfully')
-        navigate(`/companies/spvs/${spvIdentifier}/plazas/${plazaIdentifier}`)
+        navigate(`/companies/spvs/plazas/${plazaIdentifier}`)
       } else {
         const created = await createPlaza(payload)
         showToast('Plaza created successfully')
-        navigate(`/companies/spvs/${spvIdentifier}/plazas/${created.plaza_identifier}`)
+        navigate(`/companies/spvs/plazas/${created.plaza_identifier}`)
       }
     } catch (err) {
       setError(err.message || 'Could not save plaza')
