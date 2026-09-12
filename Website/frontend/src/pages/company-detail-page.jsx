@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ChevronDown, Pencil, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { getCompany, listSpvs } from '@/lib/api'
 import { cn, formatLocalDateTime } from '@/lib/utils'
 
@@ -74,15 +75,15 @@ export function CompanyDetailPage() {
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-small text-muted-foreground">
-            <Link to="/portfolio" className="hover:text-primary">
-              Portfolio
-            </Link>{' '}
-            › Company
-          </p>
+        <div>
+          <EntityBreadcrumb
+            items={[
+              { label: 'Portfolio', to: '/portfolio' },
+              { label: company.company_name },
+            ]}
+          />
           <h1 className="text-display">{company.company_name}</h1>
-          <p className="text-body text-muted-foreground">
+          <p className="mt-1 text-body text-muted-foreground">
             {company.short_code}
             {company.city ? ` · ${company.city}` : ''}
             {company.state ? `, ${company.state}` : ''}
@@ -96,10 +97,57 @@ export function CompanyDetailPage() {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Stat label="SPVs" value={company.spv_count ?? spvs.length} />
-        <Stat label="Plazas" value="—" />
-        <Stat label="Contacts" value={company.contacts?.length ?? 0} />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Company info</CardTitle>
+            <CardDescription>Master data and hierarchy counts.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <ReadonlyField label="SPVs" value={company.spv_count ?? spvs.length} />
+            <ReadonlyField label="Plazas" value={company.plaza_count ?? 0} />
+            <ReadonlyField label="GSTIN" value={company.gstin} />
+            <ReadonlyField label="PAN" value={company.pan} />
+            <ReadonlyField label="CIN" value={company.cin} />
+            <ReadonlyField label="Holding / parent" value={company.holding_parent} />
+            <ReadonlyField label="Auditor" value={company.auditor} />
+            <ReadonlyField label="Financial year end" value={company.financial_year_end} />
+            <div className="sm:col-span-2">
+              <ReadonlyField label="Address" value={company.address} />
+            </div>
+            <ReadonlyField label="Updated" value={formatLocalDateTime(company.updated_at)} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Contacts</CardTitle>
+            <CardDescription>People linked to this company.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!company.contacts?.length ? (
+              <p className="text-body text-muted-foreground">No contacts on file.</p>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid gap-1 border-b border-border pb-2 sm:grid-cols-3">
+                  <p className="text-small font-medium text-muted-foreground">Name</p>
+                  <p className="text-small font-medium text-muted-foreground">Email</p>
+                  <p className="text-small font-medium text-muted-foreground">Phone</p>
+                </div>
+                {company.contacts.map((contact) => (
+                  <div
+                    key={contact.id || contact.email}
+                    className="grid gap-1 sm:grid-cols-3"
+                  >
+                    <p className="text-body font-medium">{contact.name || '—'}</p>
+                    <p className="text-body text-muted-foreground">{contact.email || '—'}</p>
+                    <p className="text-body text-muted-foreground">{contact.phone || '—'}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -147,57 +195,7 @@ export function CompanyDetailPage() {
           </Button>
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Company profile</CardTitle>
-          <CardDescription>Read-only summary of master data.</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <ReadonlyField label="GSTIN" value={company.gstin} />
-          <ReadonlyField label="PAN" value={company.pan} />
-          <ReadonlyField label="CIN" value={company.cin} />
-          <ReadonlyField label="Holding / parent" value={company.holding_parent} />
-          <ReadonlyField label="Auditor" value={company.auditor} />
-          <ReadonlyField label="Financial year end" value={company.financial_year_end} />
-          <div className="sm:col-span-2">
-            <ReadonlyField label="Address" value={company.address} />
-          </div>
-          <ReadonlyField
-            label="Updated"
-            value={formatLocalDateTime(company.updated_at)}
-          />
-        </CardContent>
-      </Card>
-
-      {company.contacts?.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Contacts</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {company.contacts.map((contact) => (
-              <div key={contact.id || contact.email} className="grid gap-1 sm:grid-cols-3">
-                <p className="text-body font-medium">{contact.name}</p>
-                <p className="text-body text-muted-foreground">{contact.email || '—'}</p>
-                <p className="text-body text-muted-foreground">{contact.phone || '—'}</p>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
     </section>
-  )
-}
-
-function Stat({ label, value }) {
-  return (
-    <Card>
-      <CardContent className="space-y-1 p-5">
-        <p className="text-small text-muted-foreground">{label}</p>
-        <p className="text-header">{value}</p>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -205,7 +203,7 @@ function ReadonlyField({ label, value }) {
   return (
     <div className="space-y-1">
       <p className="text-small text-muted-foreground">{label}</p>
-      <p className="text-body">{value || '—'}</p>
+      <p className="text-body">{value ?? '—'}</p>
     </div>
   )
 }

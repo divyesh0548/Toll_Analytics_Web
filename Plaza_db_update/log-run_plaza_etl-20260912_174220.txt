@@ -1,0 +1,9 @@
+run_plaza_etl processing log
+Started: 2026-09-12 17:42:20
+================================================================================
+Plaza identifier: 39d45059-341d-435b-8824-9963b4e2068e
+Plaza: aroli
+Input folder: C:\Divyesh\Toll Analytics Dashboard\Aroli VRNs\aroli
+Files found: 450
+Dry run: False
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Aroli VRNs\aroli\2026-05-04\8_4\20260504_124251_TransactionHistoryLogReport_04052026181119.xlsx — Header row could not be detected in: 20260504_124251_TransactionHistoryLogReport_04052026181119.xlsx

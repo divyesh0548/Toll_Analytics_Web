@@ -51,9 +51,14 @@ Shared helpers: `Website/frontend/src/lib/chart-axis.js`.
 | Plaza → Numbers → Overview | Traffic trend (hour or day) | Uses `trend_grain` |
 | Plaza → Numbers → Overview | MOP Mix | Few categories; helpers still applied |
 | Plaza → Numbers → Overview | Vehicle class mix | Horizontal bars |
+| Plaza → Numbers → Overview | Lane throughput | Expandable list (not an Apex axis chart) |
+| Plaza → Numbers → Gap | Avg gap / LT2 by lane, gap trend | Min/max = extremes of hourly averages |
+| Plaza → Numbers → Class distribution | Class over time, mix, class × lane | Stacked area/bars; count/% toggle on lane chart |
+| Plaza → Numbers → MOP distribution | MOP over time, MOP × lane, MOP × class | Stacked area/bars; count/% toggles |
+| Plaza → Numbers → Summary | Totals + MOP×lane / MOP×class / class×lane | Tables + stacked bars |
 | Portfolio | Company volume | Monthly series |
 
 ## Out of scope (for this doc)
 
-- KPI cards, tables, and lane throughput lists (not Apex time-series axes).
-- Revenue / Summary Numbers tabs (placeholders; no graphs yet).
+- KPI cards and plain tables (not Apex time-series axes).
+- Revenue Numbers tab (placeholder; no graphs yet).

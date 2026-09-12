@@ -16,8 +16,9 @@ from urllib.parse import unquote, urlparse
 import psycopg2
 import requests
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT_DIR))
+# submissions DB credentials live in the NHIT processing project
+NHIT_DIR = Path(__file__).resolve().parent.parent / "NHIT_dashboard_processing"
+sys.path.insert(0, str(NHIT_DIR))
 
 from db_config import get_db_connection_kwargs, load_env_file, parse_env_date
 
@@ -26,9 +27,9 @@ from db_config import get_db_connection_kwargs, load_env_file, parse_env_date
 # ---------------------------------------------------------------------------
 
 PLAZA_NAME = "aroli"
-FROM_DATE = "2025-01-26"  # YYYY-MM-DD
-TO_DATE = "2026-03-31"    # YYYY-MM-DD
-OUTPUT_FOLDER = r"C:\Divyesh\NHIT_dashboard_processing\New Dashboard Insights\VRN Downloads"
+FROM_DATE = "2026-04-01"  # YYYY-MM-DD
+TO_DATE = "2026-08-31"    # YYYY-MM-DD
+OUTPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Aroli VRNs"
 
 DOWNLOAD_TIMEOUT_SECONDS = 120
 SKIP_EXISTING = True

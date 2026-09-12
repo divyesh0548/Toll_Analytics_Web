@@ -1,27 +1,31 @@
+import { useState } from 'react'
 import Chart from 'react-apexcharts'
-import { Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { AvailableDatePicker } from '@/components/plaza/available-date-picker'
+import {
+  LayoutClassDistribution,
+  LayoutGap,
+  LayoutMopDistribution,
+  LayoutSummary,
+  Kpi,
+  baseChartOptions,
+  chartColors,
+  chartTheme,
+  formatCount,
+  formatPct,
+} from '@/components/plaza/numbers-tabs'
 import { categoryTooltipXFormatter, categoryXAxis } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/components/theme-provider'
-
-function formatCount(value) {
-  if (value == null) return '—'
-  return Number(value).toLocaleString('en-IN')
-}
-
-function formatPct(value) {
-  if (value == null) return '—'
-  const sign = value > 0 ? '+' : ''
-  return `${sign}${value}%`
-}
 
 const PERIOD_TABS = [
   { id: 'day', label: 'Day' },
   { id: 'mtd', label: 'Month' },
   { id: 'ytd', label: 'Year' },
 ]
+
+const LANE_COLLAPSE_COUNT = 6
 
 function PeriodRangeControls({
   period,
@@ -176,65 +180,6 @@ function NumbersLoadingOverlay({ label = 'Updating numbers…' }) {
   )
 }
 
-function chartColors(dark) {
-  return {
-    primary: dark ? '#6fbf7a' : '#2f7a45',
-    muted: dark ? '#9ca3af' : '#94a3b8',
-    series: dark
-      ? ['#6fbf7a', '#93c5fd', '#fbbf24', '#f87171']
-      : ['#2f7a45', '#2563eb', '#d97706', '#dc2626'],
-  }
-}
-
-/** ApexCharts text / axis / legend colors for light vs dark UI. */
-function chartTheme(dark) {
-  const text = dark ? '#e5e7eb' : '#334155'
-  const muted = dark ? '#cbd5e1' : '#64748b'
-  return {
-    foreColor: text,
-    labelStyle: { colors: text, fontSize: '11px' },
-    mutedLabelStyle: { colors: muted, fontSize: '11px' },
-    legend: {
-      labels: { colors: text },
-    },
-    gridBorder: dark ? '#3f3f46' : '#e5e7eb',
-    tooltipTheme: dark ? 'dark' : 'light',
-  }
-}
-
-function baseChartOptions(dark) {
-  const theme = chartTheme(dark)
-  return {
-    chart: {
-      foreColor: theme.foreColor,
-      fontFamily: 'Archivo, sans-serif',
-      toolbar: { show: false },
-      background: 'transparent',
-    },
-    theme: { mode: dark ? 'dark' : 'light' },
-    grid: { borderColor: theme.gridBorder },
-    legend: {
-      labels: theme.legend.labels,
-    },
-    tooltip: {
-      theme: theme.tooltipTheme,
-    },
-    dataLabels: { enabled: false },
-  }
-}
-
-function Kpi({ label, value, hint }) {
-  return (
-    <Card>
-      <CardContent className="space-y-1 p-4">
-        <p className="text-small text-muted-foreground">{label}</p>
-        <p className="text-header">{value}</p>
-        {hint ? <p className="text-small text-muted-foreground">{hint}</p> : null}
-      </CardContent>
-    </Card>
-  )
-}
-
 function DailyTrendChart({ dailyTrend, dark, height = 280, grain = 'day' }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
@@ -353,6 +298,65 @@ function ClassMixChart({ classMix, dark, height = 220 }) {
   return <Chart options={options} series={series} type="bar" height={height} />
 }
 
+function LaneThroughputCard({ laneThroughput }) {
+  const [expanded, setExpanded] = useState(false)
+  const lanes = laneThroughput || []
+  const needsToggle = lanes.length > LANE_COLLAPSE_COUNT
+  const visible = expanded || !needsToggle ? lanes : lanes.slice(0, LANE_COLLAPSE_COUNT)
+  const total = lanes.reduce((sum, row) => sum + (Number(row.count) || 0), 0)
+
+  return (
+    <Card className="flex h-full flex-col">
+      <CardHeader>
+        <CardTitle>Lane throughput</CardTitle>
+        <CardDescription>
+          {lanes.length
+            ? `${lanes.length} lanes · total ${formatCount(total)}`
+            : 'Lane totals for the selected window'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col">
+        {lanes.length ? (
+          <>
+            <div className="divide-y divide-border">
+              {visible.map((lane) => (
+                <div
+                  key={lane.lane}
+                  className="flex items-center justify-between py-2 text-body first:pt-0 last:pb-0"
+                >
+                  <span>{lane.lane}</span>
+                  <span className="font-medium">{formatCount(lane.count)}</span>
+                </div>
+              ))}
+            </div>
+            {needsToggle ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((value) => !value)}
+                className="mt-3 inline-flex items-center gap-1 self-start text-small font-medium text-primary hover:underline"
+              >
+                {expanded ? (
+                  <>
+                    Show less
+                    <ChevronUp className="h-4 w-4" />
+                  </>
+                ) : (
+                  <>
+                    Expand all {lanes.length} lanes
+                    <ChevronDown className="h-4 w-4" />
+                  </>
+                )}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <p className="text-body text-muted-foreground">No lane data.</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function topShare(items, nameKey, countKey = 'count') {
   if (!items?.length) return null
   const total = items.reduce((sum, row) => sum + (Number(row[countKey]) || 0), 0)
@@ -418,13 +422,15 @@ function LayoutOverview({ data, dark }) {
             <DailyTrendChart dailyTrend={daily_trend} dark={dark} grain={trendGrain} />
           ) : (
             <p className="text-body text-muted-foreground">
-              {trendGrain === 'hour' ? 'No hourly traffic in this period.' : 'No daily traffic in this period.'}
+              {trendGrain === 'hour'
+                ? 'No hourly traffic in this period.'
+                : 'No daily traffic in this period.'}
             </p>
           )}
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch">
         <Card>
           <CardHeader>
             <CardTitle>MOP Mix</CardTitle>
@@ -449,28 +455,7 @@ function LayoutOverview({ data, dark }) {
             )}
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Lane throughput</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {lane_throughput.length ? (
-              <div className="divide-y divide-border">
-                {lane_throughput.map((lane) => (
-                  <div
-                    key={lane.lane}
-                    className="flex items-center justify-between py-2 text-body first:pt-0 last:pb-0"
-                  >
-                    <span>{lane.lane}</span>
-                    <span className="font-medium">{formatCount(lane.count)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-body text-muted-foreground">No lane data.</p>
-            )}
-          </CardContent>
-        </Card>
+        <LaneThroughputCard laneThroughput={lane_throughput} />
       </div>
     </div>
   )
@@ -489,8 +474,11 @@ function LayoutPlaceholder({ title, description }) {
 
 const LAYOUTS = [
   { id: 'overview', label: 'Overview' },
-  { id: 'revenue', label: 'Revenue' },
+  { id: 'gap', label: 'Gap' },
+  { id: 'class', label: 'Class distribution' },
+  { id: 'mop', label: 'MOP distribution' },
   { id: 'summary', label: 'Summary' },
+  { id: 'revenue', label: 'Revenue' },
 ]
 
 export function PlazaNumbersDashboard({
@@ -565,16 +553,14 @@ export function PlazaNumbersDashboard({
         {loading ? <NumbersLoadingOverlay /> : null}
         <div className={cn('space-y-4', loading && 'pointer-events-none select-none')}>
           {layout === 'overview' && <LayoutOverview data={data} dark={dark} />}
+          {layout === 'gap' && <LayoutGap data={data} dark={dark} />}
+          {layout === 'class' && <LayoutClassDistribution data={data} dark={dark} />}
+          {layout === 'mop' && <LayoutMopDistribution data={data} dark={dark} />}
+          {layout === 'summary' && <LayoutSummary data={data} dark={dark} />}
           {layout === 'revenue' && (
             <LayoutPlaceholder
               title="Revenue"
               description="Coming soon — revenue metrics for this plaza will appear here."
-            />
-          )}
-          {layout === 'summary' && (
-            <LayoutPlaceholder
-              title="Summary"
-              description="Coming soon — summary views for this plaza will appear here."
             />
           )}
         </div>

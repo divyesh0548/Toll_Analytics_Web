@@ -13,7 +13,7 @@ PLAZA_IDENTIFIER = "39d45059-341d-435b-8824-9963b4e2068e"
 # Display name stored alongside plaza_identifier.
 PLAZA_NAME = "aroli"
 
-INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Input"
+INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Aroli VRNs\aroli"
 
 # Rows before this date are skipped (noisy / sparse history).
 START_DATE_LIMIT = "2025-11-23"

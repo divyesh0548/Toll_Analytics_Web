@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronDown, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
+import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { useToast } from '@/components/toast-provider'
 import { createCompany, getCompany, updateCompany } from '@/lib/api'
 import {
@@ -89,11 +90,6 @@ export function CompanyMasterPage() {
       active = false
     }
   }, [companyIdentifier, isEdit])
-
-  const breadcrumb = useMemo(
-    () => (isEdit ? 'Portfolio › Company › Edit' : 'Portfolio › New company'),
-    [isEdit],
-  )
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -210,14 +206,30 @@ export function CompanyMasterPage() {
   return (
     <form className="space-y-6" onSubmit={handleSubmit}>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-small text-muted-foreground">{breadcrumb}</p>
+        <div>
+          <EntityBreadcrumb
+            items={
+              isEdit
+                ? [
+                    { label: 'Portfolio', to: '/portfolio' },
+                    {
+                      label: form.company_name || 'Company',
+                      to: `/companies/${companyIdentifier}`,
+                    },
+                    { label: 'Edit' },
+                  ]
+                : [
+                    { label: 'Portfolio', to: '/portfolio' },
+                    { label: 'New company' },
+                  ]
+            }
+          />
           <h1 className="text-display">Company master</h1>
-          <p className="text-body text-muted-foreground">
+          <p className="mt-1 text-body text-muted-foreground">
             Capture identity, registered office, group reporting, and key contacts.
           </p>
           {isEdit && (
-            <p className="text-small text-muted-foreground">
+            <p className="mt-1 text-small text-muted-foreground">
               Created {formatLocalDateTime(meta.created_at)} · Updated{' '}
               {formatLocalDateTime(meta.updated_at)}
             </p>

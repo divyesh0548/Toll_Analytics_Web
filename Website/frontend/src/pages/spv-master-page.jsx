@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { useToast } from '@/components/toast-provider'
 import { createSpv, getSpv, listCompanies, updateSpv } from '@/lib/api'
 
@@ -65,6 +66,7 @@ export function SpvMasterPage() {
   const isEdit = Boolean(spvIdentifier)
   const { showToast } = useToast()
   const [companies, setCompanies] = useState([])
+  const [spvName, setSpvName] = useState('')
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -82,6 +84,7 @@ export function SpvMasterPage() {
           const spv = await getSpv(spvIdentifier)
           if (!active) return
           setForm(toForm(spv))
+          setSpvName(spv.spv_name || '')
         } else if (companyFromQuery) {
           setForm((prev) => ({ ...prev, company_identifier: companyFromQuery }))
         }
@@ -104,6 +107,11 @@ export function SpvMasterPage() {
         meta: company.short_code,
       })),
     [companies],
+  )
+
+  const selectedCompany = useMemo(
+    () => companies.find((c) => c.company_identifier === form.company_identifier),
+    [companies, form.company_identifier],
   )
 
   function updateField(key, value) {
@@ -168,12 +176,40 @@ export function SpvMasterPage() {
   return (
     <form className="space-y-6" onSubmit={handleSubmit}>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-small text-muted-foreground">
-            {isEdit ? 'Portfolio › Company › SPV › Edit' : 'Portfolio › New SPV'}
-          </p>
+        <div>
+          <EntityBreadcrumb
+            items={
+              isEdit
+                ? [
+                    { label: 'Portfolio', to: '/portfolio' },
+                    {
+                      label: selectedCompany?.company_name || 'Company',
+                      to: form.company_identifier
+                        ? `/companies/${form.company_identifier}`
+                        : undefined,
+                    },
+                    {
+                      label: spvName || form.spv_name || 'SPV',
+                      to: `/companies/spvs/${spvIdentifier}`,
+                    },
+                    { label: 'Edit' },
+                  ]
+                : [
+                    { label: 'Portfolio', to: '/portfolio' },
+                    ...(form.company_identifier
+                      ? [
+                          {
+                            label: selectedCompany?.company_name || 'Company',
+                            to: `/companies/${form.company_identifier}`,
+                          },
+                        ]
+                      : []),
+                    { label: 'New SPV' },
+                  ]
+            }
+          />
           <h1 className="text-display">{isEdit ? 'Edit SPV' : 'SPV master'}</h1>
-          <p className="text-body text-muted-foreground">
+          <p className="mt-1 text-body text-muted-foreground">
             {isEdit
               ? 'Update tollway SPV details.'
               : 'Create a tollway SPV under an existing company. Plaza setup comes later.'}

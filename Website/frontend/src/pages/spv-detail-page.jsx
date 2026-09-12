@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ChevronDown, Pencil, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { getCompany, getSpv, listPlazas } from '@/lib/api'
 import { cn, formatLocalDateTime } from '@/lib/utils'
 
@@ -82,19 +83,19 @@ export function SpvDetailPage() {
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-small text-muted-foreground">
-            <Link to="/portfolio" className="hover:text-primary">
-              Portfolio
-            </Link>{' '}
-            ›{' '}
-            <Link to={`/companies/${companyIdentifier}`} className="hover:text-primary">
-              {company?.company_name || 'Company'}
-            </Link>{' '}
-            › SPV
-          </p>
+        <div>
+          <EntityBreadcrumb
+            items={[
+              { label: 'Portfolio', to: '/portfolio' },
+              {
+                label: company?.company_name || 'Company',
+                to: `/companies/${companyIdentifier}`,
+              },
+              { label: spv.spv_name },
+            ]}
+          />
           <h1 className="text-display">{spv.spv_name}</h1>
-          <p className="text-body text-muted-foreground">
+          <p className="mt-1 text-body text-muted-foreground">
             {spv.project_stretch_name || 'Tollway SPV'}
             {spv.nh_no ? ` · NH ${spv.nh_no}` : ''}
           </p>
@@ -106,6 +107,69 @@ export function SpvDetailPage() {
           </Link>
         </Button>
       </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>SPV info</CardTitle>
+            <CardDescription>Entity details and plaza count.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <ReadonlyField label="Plazas" value={plazas.length} />
+            <ReadonlyField label="Parent company" value={company?.company_name} />
+            <ReadonlyField label="Project / stretch name" value={spv.project_stretch_name} />
+            <ReadonlyField label="NH no." value={spv.nh_no} />
+            <ReadonlyField label="Length (km)" value={spv.length_km} />
+            <ReadonlyField label="Chainage from" value={spv.chainage_from} />
+            <ReadonlyField label="Chainage to" value={spv.chainage_to} />
+            <ReadonlyField label="Updated" value={formatLocalDateTime(spv.updated_at)} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Tolling & rates</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <ReadonlyField
+              label="Rate notification no. / date"
+              value={spv.rate_notification_no_date}
+            />
+            <ReadonlyField label="Annual revision %" value={spv.annual_revision_pct} />
+            <ReadonlyField label="WPI linkage" value={spv.wpi_linkage} />
+            <ReadonlyField label="Effective from" value={spv.effective_from} />
+            <ReadonlyField label="Rate card upload" value={spv.rate_card_upload} />
+            <div className="sm:col-span-2">
+              <ReadonlyField
+                label="Exempt categories policy"
+                value={spv.exempt_categories_policy}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <ReadonlyField
+                label="Local / monthly pass rules"
+                value={spv.local_monthly_pass_rules}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Finance</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <ReadonlyField label="Lead bank / lender" value={spv.lead_bank_lender} />
+          <ReadonlyField label="Facility & limit" value={spv.facility_limit} />
+          <ReadonlyField label="Escrow bank" value={spv.escrow_bank} />
+          <ReadonlyField
+            label="Revenue share / premium %"
+            value={spv.revenue_share_premium_pct}
+          />
+          <ReadonlyField label="Premium escalation" value={spv.premium_escalation} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -150,65 +214,6 @@ export function SpvDetailPage() {
               New plaza
             </Link>
           </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Entity</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <ReadonlyField label="Parent company" value={company?.company_name} />
-          <ReadonlyField label="Project / stretch name" value={spv.project_stretch_name} />
-          <ReadonlyField label="NH no." value={spv.nh_no} />
-          <ReadonlyField label="Length (km)" value={spv.length_km} />
-          <ReadonlyField label="Chainage from" value={spv.chainage_from} />
-          <ReadonlyField label="Chainage to" value={spv.chainage_to} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Tolling & rates</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <ReadonlyField
-            label="Rate notification no. / date"
-            value={spv.rate_notification_no_date}
-          />
-          <ReadonlyField label="Annual revision %" value={spv.annual_revision_pct} />
-          <ReadonlyField label="WPI linkage" value={spv.wpi_linkage} />
-          <ReadonlyField label="Effective from" value={spv.effective_from} />
-          <ReadonlyField label="Rate card upload" value={spv.rate_card_upload} />
-          <div className="sm:col-span-2">
-            <ReadonlyField
-              label="Exempt categories policy"
-              value={spv.exempt_categories_policy}
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <ReadonlyField
-              label="Local / monthly pass rules"
-              value={spv.local_monthly_pass_rules}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Finance</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <ReadonlyField label="Lead bank / lender" value={spv.lead_bank_lender} />
-          <ReadonlyField label="Facility & limit" value={spv.facility_limit} />
-          <ReadonlyField label="Escrow bank" value={spv.escrow_bank} />
-          <ReadonlyField
-            label="Revenue share / premium %"
-            value={spv.revenue_share_premium_pct}
-          />
-          <ReadonlyField label="Premium escalation" value={spv.premium_escalation} />
-          <ReadonlyField label="Updated" value={formatLocalDateTime(spv.updated_at)} />
         </CardContent>
       </Card>
     </section>

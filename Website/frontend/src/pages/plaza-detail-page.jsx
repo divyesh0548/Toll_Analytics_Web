@@ -4,6 +4,7 @@ import { Info, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
+import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { PlazaNumbersDashboard } from '@/components/plaza/numbers-dashboard'
 import { getCompany, getPlaza, getPlazaNumbers, getSpv } from '@/lib/api'
 import { cn, formatLocalDateTime } from '@/lib/utils'
@@ -145,26 +146,23 @@ export function PlazaDetailPage() {
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-small text-muted-foreground">
-            <Link to="/portfolio" className="hover:text-primary">
-              Portfolio
-            </Link>{' '}
-            ›{' '}
-            <Link
-              to={`/companies/${spv.company_identifier}`}
-              className="hover:text-primary"
-            >
-              {company?.company_name || 'Company'}
-            </Link>{' '}
-            ›{' '}
-            <Link to={`/companies/spvs/${spvIdentifier}`} className="hover:text-primary">
-              {spv?.spv_name || 'SPV'}
-            </Link>{' '}
-            › Plaza
-          </p>
+        <div>
+          <EntityBreadcrumb
+            items={[
+              { label: 'Portfolio', to: '/portfolio' },
+              {
+                label: company?.company_name || 'Company',
+                to: `/companies/${spv.company_identifier}`,
+              },
+              {
+                label: spv?.spv_name || 'SPV',
+                to: `/companies/spvs/${spvIdentifier}`,
+              },
+              { label: plaza.plaza_name },
+            ]}
+          />
           <h1 className="text-display">{plaza.plaza_name}</h1>
-          <p className="text-body text-muted-foreground">
+          <p className="mt-1 text-body text-muted-foreground">
             {plaza.plaza_code || 'Toll plaza'}
             {plaza.district_state ? ` · ${plaza.district_state}` : ''}
           </p>
@@ -175,7 +173,7 @@ export function PlazaDetailPage() {
             Plaza info
           </Button>
           <Button asChild variant="outline">
-            <Link to={`/companies/spvs/${spvIdentifier}/plazas/${plazaIdentifier}/edit`}>
+            <Link to={`/companies/spvs/plazas/${plazaIdentifier}/edit`}>
               <Pencil className="h-4 w-4" />
               Edit
             </Link>

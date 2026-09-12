@@ -13,6 +13,8 @@ from app.models.spv import Spv
 from app.services.analytics_db import get_analytics_db_connection_kwargs
 from app.utils.analytics_config import (
     CLASS_DISTRIBUTION_PER_LANE_TABLE,
+    GAP_DISTRIBUTION_TABLE,
+    LANES,
     MOP_DISTRIBUTION_PER_CLASS_TABLE,
     MOP_DISTRIBUTION_PER_LANE_TABLE,
 )
@@ -350,6 +352,30 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
         "class_mix": [],
         "mop_mix": [],
         "lane_throughput": [],
+        "gap": {
+            "overall": {"avg": None, "min": None, "max": None, "lt2_count": 0},
+            "by_lane": [],
+            "trend": [],
+        },
+        "class_distribution": {
+            "totals": [],
+            "trend": {"categories": [], "series": []},
+            "by_lane": {"lanes": [], "series": []},
+        },
+        "mop_distribution": {
+            "totals": [],
+            "trend": {"categories": [], "series": []},
+            "by_lane": {"lanes": [], "series": []},
+            "by_class": {"classes": [], "series": []},
+        },
+        "summary": {
+            "by_mop": [],
+            "by_class": [],
+            "by_lane": [],
+            "mop_x_lane": {"lanes": [], "series": []},
+            "mop_x_class": {"classes": [], "series": []},
+            "class_x_lane": {"lanes": [], "series": []},
+        },
     }
 
 
@@ -362,6 +388,386 @@ def _selection_echo(period: str, start: date, end: date) -> dict:
             "end": f"{end.year:04d}-{end.month:02d}",
         }
     return {"start": str(start.year), "end": str(end.year)}
+
+
+def _trend_label(d: date, hour: str | None, *, span_days: int, use_hourly: bool) -> str:
+    if use_hourly:
+        hour_text = str(hour or "")
+        if span_days == 1:
+            return hour_text
+        return f"{WEEKDAYS[d.weekday()]} {d.day} {hour_text}"
+    return f"{WEEKDAYS[d.weekday()]} {d.day}"
+
+
+def _stacked_series(
+    categories: list[str],
+    keys: list[str],
+    values_by_cat_key: dict[tuple[str, str], int],
+    *,
+    name_key: str = "name",
+) -> list[dict]:
+    series = []
+    for key in keys:
+        series.append(
+            {
+                name_key: key,
+                "name": key,
+                "data": [int(values_by_cat_key.get((cat, key), 0)) for cat in categories],
+            }
+        )
+    return series
+
+
+def _build_gap_block(
+    plaza_identifier: str,
+    win_start: date,
+    win_end: date,
+    *,
+    use_hourly: bool,
+    span_days: int,
+) -> dict:
+    lane_cols = list(LANES.items())  # (L01, l01)
+    select_parts = ["date", "hour"]
+    for _lane, col in lane_cols:
+        select_parts.append(col)
+        select_parts.append(f"{col}_lt2_count")
+    rows = _fetch_all(
+        f"""
+        SELECT {", ".join(select_parts)}
+        FROM {GAP_DISTRIBUTION_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        ORDER BY date ASC, hour ASC
+        """,
+        (plaza_identifier, win_start, win_end),
+    )
+
+    per_lane_values: dict[str, list[float]] = {lane: [] for lane, _ in lane_cols}
+    per_lane_lt2: dict[str, int] = {lane: 0 for lane, _ in lane_cols}
+    trend_buckets: dict[tuple, dict[str, float | int | str | date]] = {}
+
+    for row in rows:
+        d = _as_date(row.get("date"))
+        if d is None:
+            continue
+        hour = str(row.get("hour") or "")
+        if use_hourly:
+            bucket_key = (d, hour)
+        else:
+            bucket_key = (d,)
+
+        bucket = trend_buckets.setdefault(
+            bucket_key,
+            {"date": d, "hour": hour, "sum": 0.0, "n": 0, "lt2": 0},
+        )
+
+        for lane, col in lane_cols:
+            raw = row.get(col)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            per_lane_values[lane].append(value)
+            bucket["sum"] = float(bucket["sum"]) + value
+            bucket["n"] = int(bucket["n"]) + 1
+
+            lt2_raw = row.get(f"{col}_lt2_count")
+            try:
+                lt2 = int(lt2_raw or 0)
+            except (TypeError, ValueError):
+                lt2 = 0
+            per_lane_lt2[lane] += lt2
+            bucket["lt2"] = int(bucket["lt2"]) + lt2
+
+    by_lane = []
+    all_values: list[float] = []
+    total_lt2 = 0
+    for lane, _ in lane_cols:
+        values = per_lane_values[lane]
+        if not values:
+            continue
+        all_values.extend(values)
+        lt2 = per_lane_lt2[lane]
+        total_lt2 += lt2
+        by_lane.append(
+            {
+                "lane": lane,
+                "avg": round(sum(values) / len(values), 2),
+                "min": round(min(values), 2),
+                "max": round(max(values), 2),
+                "lt2_count": lt2,
+            }
+        )
+
+    overall = {
+        "avg": round(sum(all_values) / len(all_values), 2) if all_values else None,
+        "min": round(min(all_values), 2) if all_values else None,
+        "max": round(max(all_values), 2) if all_values else None,
+        "lt2_count": total_lt2,
+    }
+
+    trend = []
+    for key in sorted(trend_buckets.keys(), key=lambda k: (k[0], str(k[1]) if len(k) > 1 else "")):
+        bucket = trend_buckets[key]
+        d = bucket["date"]
+        assert isinstance(d, date)
+        hour = str(bucket.get("hour") or "")
+        n = int(bucket["n"])
+        avg = round(float(bucket["sum"]) / n, 2) if n else None
+        trend.append(
+            {
+                "date": d.isoformat(),
+                "hour": hour if use_hourly else None,
+                "label": _trend_label(d, hour if use_hourly else None, span_days=span_days, use_hourly=use_hourly),
+                "avg_gap": avg,
+                "lt2_count": int(bucket["lt2"]),
+            }
+        )
+
+    return {"overall": overall, "by_lane": by_lane, "trend": trend}
+
+
+def _build_class_distribution_block(
+    plaza_identifier: str,
+    win_start: date,
+    win_end: date,
+    *,
+    use_hourly: bool,
+    span_days: int,
+    class_mix: list[dict],
+) -> dict:
+    totals = [
+        {"vehicle_class": row["vehicle_class"], "count": int(row["count"])}
+        for row in class_mix
+    ]
+    class_order = [row["vehicle_class"] for row in totals]
+
+    if use_hourly:
+        trend_rows = _fetch_all(
+            f"""
+            SELECT date, hour, vehicle_class, COALESCE(SUM(txn_count), 0)::bigint AS count
+            FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+            GROUP BY date, hour, vehicle_class
+            ORDER BY date ASC, hour ASC
+            """,
+            (plaza_identifier, win_start, win_end),
+        )
+    else:
+        trend_rows = _fetch_all(
+            f"""
+            SELECT date, vehicle_class, COALESCE(SUM(txn_count), 0)::bigint AS count
+            FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+            GROUP BY date, vehicle_class
+            ORDER BY date ASC
+            """,
+            (plaza_identifier, win_start, win_end),
+        )
+
+    category_keys: list[tuple] = []
+    category_labels: dict[tuple, str] = {}
+    values: dict[tuple[str, str], int] = {}
+    seen_classes: set[str] = set(class_order)
+
+    for row in trend_rows:
+        d = _as_date(row["date"])
+        if d is None:
+            continue
+        vehicle_class = str(row["vehicle_class"])
+        seen_classes.add(vehicle_class)
+        if use_hourly:
+            hour = str(row.get("hour") or "")
+            key = (d, hour)
+            label = _trend_label(d, hour, span_days=span_days, use_hourly=True)
+        else:
+            key = (d,)
+            label = _trend_label(d, None, span_days=span_days, use_hourly=False)
+        if key not in category_labels:
+            category_keys.append(key)
+            category_labels[key] = label
+        cat_label = category_labels[key]
+        values[(cat_label, vehicle_class)] = int(row["count"])
+
+    categories = [category_labels[k] for k in category_keys]
+    ordered_classes = class_order + sorted(seen_classes - set(class_order))
+    trend_series = _stacked_series(categories, ordered_classes, values)
+
+    lane_rows = _fetch_all(
+        f"""
+        SELECT lane, vehicle_class, COALESCE(SUM(txn_count), 0)::bigint AS count
+        FROM {CLASS_DISTRIBUTION_PER_LANE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY lane, vehicle_class
+        ORDER BY lane ASC, count DESC
+        """,
+        (plaza_identifier, win_start, win_end),
+    )
+    lanes: list[str] = []
+    lane_values: dict[tuple[str, str], int] = {}
+    lane_classes: set[str] = set()
+    for row in lane_rows:
+        lane = str(row["lane"])
+        vehicle_class = str(row["vehicle_class"])
+        if lane not in lanes:
+            lanes.append(lane)
+        lane_classes.add(vehicle_class)
+        lane_values[(lane, vehicle_class)] = int(row["count"])
+
+    lane_class_order = [c for c in ordered_classes if c in lane_classes] + sorted(
+        lane_classes - set(ordered_classes)
+    )
+    by_lane_series = _stacked_series(lanes, lane_class_order, lane_values)
+
+    return {
+        "totals": totals,
+        "trend": {"categories": categories, "series": trend_series},
+        "by_lane": {"lanes": lanes, "series": by_lane_series},
+    }
+
+
+def _build_mop_distribution_block(
+    plaza_identifier: str,
+    win_start: date,
+    win_end: date,
+    *,
+    use_hourly: bool,
+    span_days: int,
+    mop_mix: list[dict],
+) -> dict:
+    totals = [{"mop": row["mop"], "count": int(row["count"])} for row in mop_mix]
+    mop_order = [row["mop"] for row in totals]
+
+    if use_hourly:
+        trend_rows = _fetch_all(
+            f"""
+            SELECT date, hour, mop, COALESCE(SUM(txn_count), 0)::bigint AS count
+            FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+            GROUP BY date, hour, mop
+            ORDER BY date ASC, hour ASC
+            """,
+            (plaza_identifier, win_start, win_end),
+        )
+    else:
+        trend_rows = _fetch_all(
+            f"""
+            SELECT date, mop, COALESCE(SUM(txn_count), 0)::bigint AS count
+            FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+            GROUP BY date, mop
+            ORDER BY date ASC
+            """,
+            (plaza_identifier, win_start, win_end),
+        )
+
+    category_keys: list[tuple] = []
+    category_labels: dict[tuple, str] = {}
+    values: dict[tuple[str, str], int] = {}
+    seen_mops: set[str] = set(mop_order)
+
+    for row in trend_rows:
+        d = _as_date(row["date"])
+        if d is None:
+            continue
+        mop = str(row["mop"])
+        seen_mops.add(mop)
+        if use_hourly:
+            hour = str(row.get("hour") or "")
+            key = (d, hour)
+            label = _trend_label(d, hour, span_days=span_days, use_hourly=True)
+        else:
+            key = (d,)
+            label = _trend_label(d, None, span_days=span_days, use_hourly=False)
+        if key not in category_labels:
+            category_keys.append(key)
+            category_labels[key] = label
+        values[(category_labels[key], mop)] = int(row["count"])
+
+    categories = [category_labels[k] for k in category_keys]
+    ordered_mops = mop_order + sorted(seen_mops - set(mop_order))
+    trend_series = _stacked_series(categories, ordered_mops, values)
+
+    lane_rows = _fetch_all(
+        f"""
+        SELECT lane, mop, COALESCE(SUM(txn_count), 0)::bigint AS count
+        FROM {MOP_DISTRIBUTION_PER_LANE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY lane, mop
+        ORDER BY lane ASC, count DESC
+        """,
+        (plaza_identifier, win_start, win_end),
+    )
+    lanes: list[str] = []
+    lane_values: dict[tuple[str, str], int] = {}
+    lane_mops: set[str] = set()
+    for row in lane_rows:
+        lane = str(row["lane"])
+        mop = str(row["mop"])
+        if lane not in lanes:
+            lanes.append(lane)
+        lane_mops.add(mop)
+        lane_values[(lane, mop)] = int(row["count"])
+    lane_mop_order = [m for m in ordered_mops if m in lane_mops] + sorted(
+        lane_mops - set(ordered_mops)
+    )
+    by_lane_series = _stacked_series(lanes, lane_mop_order, lane_values)
+
+    class_rows = _fetch_all(
+        f"""
+        SELECT vehicle_class, mop, COALESCE(SUM(txn_count), 0)::bigint AS count
+        FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY vehicle_class, mop
+        ORDER BY vehicle_class ASC, count DESC
+        """,
+        (plaza_identifier, win_start, win_end),
+    )
+    classes: list[str] = []
+    class_values: dict[tuple[str, str], int] = {}
+    class_mops: set[str] = set()
+    for row in class_rows:
+        vehicle_class = str(row["vehicle_class"])
+        mop = str(row["mop"])
+        if vehicle_class not in classes:
+            classes.append(vehicle_class)
+        class_mops.add(mop)
+        class_values[(vehicle_class, mop)] = int(row["count"])
+    class_mop_order = [m for m in ordered_mops if m in class_mops] + sorted(
+        class_mops - set(ordered_mops)
+    )
+    by_class_series = _stacked_series(classes, class_mop_order, class_values)
+
+    return {
+        "totals": totals,
+        "trend": {"categories": categories, "series": trend_series},
+        "by_lane": {"lanes": lanes, "series": by_lane_series},
+        "by_class": {"classes": classes, "series": by_class_series},
+    }
+
+
+def _build_summary_block(
+    mop_mix: list[dict],
+    class_mix: list[dict],
+    lane_throughput: list[dict],
+    mop_distribution: dict,
+    class_distribution: dict,
+) -> dict:
+    return {
+        "by_mop": [{"mop": r["mop"], "count": int(r["count"])} for r in mop_mix],
+        "by_class": [
+            {"vehicle_class": r["vehicle_class"], "count": int(r["count"])}
+            for r in class_mix
+        ],
+        "by_lane": [
+            {"lane": r["lane"], "count": int(r["count"])} for r in lane_throughput
+        ],
+        "mop_x_lane": mop_distribution.get("by_lane") or {"lanes": [], "series": []},
+        "mop_x_class": mop_distribution.get("by_class")
+        or {"classes": [], "series": []},
+        "class_x_lane": class_distribution.get("by_lane") or {"lanes": [], "series": []},
+    }
 
 
 def build_plaza_numbers(
@@ -587,6 +993,37 @@ def build_plaza_numbers(
             f"{win_start.strftime('%d %b %Y')} → {win_end.strftime('%d %b %Y')}"
         )
 
+    gap = _build_gap_block(
+        plaza_identifier,
+        win_start,
+        win_end,
+        use_hourly=use_hourly,
+        span_days=span_days,
+    )
+    class_distribution = _build_class_distribution_block(
+        plaza_identifier,
+        win_start,
+        win_end,
+        use_hourly=use_hourly,
+        span_days=span_days,
+        class_mix=class_mix,
+    )
+    mop_distribution = _build_mop_distribution_block(
+        plaza_identifier,
+        win_start,
+        win_end,
+        use_hourly=use_hourly,
+        span_days=span_days,
+        mop_mix=mop_mix,
+    )
+    summary = _build_summary_block(
+        mop_mix,
+        class_mix,
+        lane_throughput,
+        mop_distribution,
+        class_distribution,
+    )
+
     return {
         "period": period,
         "has_data": True,
@@ -619,6 +1056,10 @@ def build_plaza_numbers(
         "class_mix": class_mix,
         "mop_mix": mop_mix,
         "lane_throughput": lane_throughput,
+        "gap": gap,
+        "class_distribution": class_distribution,
+        "mop_distribution": mop_distribution,
+        "summary": summary,
     }
 
 

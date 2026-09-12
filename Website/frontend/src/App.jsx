@@ -20,6 +20,11 @@ function LegacyPlazaDetailRedirect() {
   return <Navigate to={`/companies/spvs/plazas/${plazaIdentifier}`} replace />
 }
 
+function LegacyPlazaEditRedirect() {
+  const { plazaIdentifier } = useParams()
+  return <Navigate to={`/companies/spvs/plazas/${plazaIdentifier}/edit`} replace />
+}
+
 export default function App() {
   return (
     <ThemeProvider>
@@ -50,8 +55,12 @@ export default function App() {
                         element={<PlazaMasterPage />}
                       />
                       <Route
-                        path="companies/spvs/:spvIdentifier/plazas/:plazaIdentifier/edit"
+                        path="companies/spvs/plazas/:plazaIdentifier/edit"
                         element={<PlazaMasterPage />}
+                      />
+                      <Route
+                        path="companies/spvs/:spvIdentifier/plazas/:plazaIdentifier/edit"
+                        element={<LegacyPlazaEditRedirect />}
                       />
                       <Route
                         path="companies/:companyIdentifier/edit"

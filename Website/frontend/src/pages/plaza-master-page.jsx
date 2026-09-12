@@ -7,8 +7,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
+import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { useToast } from '@/components/toast-provider'
-import { createPlaza, getPlaza, getSpv, updatePlaza } from '@/lib/api'
+import { createPlaza, getCompany, getPlaza, getSpv, updatePlaza } from '@/lib/api'
 
 const emptyForm = () => ({
   spv_identifier: '',
@@ -52,10 +53,13 @@ function toForm(plaza) {
 
 export function PlazaMasterPage() {
   const navigate = useNavigate()
-  const { spvIdentifier, plazaIdentifier } = useParams()
+  const { spvIdentifier: spvFromParams, plazaIdentifier } = useParams()
   const isEdit = Boolean(plazaIdentifier)
   const { showToast } = useToast()
+  const [company, setCompany] = useState(null)
+  const [spvIdentifier, setSpvIdentifier] = useState(spvFromParams || '')
   const [spvName, setSpvName] = useState('')
+  const [plazaName, setPlazaName] = useState('')
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -65,18 +69,27 @@ export function PlazaMasterPage() {
     let active = true
     ;(async () => {
       try {
-        const spv = await getSpv(spvIdentifier)
-        if (!active) return
-        setSpvName(spv.spv_name || '')
         if (isEdit) {
           const plaza = await getPlaza(plazaIdentifier)
           if (!active) return
-          if (plaza.spv_identifier !== spvIdentifier) {
-            throw new Error('Plaza does not belong to this SPV')
-          }
+          const spv = await getSpv(plaza.spv_identifier)
+          if (!active) return
+          const companyData = await getCompany(spv.company_identifier)
+          if (!active) return
           setForm(toForm(plaza))
+          setSpvIdentifier(plaza.spv_identifier)
+          setSpvName(spv.spv_name || '')
+          setPlazaName(plaza.plaza_name || '')
+          setCompany(companyData)
         } else {
-          setForm((prev) => ({ ...prev, spv_identifier: spvIdentifier }))
+          const spv = await getSpv(spvFromParams)
+          if (!active) return
+          const companyData = await getCompany(spv.company_identifier)
+          if (!active) return
+          setSpvIdentifier(spvFromParams)
+          setSpvName(spv.spv_name || '')
+          setCompany(companyData)
+          setForm((prev) => ({ ...prev, spv_identifier: spvFromParams }))
         }
       } catch (err) {
         if (active) setError(err.message || 'Failed to load plaza form')
@@ -87,7 +100,7 @@ export function PlazaMasterPage() {
     return () => {
       active = false
     }
-  }, [spvIdentifier, plazaIdentifier, isEdit])
+  }, [spvFromParams, plazaIdentifier, isEdit])
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -139,16 +152,38 @@ export function PlazaMasterPage() {
     return <p className="text-body text-muted-foreground">Loading plaza form…</p>
   }
 
+  const companyIdentifier = company?.company_identifier
+  const breadcrumbItems = [
+    { label: 'Portfolio', to: '/portfolio' },
+    {
+      label: company?.company_name || 'Company',
+      to: companyIdentifier ? `/companies/${companyIdentifier}` : undefined,
+    },
+    {
+      label: spvName || 'SPV',
+      to: spvIdentifier ? `/companies/spvs/${spvIdentifier}` : undefined,
+    },
+  ]
+  if (isEdit) {
+    breadcrumbItems.push({
+      label: plazaName || form.plaza_name || 'Plaza',
+      to: `/companies/spvs/plazas/${plazaIdentifier}`,
+    })
+    breadcrumbItems.push({ label: 'Edit' })
+  } else {
+    breadcrumbItems.push({ label: 'New plaza' })
+  }
+
   return (
     <form className="space-y-6" onSubmit={handleSubmit}>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="text-small text-muted-foreground">
-            {isEdit ? 'Portfolio › SPV › Plaza › Edit' : 'Portfolio › SPV › New plaza'}
-          </p>
+        <div>
+          <EntityBreadcrumb items={breadcrumbItems} />
           <h1 className="text-display">{isEdit ? 'Edit plaza' : 'Plaza master'}</h1>
-          <p className="text-body text-muted-foreground">
-            {spvName ? `Parent SPV: ${spvName}` : 'Capture plaza identity and operations details.'}
+          <p className="mt-1 text-body text-muted-foreground">
+            {spvName
+              ? `Parent SPV: ${spvName}`
+              : 'Capture plaza identity and operations details.'}
           </p>
         </div>
         {!isEdit && (

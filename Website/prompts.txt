@@ -1,5 +1,11 @@
-Currently program is trying to fit all dates of a selected interval in X-axis. 
+In overview tab, list all lanes with total in below box, do not fix the 6 lanes. Provide a button to exoand the lane box and display all lanes. In that way all those boxes will look consistent.
 
-Instaed keep at max 60 points on x-axis, if selected interval is more then 60 days, then divide them by half and display alternate dates in x-axis. Same way divide it again if it increases more then 60.
+Add one more tab "Gap", in which display graphs for gap distribution per lane also flag the gaps less then 2 seconds. Provide date selection inputs same as overview tab and all other config. Display average, min, max gap per lane and overall. Choose the layout on your own.
 
-This applies to all graphs in this website.
+Change the summary to "Class distribution". In that display the vehicle class graph lines. Also provide class distribution per lane. (Suggest me some best methods for my website)
+
+Add one more tab "MOP distribution". In this display MOP count graphs for selected time window. Also MOP distribution per lane, class. ((Suggest me some best methods for my website))
+
+In last add a summary tab, where display total counts for all cross joints available. For exmaple, Total of Fastag, ETC, and total of their distribution among lanes, and classes.
+
+Ask for any clarification if needed.

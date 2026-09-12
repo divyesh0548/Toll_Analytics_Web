@@ -104,6 +104,13 @@ def get_company(company_identifier: str):
         .scalar()
         or 0
     )
+    item["plaza_count"] = (
+        db.session.query(func.count(Plaza.id))
+        .join(Spv, Plaza.spv_identifier == Spv.spv_identifier)
+        .filter(Spv.company_identifier == company.company_identifier)
+        .scalar()
+        or 0
+    )
     log_ok(f"fetched company {company.company_name}")
     return jsonify(item)
 

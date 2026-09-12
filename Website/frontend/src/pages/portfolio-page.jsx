@@ -143,7 +143,7 @@ export function PortfolioPage() {
           </p>
           <h1 className="text-display">Companies</h1>
           <p className="text-body text-muted-foreground">
-            Vehicle volume by company (all plazas), up to last 5 years.
+            Vehicle volume by company.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
