@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import re
 
+# Date-only Excel header aliases (no time). When values are date-only, ETL
+# looks for a separate TIME column and combines the two.
+DATE_COLUMN_ALIASES = [
+    "DATE",
+]
+
+# Time-only Excel header aliases used with DATE_COLUMN_ALIASES.
+TIME_COLUMN_ALIASES = [
+    "TIME",
+]
+
+# MOP / payment-mode Excel header aliases.
+MOP_COLUMN_ALIASES = [
+    "MVC MOP",
+    "PAYMENT METHOD",
+]
+
 # Excel column name -> logical field
 COLUMN_MAPPING = {
-    "datetime": "DATE",
+    "datetime": DATE_COLUMN_ALIASES[0],
     "vehicle_class": "MVC",
     "lane_no": "LANE",
-    "mop": "MVC MOP",
+    "mop": MOP_COLUMN_ALIASES[0],
 }
 
 # Fields required for volume analytics (module1).
@@ -44,6 +61,10 @@ DATETIME_FORMATS_12H = [
     "%d-%b-%Y %I:%M %p",     # 06-Dec-2025 2:00 PM
     "%m/%d/%Y %I:%M:%S %p",  # 11/24/2025 2:23:35 AM
     "%m/%d/%Y %I:%M %p",     # 11/24/2025 2:23 AM
+    "%d/%m/%Y %I:%M:%S %p",  # 28/05/2026 04:00:25 PM
+    "%d/%m/%Y %I:%M %p",
+    "%d-%m-%Y %I:%M:%S %p",
+    "%d-%m-%Y %I:%M %p",
 ]
 
 DATETIME_FORMATS_24H = [
@@ -56,6 +77,30 @@ DATETIME_FORMATS_24H = [
 ]
 
 DATETIME_FORMATS = DATETIME_FORMATS_12H + DATETIME_FORMATS_24H
+
+# Date-only formats (used when DATE and TIME are separate columns).
+DATE_ONLY_FORMATS = [
+    "%d/%m/%Y",   # 28/05/2026
+    "%d-%m-%Y",
+    "%Y-%m-%d",
+    "%d-%b-%Y",   # 28-May-2026
+    "%m/%d/%Y",
+    "%d/%m/%y",
+    "%d-%m-%y",
+]
+
+# Time-only formats (used with DATE_ONLY_FORMATS).
+TIME_ONLY_FORMATS_12H = [
+    "%I:%M:%S %p",  # 04:00:25 PM
+    "%I:%M %p",     # 4:00 PM
+]
+
+TIME_ONLY_FORMATS_24H = [
+    "%H:%M:%S",
+    "%H:%M",
+]
+
+TIME_ONLY_FORMATS = TIME_ONLY_FORMATS_12H + TIME_ONLY_FORMATS_24H
 
 AM_PM_PATTERN = re.compile(r"\b(AM|PM)\b", re.IGNORECASE)
 
@@ -82,9 +127,11 @@ HEADER_KEYWORDS = [
     "Journey Type",
     "Vehicle No",
     "Operator Class",
-    "DATE",
     "LANE",
 ]
+HEADER_KEYWORDS.extend(DATE_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(TIME_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(MOP_COLUMN_ALIASES)
 # Include mapped Excel column names in header detection.
 HEADER_KEYWORDS.extend(COLUMN_MAPPING.values())
 

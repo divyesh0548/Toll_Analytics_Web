@@ -4,21 +4,23 @@ from __future__ import annotations
 
 import pandas as pd
 
-from config.excel_config import COLUMN_MAPPING, VOLUME_REQUIRED_FIELDS
+from config.excel_config import COLUMN_MAPPING, MOP_COLUMN_ALIASES, VOLUME_REQUIRED_FIELDS
 from config.settings import PLAZA_IDENTIFIER, PLAZA_NAME, START_DATE_LIMIT_DATE
 from excel_common import (
+    DatetimeResolution,
     find_column,
+    find_column_by_aliases,
     hour_bucket_label,
     is_blank,
     lane_limit_error_message,
     optional_normalize_lane,
     optional_normalize_mop,
     optional_normalize_vehicle_class,
-    safe_parse_datetime,
+    parse_event_datetime,
+    safe_parse_event_datetime,
     try_normalize_lane,
     try_normalize_mop,
     try_normalize_vehicle_class,
-    try_parse_datetime,
     unsupported_high_lane_counts,
 )
 
@@ -35,11 +37,16 @@ def require_plaza_settings() -> None:
         raise RuntimeError("Set PLAZA_NAME in Plaza_db_update/config/settings.py.")
 
 
-def validate_dataframe(df: pd.DataFrame, file_name: str, datetime_format: str) -> list[str]:
-    datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
+def validate_dataframe(
+    df: pd.DataFrame,
+    file_name: str,
+    datetime_resolution: DatetimeResolution,
+) -> list[str]:
+    datetime_col = datetime_resolution.date_col
+    time_col = datetime_resolution.time_col
     vehicle_col = find_column(df, COLUMN_MAPPING["vehicle_class"])
     lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
-    mop_col = find_column(df, COLUMN_MAPPING["mop"])
+    mop_col = find_column_by_aliases(df, MOP_COLUMN_ALIASES)
 
     invalid_datetimes: dict[str, int] = {}
     unmapped_vehicle_classes: dict[str, int] = {}
@@ -49,9 +56,15 @@ def validate_dataframe(df: pd.DataFrame, file_name: str, datetime_format: str) -
 
     for _row_idx, row in df.iterrows():
         datetime_value = row[datetime_col]
-        if not is_blank(datetime_value):
-            if try_parse_datetime(datetime_value, datetime_format=datetime_format) is None:
-                raw_dt = str(datetime_value).strip()
+        time_value = row[time_col] if time_col else None
+        if not is_blank(datetime_value) and (
+            time_col is None or not is_blank(time_value)
+        ):
+            if parse_event_datetime(datetime_value, datetime_resolution, time_value) is None:
+                if time_col:
+                    raw_dt = f"{str(datetime_value).strip()} {str(time_value).strip()}"
+                else:
+                    raw_dt = str(datetime_value).strip()
                 invalid_datetimes[raw_dt] = invalid_datetimes.get(raw_dt, 0) + 1
 
         vehicle_value = row[vehicle_col]
@@ -75,8 +88,11 @@ def validate_dataframe(df: pd.DataFrame, file_name: str, datetime_format: str) -
 
     errors: list[str] = []
     if invalid_datetimes:
+        col_label = (
+            f"{datetime_col}+{time_col}" if time_col else datetime_col
+        )
         errors.append(
-            f"Invalid datetime values in '{file_name}' ({datetime_col}): "
+            f"Invalid datetime values in '{file_name}' ({col_label}): "
             + ", ".join(
                 f"{value!r} ({count} row(s))"
                 for value, count in sorted(invalid_datetimes.items())
@@ -127,17 +143,34 @@ def print_validation_errors(errors: list[str]) -> None:
     print("=" * 80)
 
 
-def prepare_dataframe(df: pd.DataFrame, datetime_format: str) -> pd.DataFrame:
+def prepare_dataframe(
+    df: pd.DataFrame,
+    datetime_resolution: DatetimeResolution,
+) -> pd.DataFrame:
     """Normalize one VRN file into shared columns for all insight modules."""
-    datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
+    datetime_col = datetime_resolution.date_col
+    time_col = datetime_resolution.time_col
     vehicle_col = find_column(df, COLUMN_MAPPING["vehicle_class"])
     lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
-    mop_col = find_column(df, COLUMN_MAPPING["mop"])
+    mop_col = find_column_by_aliases(df, MOP_COLUMN_ALIASES)
+
+    if time_col:
+        event_values = [
+            safe_parse_event_datetime(
+                date_value,
+                datetime_resolution,
+                time_value=time_value,
+            )
+            for date_value, time_value in zip(df[datetime_col], df[time_col])
+        ]
+    else:
+        event_values = [
+            safe_parse_event_datetime(date_value, datetime_resolution)
+            for date_value in df[datetime_col]
+        ]
 
     prepared = pd.DataFrame()
-    prepared["event_dt"] = df[datetime_col].map(
-        lambda value: safe_parse_datetime(value, datetime_format)
-    )
+    prepared["event_dt"] = pd.to_datetime(event_values, errors="coerce")
     prepared["vehicle_class"] = df[vehicle_col].map(optional_normalize_vehicle_class)
     prepared["lane_no"] = df[lane_col].map(optional_normalize_lane)
     prepared["mop"] = df[mop_col].map(optional_normalize_mop)

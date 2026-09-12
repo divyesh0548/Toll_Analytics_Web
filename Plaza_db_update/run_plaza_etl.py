@@ -19,17 +19,15 @@ ROOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from config.db import ensure_all_analytics_tables, get_analytics_db_connection_kwargs
-from config.excel_config import COLUMN_MAPPING
 from config.settings import INPUT_FOLDER, PLAZA_IDENTIFIER, PLAZA_NAME, START_DATE_LIMIT
 from excel_common import (
     UnmappedValueError,
     append_run_log,
     create_run_log_file,
-    detect_datetime_format,
-    find_column,
     is_header_detection_error,
     list_excel_files,
     read_excel_file,
+    resolve_datetime_columns,
 )
 from insights import (
     class_distribution_per_lane,
@@ -68,11 +66,17 @@ def process_file(file_path: Path, conn=None, *, dry_run: bool = False, run_log: 
         ) from exc
 
     print(f"  Rows read after header detection: {len(df)}")
-    datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
-    datetime_format = detect_datetime_format(df[datetime_col].tolist())
-    print(f"  Detected datetime format: {datetime_format}")
+    try:
+        datetime_resolution = resolve_datetime_columns(df)
+    except ValueError as exc:
+        print(f"\n  Datetime resolution failed: {exc}")
+        raise UnmappedValueError(
+            f"File '{file_path.name}' datetime columns could not be resolved. "
+            "No rows were inserted."
+        ) from exc
+    print(f"  Detected datetime: {datetime_resolution.label}")
 
-    errors = validate_dataframe(df, file_path.name, datetime_format)
+    errors = validate_dataframe(df, file_path.name, datetime_resolution)
     if errors:
         print_validation_errors(errors)
         raise UnmappedValueError(
@@ -80,7 +84,7 @@ def process_file(file_path: Path, conn=None, *, dry_run: bool = False, run_log: 
         )
 
     print("  Validation passed.")
-    prepared = prepare_dataframe(df, datetime_format)
+    prepared = prepare_dataframe(df, datetime_resolution)
     if prepared.empty:
         print(f"  No rows on or after {START_DATE_LIMIT}. Skipping file.")
         return False

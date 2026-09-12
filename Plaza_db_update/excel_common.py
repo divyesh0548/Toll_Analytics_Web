@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, time
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,8 @@ from openpyxl.utils import get_column_letter
 from config.excel_config import (
     AM_PM_PATTERN,
     COLUMN_MAPPING,
+    DATE_COLUMN_ALIASES,
+    DATE_ONLY_FORMATS,
     DATETIME_FORMATS,
     DATETIME_FORMATS_12H,
     DATETIME_FORMATS_24H,
@@ -22,6 +25,10 @@ from config.excel_config import (
     HEADER_KEYWORDS,
     LANE_LOOKUP,
     MAX_SUPPORTED_LANES,
+    TIME_COLUMN_ALIASES,
+    TIME_ONLY_FORMATS,
+    TIME_ONLY_FORMATS_12H,
+    TIME_ONLY_FORMATS_24H,
     normalize_key,
     required_excel_columns,
 )
@@ -56,6 +63,23 @@ def datetime_formats_for_text(text: str) -> list[str]:
     if datetime_has_am_pm(text):
         return DATETIME_FORMATS_12H
     return DATETIME_FORMATS_24H
+
+
+def time_formats_for_text(text: str) -> list[str]:
+    if datetime_has_am_pm(text):
+        return TIME_ONLY_FORMATS_12H
+    return TIME_ONLY_FORMATS_24H
+
+
+def non_empty_sample(values, *, limit: int | None = None) -> list:
+    sample = [
+        value
+        for value in values
+        if not pd.isna(value) and str(value).strip()
+    ]
+    if limit is not None:
+        return sample[:limit]
+    return sample
 
 
 def try_parse_with_format(value, datetime_format: str):
@@ -93,40 +117,227 @@ def parse_datetime_with_format(value, datetime_format: str) -> datetime:
     return datetime.strptime(text, datetime_format)
 
 
-def detect_datetime_format(values) -> str:
-    """
-    Detect the datetime format used in a file by testing DATETIME_FORMATS
-    against non-empty sample values.
-    """
-    sample = [
-        value
-        for value in values
-        if not pd.isna(value) and str(value).strip()
-    ]
-    if not sample:
-        raise ValueError("No datetime values found to detect format.")
-
+def _best_format(sample: list, formats: list[str]) -> str | None:
     best_format = None
     best_count = -1
-
-    for fmt in DATETIME_FORMATS:
+    for fmt in formats:
         parsed_count = sum(
             1 for value in sample if try_parse_with_format(value, fmt) is not None
         )
         if parsed_count > best_count:
             best_count = parsed_count
             best_format = fmt
-
     if best_format is None or best_count == 0:
-        raise ValueError("Could not detect datetime format from file values.")
-
+        return None
     if best_count < len(sample):
         print(
             f"  Warning: detected format '{best_format}' parsed "
-            f"{best_count}/{len(sample)} datetime sample(s)."
+            f"{best_count}/{len(sample)} sample(s)."
+        )
+    return best_format
+
+
+def detect_datetime_format(values) -> str:
+    """
+    Detect the datetime format used in a file by testing DATETIME_FORMATS
+    against non-empty sample values.
+    """
+    sample = non_empty_sample(values)
+    if not sample:
+        raise ValueError("No datetime values found to detect format.")
+
+    best_format = _best_format(sample, DATETIME_FORMATS)
+    if best_format is None:
+        raise ValueError("Could not detect datetime format from file values.")
+    return best_format
+
+
+def detect_date_only_format(values) -> str:
+    sample = non_empty_sample(values)
+    if not sample:
+        raise ValueError("No date values found to detect format.")
+    best_format = _best_format(sample, DATE_ONLY_FORMATS)
+    if best_format is None:
+        raise ValueError("Could not detect date-only format from file values.")
+    return best_format
+
+
+def detect_time_only_format(values) -> str:
+    sample = non_empty_sample(values)
+    if not sample:
+        raise ValueError("No time values found to detect format.")
+    best_format = _best_format(sample, TIME_ONLY_FORMATS)
+    if best_format is None:
+        raise ValueError("Could not detect time-only format from file values.")
+    return best_format
+
+
+def find_column(df: pd.DataFrame, mapped_name: str) -> str:
+    if mapped_name in df.columns:
+        return mapped_name
+
+    normalized_target = normalize_key(mapped_name)
+    for column in df.columns:
+        if normalize_key(column) == normalized_target:
+            return column
+
+    available = ", ".join(str(col) for col in df.columns)
+    raise KeyError(
+        f"Mapped column '{mapped_name}' not found. Available columns: {available}"
+    )
+
+
+def find_column_by_aliases(df: pd.DataFrame, aliases: list[str]) -> str:
+    last_error: Exception | None = None
+    for alias in aliases:
+        try:
+            return find_column(df, alias)
+        except KeyError as exc:
+            last_error = exc
+    available = ", ".join(str(col) for col in df.columns)
+    raise KeyError(
+        f"None of the column aliases {aliases!r} were found. "
+        f"Available columns: {available}"
+    ) from last_error
+
+
+def find_optional_column_by_aliases(df: pd.DataFrame, aliases: list[str]) -> str | None:
+    try:
+        return find_column_by_aliases(df, aliases)
+    except KeyError:
+        return None
+
+
+@dataclass(frozen=True)
+class DatetimeResolution:
+    """How event timestamps are stored in a VRN file."""
+
+    date_col: str
+    mode: str  # "combined" | "split"
+    datetime_format: str | None = None
+    date_format: str | None = None
+    time_format: str | None = None
+    time_col: str | None = None
+
+    @property
+    def label(self) -> str:
+        if self.mode == "split":
+            return (
+                f"split date '{self.date_format}' + time '{self.time_format}' "
+                f"(columns {self.date_col!r} + {self.time_col!r})"
+            )
+        return f"combined '{self.datetime_format}' (column {self.date_col!r})"
+
+
+def resolve_datetime_columns(df: pd.DataFrame) -> DatetimeResolution:
+    """
+    Resolve datetime parsing for a file.
+
+    Prefer a single combined datetime column. If DATE values are date-only,
+    look for a TIME column and parse the pair.
+    """
+    date_col = find_column_by_aliases(df, DATE_COLUMN_ALIASES)
+    date_values = df[date_col].tolist()
+
+    try:
+        datetime_format = detect_datetime_format(date_values)
+        return DatetimeResolution(
+            date_col=date_col,
+            mode="combined",
+            datetime_format=datetime_format,
+        )
+    except ValueError:
+        pass
+
+    try:
+        date_format = detect_date_only_format(date_values)
+    except ValueError as exc:
+        raise ValueError(
+            f"Could not detect datetime or date-only format in column {date_col!r}."
+        ) from exc
+
+    time_col = find_optional_column_by_aliases(df, TIME_COLUMN_ALIASES)
+    if time_col is None:
+        raise ValueError(
+            f"Column {date_col!r} looks date-only ({date_format}), but no TIME "
+            f"column was found (tried aliases {TIME_COLUMN_ALIASES!r})."
         )
 
-    return best_format
+    try:
+        time_format = detect_time_only_format(df[time_col].tolist())
+    except ValueError as exc:
+        raise ValueError(
+            f"Found time column {time_col!r}, but could not detect its format."
+        ) from exc
+
+    return DatetimeResolution(
+        date_col=date_col,
+        mode="split",
+        date_format=date_format,
+        time_format=time_format,
+        time_col=time_col,
+    )
+
+
+def _parse_time_only(value, time_format: str) -> time | None:
+    if pd.isna(value):
+        return None
+    if isinstance(value, datetime):
+        return value.time()
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime().time()
+    if isinstance(value, time):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, time_format).time()
+    except ValueError:
+        return None
+
+
+def combine_date_and_time(
+    date_value,
+    time_value,
+    *,
+    date_format: str,
+    time_format: str,
+) -> datetime | None:
+    date_part = try_parse_with_format(date_value, date_format)
+    if date_part is None and isinstance(date_value, (datetime, pd.Timestamp)):
+        date_part = (
+            date_value.to_pydatetime()
+            if isinstance(date_value, pd.Timestamp)
+            else date_value
+        )
+    if date_part is None:
+        return None
+
+    time_part = _parse_time_only(time_value, time_format)
+    if time_part is None:
+        return None
+
+    return datetime.combine(date_part.date(), time_part)
+
+
+def parse_event_datetime(date_value, resolution: DatetimeResolution, time_value=None):
+    """Parse one event timestamp using a DatetimeResolution."""
+    if resolution.mode == "combined":
+        return try_parse_datetime(date_value, datetime_format=resolution.datetime_format)
+
+    return combine_date_and_time(
+        date_value,
+        time_value,
+        date_format=resolution.date_format or "",
+        time_format=resolution.time_format or "",
+    )
+
+
+def safe_parse_event_datetime(date_value, resolution: DatetimeResolution, time_value=None):
+    parsed = parse_event_datetime(date_value, resolution, time_value=time_value)
+    return parsed if parsed is not None else pd.NaT
 
 
 def parse_datetime(value, datetime_format: str | None = None) -> datetime:
@@ -445,21 +656,6 @@ def prepare_excel_dataframe(
     df.columns = [str(column).strip() for column in df.columns]
     df = df.dropna(how="all").reset_index(drop=True)
     return df
-
-
-def find_column(df: pd.DataFrame, mapped_name: str) -> str:
-    if mapped_name in df.columns:
-        return mapped_name
-
-    normalized_target = normalize_key(mapped_name)
-    for column in df.columns:
-        if normalize_key(column) == normalized_target:
-            return column
-
-    available = ", ".join(str(col) for col in df.columns)
-    raise KeyError(
-        f"Mapped column '{mapped_name}' not found. Available columns: {available}"
-    )
 
 
 def read_excel_file(
