@@ -1,11 +1,1 @@
-In overview tab, list all lanes with total in below box, do not fix the 6 lanes. Provide a button to exoand the lane box and display all lanes. In that way all those boxes will look consistent.
-
-Add one more tab "Gap", in which display graphs for gap distribution per lane also flag the gaps less then 2 seconds. Provide date selection inputs same as overview tab and all other config. Display average, min, max gap per lane and overall. Choose the layout on your own.
-
-Change the summary to "Class distribution". In that display the vehicle class graph lines. Also provide class distribution per lane. (Suggest me some best methods for my website)
-
-Add one more tab "MOP distribution". In this display MOP count graphs for selected time window. Also MOP distribution per lane, class. ((Suggest me some best methods for my website))
-
-In last add a summary tab, where display total counts for all cross joints available. For exmaple, Total of Fastag, ETC, and total of their distribution among lanes, and classes.
-
-Ask for any clarification if needed.
+In the portfolio page, the company graph writes all month in x-axis, which make them overlap each other. Please show only 3-4 of them.

@@ -12,7 +12,8 @@ import { useTheme } from '@/components/theme-provider'
 function CompanyVolumeChart({ series, dark }) {
   const fullCategories = series.map((p) => p.label)
   const text = dark ? '#e5e7eb' : '#334155'
-  const xAxis = categoryXAxis(fullCategories, { colors: text, fontSize: '10px' })
+  // Compact card chart: keep only ~4 month labels so they do not overlap.
+  const xAxis = categoryXAxis(fullCategories, { colors: text, fontSize: '10px' }, 4)
   const data = series.map((p) => p.traffic)
   const options = {
     chart: {
@@ -34,7 +35,11 @@ function CompanyVolumeChart({ series, dark }) {
     dataLabels: { enabled: false },
     xaxis: {
       categories: xAxis.categories,
-      labels: xAxis.labels,
+      labels: {
+        ...xAxis.labels,
+        hideOverlappingLabels: true,
+        trim: true,
+      },
       axisBorder: { show: false },
       axisTicks: { show: false },
     },

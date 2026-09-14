@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import Chart from 'react-apexcharts'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { categoryTooltipXFormatter, categoryXAxis } from '@/lib/chart-axis'
-import { cn } from '@/lib/utils'
 
 export function formatCount(value) {
   if (value == null) return '—'
@@ -79,31 +78,6 @@ export function Kpi({ label, value, hint }) {
   )
 }
 
-function ModeToggle({ mode, onChange }) {
-  return (
-    <div className="flex gap-1">
-      {[
-        { id: 'count', label: 'Count' },
-        { id: 'pct', label: '%' },
-      ].map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          onClick={() => onChange(item.id)}
-          className={cn(
-            'rounded-sm px-2 py-1 text-small',
-            mode === item.id
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-secondary text-secondary-foreground',
-          )}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 function StackedCategoryChart({
   categories,
   series,
@@ -118,48 +92,60 @@ function StackedCategoryChart({
   const theme = chartTheme(dark)
   const fullCategories = categories || []
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
-  const displaySeries = series || []
+  const displaySeries = (series || [])
+    .filter((row) => row && Array.isArray(row.data))
+    .map((row) => ({
+      name: String(row.name ?? ''),
+      data: row.data.map((value) => {
+        const n = Number(value)
+        return Number.isFinite(n) ? n : 0
+      }),
+    }))
+
+  const isBar = chartType === 'bar'
+  const isArea = chartType === 'area'
+  const isLine = chartType === 'line'
+  const useStack = stacked && (isBar || isArea)
 
   const options = {
     ...baseChartOptions(dark),
     chart: {
       ...baseChartOptions(dark).chart,
       type: chartType,
-      stacked: chartType === 'bar' ? stacked : false,
-      stackType: mode === 'pct' && chartType === 'bar' ? '100%' : undefined,
+      stacked: useStack,
+      ...(useStack && mode === 'pct' && isBar ? { stackType: '100%' } : {}),
       zoom: { enabled: false },
+      animations: { enabled: false },
     },
-    stroke:
-      chartType === 'area' || chartType === 'line'
-        ? { width: 2, curve: 'smooth' }
-        : { width: 0 },
-    fill:
-      chartType === 'area'
-        ? { type: 'solid', opacity: 0.55 }
-        : undefined,
-    plotOptions:
-      chartType === 'bar'
-        ? {
+    stroke: isArea || isLine
+      ? { show: true, curve: 'smooth', width: 2 }
+      : { show: false, width: 0, colors: ['transparent'] },
+    fill: isArea
+      ? { type: 'solid', opacity: 0.55 }
+      : { opacity: 1 },
+    ...(isBar
+      ? {
+          plotOptions: {
             bar: {
               horizontal,
               columnWidth: '55%',
               barHeight: '70%',
             },
-          }
-        : undefined,
+          },
+        }
+      : {}),
     colors: colors.series,
     xaxis: {
       categories: xAxis.categories,
       labels: {
         ...xAxis.labels,
-        formatter:
-          horizontal && mode === 'count'
-            ? (v) => Number(v).toLocaleString('en-IN')
-            : xAxis.labels?.formatter,
+        ...(horizontal && mode === 'count'
+          ? { formatter: (v) => Number(v).toLocaleString('en-IN') }
+          : {}),
       },
     },
     yaxis: {
-      max: mode === 'pct' && chartType === 'bar' && !horizontal ? 100 : undefined,
+      ...(mode === 'pct' && isBar && !horizontal ? { max: 100 } : {}),
       labels: {
         formatter: (v) =>
           mode === 'pct'
@@ -174,6 +160,8 @@ function StackedCategoryChart({
     },
     tooltip: {
       theme: theme.tooltipTheme,
+      shared: true,
+      intersect: false,
       x: { formatter: categoryTooltipXFormatter(fullCategories) },
       y: {
         formatter: (v) =>
@@ -189,37 +177,52 @@ function StackedCategoryChart({
   }
 
   return (
-    <Chart options={options} series={displaySeries} type={chartType} height={height} />
+    <Chart
+      key={`${chartType}-${mode}-${fullCategories.length}-${displaySeries.length}`}
+      options={options}
+      series={displaySeries}
+      type={chartType}
+      height={height}
+    />
   )
 }
 
 function SimpleBarChart({ categories, values, dark, height = 240, horizontal = false }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
-  const fullCategories = categories || []
+  const fullCategories = (categories || []).map((label) =>
+    label == null || String(label).trim() === '' ? '—' : String(label),
+  )
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
   const options = {
     ...baseChartOptions(dark),
     chart: {
       ...baseChartOptions(dark).chart,
       type: 'bar',
+      animations: { enabled: false },
     },
     plotOptions: {
       bar: { horizontal, columnWidth: '55%', barHeight: '70%' },
     },
     colors: [colors.primary],
     xaxis: {
-      categories: xAxis.categories,
-      labels: {
-        ...xAxis.labels,
-        formatter: horizontal
-          ? (v) => Number(v).toLocaleString('en-IN')
-          : xAxis.labels?.formatter,
-      },
+      categories: fullCategories,
+      labels: horizontal
+        ? {
+            formatter: (v) => {
+              const n = Number(v)
+              return Number.isFinite(n) ? n.toLocaleString('en-IN') : String(v ?? '')
+            },
+            style: theme.labelStyle,
+          }
+        : xAxis.labels,
     },
     yaxis: {
       labels: {
-        formatter: (v) => Number(v).toLocaleString('en-IN'),
+        // Horizontal bars: category names sit on the Y-axis — do not Number()-format them.
+        formatter: horizontal
+          ? (v) => String(v ?? '')
+          : (v) => Number(v).toLocaleString('en-IN'),
         style: theme.labelStyle,
       },
     },
@@ -458,7 +461,6 @@ export function LayoutClassDistribution({ data, dark }) {
   const totals = block.totals || data.class_mix || []
   const trend = block.trend || { categories: [], series: [] }
   const byLane = block.by_lane || { lanes: [], series: [] }
-  const [mode, setMode] = useState('count')
   const top = useMemo(() => {
     if (!totals.length) return null
     const total = totals.reduce((sum, row) => sum + (Number(row.count) || 0), 0)
@@ -482,7 +484,9 @@ export function LayoutClassDistribution({ data, dark }) {
         <CardHeader>
           <CardTitle>Class over time</CardTitle>
           <CardDescription>
-            {data.trend_grain === 'hour' ? 'Hourly stacked class mix' : 'Daily stacked class mix'}
+            {data.trend_grain === 'hour'
+              ? 'Hourly class counts as lines'
+              : 'Daily class counts as lines'}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -490,8 +494,9 @@ export function LayoutClassDistribution({ data, dark }) {
             categories={trend.categories}
             series={trend.series}
             dark={dark}
-            chartType="area"
-            height={300}
+            chartType="line"
+            stacked={false}
+            height={320}
           />
         </CardContent>
       </Card>
@@ -512,21 +517,12 @@ export function LayoutClassDistribution({ data, dark }) {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-            <div>
-              <CardTitle>Class × lane</CardTitle>
-              <CardDescription>Stacked distribution per lane</CardDescription>
-            </div>
-            <ModeToggle mode={mode} onChange={setMode} />
+          <CardHeader>
+            <CardTitle>Class × lane</CardTitle>
+            <CardDescription>Counts by vehicle class across lanes</CardDescription>
           </CardHeader>
           <CardContent>
-            <StackedCategoryChart
-              categories={byLane.lanes}
-              series={byLane.series}
-              dark={dark}
-              mode={mode}
-              height={300}
-            />
+            <MatrixTable rowKey="Lane" rows={byLane.lanes} series={byLane.series} />
           </CardContent>
         </Card>
       </div>
@@ -540,8 +536,6 @@ export function LayoutMopDistribution({ data, dark }) {
   const trend = block.trend || { categories: [], series: [] }
   const byLane = block.by_lane || { lanes: [], series: [] }
   const byClass = block.by_class || { classes: [], series: [] }
-  const [laneMode, setLaneMode] = useState('count')
-  const [classMode, setClassMode] = useState('count')
   const top = useMemo(() => {
     if (!totals.length) return null
     const total = totals.reduce((sum, row) => sum + (Number(row.count) || 0), 0)
@@ -565,7 +559,9 @@ export function LayoutMopDistribution({ data, dark }) {
         <CardHeader>
           <CardTitle>MOP over time</CardTitle>
           <CardDescription>
-            {data.trend_grain === 'hour' ? 'Hourly stacked MOP mix' : 'Daily stacked MOP mix'}
+            {data.trend_grain === 'hour'
+              ? 'Hourly MOP counts as lines'
+              : 'Daily MOP counts as lines'}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -573,47 +569,30 @@ export function LayoutMopDistribution({ data, dark }) {
             categories={trend.categories}
             series={trend.series}
             dark={dark}
-            chartType="area"
-            height={300}
+            chartType="line"
+            stacked={false}
+            height={320}
           />
         </CardContent>
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-            <div>
-              <CardTitle>MOP × lane</CardTitle>
-              <CardDescription>Stacked MOP share by lane</CardDescription>
-            </div>
-            <ModeToggle mode={laneMode} onChange={setLaneMode} />
+          <CardHeader>
+            <CardTitle>MOP × lane</CardTitle>
+            <CardDescription>Counts by payment mode across lanes</CardDescription>
           </CardHeader>
           <CardContent>
-            <StackedCategoryChart
-              categories={byLane.lanes}
-              series={byLane.series}
-              dark={dark}
-              mode={laneMode}
-              height={300}
-            />
+            <MatrixTable rowKey="Lane" rows={byLane.lanes} series={byLane.series} />
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-            <div>
-              <CardTitle>MOP × class</CardTitle>
-              <CardDescription>Stacked MOP share by vehicle class</CardDescription>
-            </div>
-            <ModeToggle mode={classMode} onChange={setClassMode} />
+          <CardHeader>
+            <CardTitle>MOP × class</CardTitle>
+            <CardDescription>Counts by payment mode across vehicle classes</CardDescription>
           </CardHeader>
           <CardContent>
-            <StackedCategoryChart
-              categories={byClass.classes}
-              series={byClass.series}
-              dark={dark}
-              mode={classMode}
-              height={300}
-            />
+            <MatrixTable rowKey="Class" rows={byClass.classes} series={byClass.series} />
           </CardContent>
         </Card>
       </div>

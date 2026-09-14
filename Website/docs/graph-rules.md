@@ -42,7 +42,7 @@ Shared helpers: `Website/frontend/src/lib/chart-axis.js`.
 
 1. One area chart **per company**, aggregating **all plazas** under that company.
 2. Monthly points, up to the last **5 years**.
-3. Same max-60 / diagonal-when-over-30 X-axis rules as above.
+3. On portfolio cards, show at most **4** X-axis month labels (still plot every month; tooltip shows the full label). Other category charts keep the max-60 / diagonal-when-over-30 rules.
 
 ## Charts currently covered
 
@@ -53,8 +53,8 @@ Shared helpers: `Website/frontend/src/lib/chart-axis.js`.
 | Plaza → Numbers → Overview | Vehicle class mix | Horizontal bars |
 | Plaza → Numbers → Overview | Lane throughput | Expandable list (not an Apex axis chart) |
 | Plaza → Numbers → Gap | Avg gap / LT2 by lane, gap trend | Min/max = extremes of hourly averages |
-| Plaza → Numbers → Class distribution | Class over time, mix, class × lane | Stacked area/bars; count/% toggle on lane chart |
-| Plaza → Numbers → MOP distribution | MOP over time, MOP × lane, MOP × class | Stacked area/bars; count/% toggles |
+| Plaza → Numbers → Class distribution | Class over time (lines), class mix bar, class × lane table | Lines preferred for low-volume classes |
+| Plaza → Numbers → MOP distribution | MOP over time (lines); MOP × lane / MOP × class tables | Tables only for cross-tabs |
 | Plaza → Numbers → Summary | Totals + MOP×lane / MOP×class / class×lane | Tables + stacked bars |
 | Portfolio | Company volume | Monthly series |
 

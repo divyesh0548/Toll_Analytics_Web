@@ -1,8 +1,0 @@
-run_plaza_etl processing log
-Started: 2026-09-12 18:31:51
-================================================================================
-Plaza identifier: 39d45059-341d-435b-8824-9963b4e2068e
-Plaza: aroli
-Input folder: C:\Divyesh\Toll Analytics Dashboard\Aroli VRNs\aroli
-Files found: 307
-Dry run: False

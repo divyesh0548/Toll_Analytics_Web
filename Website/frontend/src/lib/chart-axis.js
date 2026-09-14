@@ -39,8 +39,12 @@ export function visibleCategoryLabelCount(labels) {
  * Thinned categories + Apex xaxis.labels options.
  * Diagonal (-45°) when more than 30 labels are visible.
  */
-export function categoryXAxis(fullLabels, labelStyle = {}) {
-  const categories = thinCategoryLabels(fullLabels)
+export function categoryXAxis(
+  fullLabels,
+  labelStyle = {},
+  maxLabels = MAX_X_AXIS_LABELS,
+) {
+  const categories = thinCategoryLabels(fullLabels, maxLabels)
   const shown = visibleCategoryLabelCount(categories)
   const diagonal = shown > DIAGONAL_X_AXIS_LABELS
   return {
