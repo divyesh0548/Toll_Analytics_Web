@@ -2,7 +2,7 @@
 Scan a folder (including subfolders) for Excel/CSV files and collect distinct
 vehicle class, lane, and MOP values into a single text file.
 
-Column names are resolved using the mappings from module1.py.
+Column aliases come from Plaza_db_update/config/excel_config.py.
 """
 
 from __future__ import annotations
@@ -13,23 +13,30 @@ from pathlib import Path
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
+PLAZA_DB_UPDATE_DIR = SCRIPT_DIR / "Plaza_db_update"
+sys.path.insert(0, str(PLAZA_DB_UPDATE_DIR))
 
-from module1 import COLUMN_MAPPING, EXCEL_EXTENSIONS, normalize_key
+from config.excel_config import (
+    EXCEL_EXTENSIONS,
+    LANE_COLUMN_ALIASES,
+    MOP_COLUMN_ALIASES,
+    VEHICLE_CLASS_COLUMN_ALIASES,
+    normalize_key,
+)
 
 # ---------------------------------------------------------------------------
 # Inputs — update these before running
 # ---------------------------------------------------------------------------
 
-INPUT_FOLDER = r"C:\Divyesh\NHIT_dashboard_processing\New Dashboard Insights\Input"
+INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Odhaki test"
 OUTPUT_FILE = SCRIPT_DIR / "Distinct Values" / "distinct_values.txt"
 
 HEADER_SCAN_ROWS = 25
 
 FIELD_COLUMN_ALIASES: dict[str, list[str]] = {
-    "vehicle_class": [COLUMN_MAPPING["vehicle_class"], "MVC_TLC_CLASS", "TC Class"],
-    "lane_no": [COLUMN_MAPPING["lane_no"], "Lane No"],
-    "mop": [COLUMN_MAPPING["mop"], "MVC_TLC_MOP"],
+    "vehicle_class": list(VEHICLE_CLASS_COLUMN_ALIASES),
+    "lane_no": list(LANE_COLUMN_ALIASES),
+    "mop": list(MOP_COLUMN_ALIASES),
 }
 
 FIELD_LABELS: dict[str, str] = {
@@ -64,7 +71,7 @@ def all_column_aliases() -> set[str]:
 
 
 def find_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int | None:
-    """Pick the row that best matches module1 column names (same idea as module1.py)."""
+    """Pick the row that best matches excel_config column aliases."""
     targets = all_column_aliases()
     best_row = None
     best_score = 0

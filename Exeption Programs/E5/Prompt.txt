@@ -1,0 +1,5 @@
+Currently there are 12 Exception seeded by program. 
+AdD two more in seed list. 
+
+E13 : Same vehicles get exempted while toll fee is collected at same plaza
+E14 : Same vehicles get exempted under multiple class exemption

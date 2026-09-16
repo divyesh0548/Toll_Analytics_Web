@@ -41,7 +41,11 @@ def create_app(config_name: str | None = None) -> Flask:
         return {"status": "ok"}
 
     from app.services.siteadmin_bootstrap import bootstrap_siteadmin_on_startup
+    from app.services.audit_exception_bootstrap import (
+        bootstrap_audit_exception_types_on_startup,
+    )
 
     bootstrap_siteadmin_on_startup(app)
+    bootstrap_audit_exception_types_on_startup(app)
 
     return app

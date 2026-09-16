@@ -1,0 +1,12 @@
+
+1. First take ETC file and merge it with Permit data file based on veh reg no. 
+
+2. Now get Tc class from VRN file.
+
+3. Journey type normalize 
+
+4. Now get rates from journey type and TC Class. Store in "applicable rate"
+
+5. Now count applicable rate - Net settlement Amt = Loss column
+
+6. Take count where loss is not zero.

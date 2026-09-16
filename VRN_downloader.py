@@ -26,10 +26,10 @@ from db_config import get_db_connection_kwargs, load_env_file, parse_env_date
 # Configuration
 # ---------------------------------------------------------------------------
 
-PLAZA_NAME = "aroli"
-FROM_DATE = "2026-04-01"  # YYYY-MM-DD
+PLAZA_NAME = "odhaki_paipkhar"
+FROM_DATE = "2025-11-20"  # YYYY-MM-DD
 TO_DATE = "2026-08-31"    # YYYY-MM-DD
-OUTPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Aroli VRNs"
+OUTPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs"
 
 DOWNLOAD_TIMEOUT_SECONDS = 120
 SKIP_EXISTING = True

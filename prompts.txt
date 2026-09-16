@@ -1,1 +1,3 @@
-Now all switches and their labels got miss-aligned. Fix them
+Keep "Monthly traffic" chart in Events calender. And please diplay event labels with good styling. Currently they are displayed in vertical shape. In this chart there is no need to display dates diagonally.
+
+And In "Hourly profile · peak hour" chart display hours diagonally, because they are overlapping.

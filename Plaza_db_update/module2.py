@@ -25,6 +25,7 @@ from config.db import (
 from config.excel_config import (
     COLUMN_MAPPING,
     GAP_REQUIRED_FIELDS,
+    LANE_COLUMN_ALIASES,
     LANE_COLUMNS,
     LANE_LT2_COLUMNS,
 )
@@ -42,9 +43,10 @@ from excel_common import (
     create_run_log_file,
     detect_datetime_format,
     find_column,
+    find_column_by_aliases,
     hour_bucket_label,
     is_blank,
-    is_header_detection_error,
+    is_skippable_excel_read_error,
     lane_limit_error_message,
     list_excel_files,
     optional_normalize_lane,
@@ -92,7 +94,7 @@ def validate_dataframe(
     datetime_format: str,
 ) -> list[str]:
     datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
-    lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
+    lane_col = find_column_by_aliases(df, LANE_COLUMN_ALIASES)
 
     invalid_datetimes: dict[str, int] = {}
     unmapped_lanes: dict[str, int] = {}
@@ -133,6 +135,8 @@ def validate_dataframe(
             errors.append(
                 f"Unmapped lane values in '{file_name}' ({lane_col}): "
                 + ", ".join(f"{value!r} ({count} row(s))" for value, count in sorted(remaining.items()))
+                + ". Accepted forms normalize to L01–L12 (e.g. L1 → L01). "
+                "ETL stopped — no fallback remapping is applied."
             )
     return errors
 
@@ -148,7 +152,7 @@ def print_validation_errors(errors: list[str]) -> None:
 
 def prepare_dataframe(df: pd.DataFrame, datetime_format: str) -> pd.DataFrame:
     datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
-    lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
+    lane_col = find_column_by_aliases(df, LANE_COLUMN_ALIASES)
 
     prepared = pd.DataFrame()
     prepared["event_dt"] = df[datetime_col].map(
@@ -281,8 +285,8 @@ def process_file(
     print(f"\nProcessing file: {file_path}")
     try:
         df = read_excel_file(file_path, required_fields=GAP_REQUIRED_FIELDS)
-    except ValueError as exc:
-        if is_header_detection_error(exc):
+    except Exception as exc:
+        if is_skippable_excel_read_error(exc):
             message = f"[SKIP] {file_path} — {exc}"
             print(f"  {message}")
             if run_log is not None:

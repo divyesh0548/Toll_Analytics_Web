@@ -70,6 +70,41 @@ def fetch_existing_columns(conn, table_name: str) -> set[str]:
         return {row[0] for row in cursor.fetchall()}
 
 
+def ensure_unique_constraint(
+    conn,
+    table_name: str,
+    constraint_name: str,
+    columns: list[str],
+) -> None:
+    """Ensure a unique index exists for upsert ON CONFLICT (columns)."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM pg_class idx
+            JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+            WHERE ns.nspname = 'public'
+              AND idx.relkind = 'i'
+              AND idx.relname = %s
+            """,
+            (constraint_name,),
+        )
+        if cursor.fetchone():
+            return
+
+        cursor.execute(
+            sql.SQL(
+                "CREATE UNIQUE INDEX {index_name} ON {table} ({columns})"
+            ).format(
+                index_name=sql.Identifier(constraint_name),
+                table=sql.Identifier(table_name),
+                columns=sql.SQL(", ").join(sql.Identifier(col) for col in columns),
+            )
+        )
+    conn.commit()
+    print(f"Ensured unique index '{constraint_name}' on '{table_name}'.")
+
+
 def _create_table(conn, table_name: str, column_defs: list[str]) -> None:
     create_sql = sql.SQL("CREATE TABLE IF NOT EXISTS {table} ({columns});").format(
         table=sql.Identifier(table_name),
@@ -90,87 +125,106 @@ def _create_table(conn, table_name: str, column_defs: list[str]) -> None:
 
 
 def ensure_mop_distribution_per_class_table(conn, table_name: str) -> None:
-    if fetch_existing_columns(conn, table_name):
+    if not fetch_existing_columns(conn, table_name):
+        _create_table(
+            conn,
+            table_name,
+            [
+                "id BIGSERIAL PRIMARY KEY",
+                "plaza_identifier TEXT NOT NULL",
+                "plaza_name TEXT NOT NULL",
+                "date DATE NOT NULL",
+                "hour TEXT NOT NULL",
+                "vehicle_class TEXT NOT NULL",
+                "mop TEXT NOT NULL",
+                "txn_count INTEGER NOT NULL DEFAULT 0",
+            ],
+        )
+    else:
         print(f"Table '{table_name}' already exists.")
-        return
-    _create_table(
+    ensure_unique_constraint(
         conn,
         table_name,
-        [
-            "id BIGSERIAL PRIMARY KEY",
-            "plaza_identifier TEXT NOT NULL",
-            "plaza_name TEXT NOT NULL",
-            "date DATE NOT NULL",
-            "hour TEXT NOT NULL",
-            "vehicle_class TEXT NOT NULL",
-            "mop TEXT NOT NULL",
-            "txn_count INTEGER NOT NULL DEFAULT 0",
-            "UNIQUE (plaza_identifier, date, hour, vehicle_class, mop)",
-        ],
+        "uq_mop_distribution_per_class",
+        ["plaza_identifier", "date", "hour", "vehicle_class", "mop"],
     )
 
 
 def ensure_class_distribution_per_lane_table(conn, table_name: str) -> None:
-    if fetch_existing_columns(conn, table_name):
+    if not fetch_existing_columns(conn, table_name):
+        _create_table(
+            conn,
+            table_name,
+            [
+                "id BIGSERIAL PRIMARY KEY",
+                "plaza_identifier TEXT NOT NULL",
+                "plaza_name TEXT NOT NULL",
+                "date DATE NOT NULL",
+                "hour TEXT NOT NULL",
+                "lane TEXT NOT NULL",
+                "vehicle_class TEXT NOT NULL",
+                "txn_count INTEGER NOT NULL DEFAULT 0",
+            ],
+        )
+    else:
         print(f"Table '{table_name}' already exists.")
-        return
-    _create_table(
+    ensure_unique_constraint(
         conn,
         table_name,
-        [
-            "id BIGSERIAL PRIMARY KEY",
-            "plaza_identifier TEXT NOT NULL",
-            "plaza_name TEXT NOT NULL",
-            "date DATE NOT NULL",
-            "hour TEXT NOT NULL",
-            "lane TEXT NOT NULL",
-            "vehicle_class TEXT NOT NULL",
-            "txn_count INTEGER NOT NULL DEFAULT 0",
-            "UNIQUE (plaza_identifier, date, hour, lane, vehicle_class)",
-        ],
+        "uq_class_distribution_per_lane",
+        ["plaza_identifier", "date", "hour", "lane", "vehicle_class"],
     )
 
 
 def ensure_mop_distribution_per_lane_table(conn, table_name: str) -> None:
-    if fetch_existing_columns(conn, table_name):
+    if not fetch_existing_columns(conn, table_name):
+        _create_table(
+            conn,
+            table_name,
+            [
+                "id BIGSERIAL PRIMARY KEY",
+                "plaza_identifier TEXT NOT NULL",
+                "plaza_name TEXT NOT NULL",
+                "date DATE NOT NULL",
+                "hour TEXT NOT NULL",
+                "lane TEXT NOT NULL",
+                "mop TEXT NOT NULL",
+                "txn_count INTEGER NOT NULL DEFAULT 0",
+            ],
+        )
+    else:
         print(f"Table '{table_name}' already exists.")
-        return
-    _create_table(
+    ensure_unique_constraint(
         conn,
         table_name,
-        [
-            "id BIGSERIAL PRIMARY KEY",
-            "plaza_identifier TEXT NOT NULL",
-            "plaza_name TEXT NOT NULL",
-            "date DATE NOT NULL",
-            "hour TEXT NOT NULL",
-            "lane TEXT NOT NULL",
-            "mop TEXT NOT NULL",
-            "txn_count INTEGER NOT NULL DEFAULT 0",
-            "UNIQUE (plaza_identifier, date, hour, lane, mop)",
-        ],
+        "uq_mop_distribution_per_lane",
+        ["plaza_identifier", "date", "hour", "lane", "mop"],
     )
 
 
 def ensure_gap_distribution_per_lane_table(conn, table_name: str) -> None:
     existing = fetch_existing_columns(conn, table_name)
-    if existing:
+    if not existing:
+        column_defs = [
+            "id BIGSERIAL PRIMARY KEY",
+            "plaza_identifier TEXT NOT NULL",
+            "plaza_name TEXT NOT NULL",
+            "date DATE NOT NULL",
+            "hour TEXT NOT NULL",
+        ]
+        for column_name in LANE_COLUMNS.values():
+            column_defs.append(f"{column_name} DOUBLE PRECISION")
+        for column_name in LANE_LT2_COLUMNS.values():
+            column_defs.append(f"{column_name} INTEGER NOT NULL DEFAULT 0")
+        _create_table(conn, table_name, column_defs)
+    else:
         print(f"Table '{table_name}' already exists.")
-        return
-
-    column_defs = [
-        "id BIGSERIAL PRIMARY KEY",
-        "plaza_identifier TEXT NOT NULL",
-        "plaza_name TEXT NOT NULL",
-        "date DATE NOT NULL",
-        "hour TEXT NOT NULL",
-    ]
-    for column_name in LANE_COLUMNS.values():
-        column_defs.append(f"{column_name} DOUBLE PRECISION")
-    for column_name in LANE_LT2_COLUMNS.values():
-        column_defs.append(f"{column_name} INTEGER NOT NULL DEFAULT 0")
-    column_defs.append("UNIQUE (plaza_identifier, date, hour)")
-    _create_table(conn, table_name, column_defs)
+    ensure_unique_constraint(
+        conn,
+        table_name,
+        "uq_gap_distribution_per_lane",
+        ["plaza_identifier", "date", "hour"],
+    )
 
 
 def ensure_all_analytics_tables(conn) -> None:

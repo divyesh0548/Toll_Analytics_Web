@@ -24,8 +24,11 @@ from config.db import (
 )
 from config.excel_config import (
     COLUMN_MAPPING,
+    LANE_COLUMN_ALIASES,
     LANE_COLUMNS,
+    MOP_COLUMN_ALIASES,
     TOTAL_TRANSACTION_COLUMN,
+    VEHICLE_CLASS_COLUMN_ALIASES,
     VOLUME_REQUIRED_FIELDS,
 )
 from config.settings import (
@@ -43,9 +46,10 @@ from excel_common import (
     create_run_log_file,
     detect_datetime_format,
     find_column,
+    find_column_by_aliases,
     hour_bucket_label,
     is_blank,
-    is_header_detection_error,
+    is_skippable_excel_read_error,
     lane_limit_error_message,
     list_excel_files,
     optional_normalize_lane,
@@ -58,6 +62,7 @@ from excel_common import (
     try_normalize_vehicle_class,
     try_parse_datetime,
     unsupported_high_lane_counts,
+    is_ignored_mop,
 )
 
 # If True, print prepared hourly rows only — no DB connection or inserts.
@@ -84,9 +89,9 @@ def validate_dataframe(
     Returns a list of validation error messages; empty list means file is safe to insert.
     """
     datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
-    vehicle_col = find_column(df, COLUMN_MAPPING["vehicle_class"])
-    lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
-    mop_col = find_column(df, COLUMN_MAPPING["mop"])
+    vehicle_col = find_column_by_aliases(df, VEHICLE_CLASS_COLUMN_ALIASES)
+    lane_col = find_column_by_aliases(df, LANE_COLUMN_ALIASES)
+    mop_col = find_column_by_aliases(df, MOP_COLUMN_ALIASES)
 
     invalid_datetimes: dict[str, int] = {}
     unmapped_vehicle_classes: dict[str, int] = {}
@@ -116,6 +121,8 @@ def validate_dataframe(
 
         mop_value = row[mop_col]
         if not is_blank(mop_value):
+            if is_ignored_mop(mop_value):
+                continue
             if try_normalize_mop(mop_value) is None:
                 raw_mop = str(mop_value).strip()
                 unmapped_mops[raw_mop] = unmapped_mops.get(raw_mop, 0) + 1
@@ -144,6 +151,8 @@ def validate_dataframe(
             errors.append(
                 f"Unmapped lane values in '{file_name}' ({lane_col}): "
                 + ", ".join(f"{value!r} ({count} row(s))" for value, count in sorted(remaining.items()))
+                + ". Accepted forms normalize to L01–L12 (e.g. L1 → L01). "
+                "ETL stopped — no fallback remapping is applied."
             )
     if unmapped_mops:
         errors.append(
@@ -165,9 +174,9 @@ def print_validation_errors(errors: list[str]) -> None:
 
 def prepare_dataframe(df: pd.DataFrame, datetime_format: str) -> pd.DataFrame:
     datetime_col = find_column(df, COLUMN_MAPPING["datetime"])
-    vehicle_col = find_column(df, COLUMN_MAPPING["vehicle_class"])
-    lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
-    mop_col = find_column(df, COLUMN_MAPPING["mop"])
+    vehicle_col = find_column_by_aliases(df, VEHICLE_CLASS_COLUMN_ALIASES)
+    lane_col = find_column_by_aliases(df, LANE_COLUMN_ALIASES)
+    mop_col = find_column_by_aliases(df, MOP_COLUMN_ALIASES)
 
     prepared = pd.DataFrame()
     prepared["event_dt"] = df[datetime_col].map(
@@ -304,8 +313,8 @@ def process_file(
     print(f"\nProcessing file: {file_path}")
     try:
         df = read_excel_file(file_path, required_fields=VOLUME_REQUIRED_FIELDS)
-    except ValueError as exc:
-        if is_header_detection_error(exc):
+    except Exception as exc:
+        if is_skippable_excel_read_error(exc):
             message = f"[SKIP] {file_path} — {exc}"
             print(f"  {message}")
             if run_log is not None:

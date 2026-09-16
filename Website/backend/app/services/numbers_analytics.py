@@ -36,9 +36,15 @@ MONTH_LABELS = (
 )
 
 
-def _fetch_all(query: str, params: tuple | list) -> list[dict]:
-    with psycopg2.connect(**get_analytics_db_connection_kwargs()) as conn:
+def _fetch_all(query: str, params: tuple | list, conn=None) -> list[dict]:
+    """Run a SELECT. Reuse `conn` when provided (preferred for multi-query requests)."""
+    if conn is not None:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    with psycopg2.connect(**get_analytics_db_connection_kwargs()) as owned:
+        with owned.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
@@ -121,7 +127,95 @@ def _hour_row_sort_key(row: dict) -> tuple:
     return (d, _hour_start(row.get("hour")), str(row.get("hour") or ""))
 
 
-def _data_bounds(plaza_identifier: str) -> tuple[date | None, date | None]:
+def _build_avg_profiles(
+    plaza_identifier: str,
+    win_start: date,
+    win_end: date,
+    daily_trend: list[dict],
+    *,
+    conn=None,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Average traffic across the selected window:
+    - hourly_avg_profile: mean of each hour bucket over all days present
+    - weekday_avg_profile: mean daily traffic for Mon…Sun
+    """
+    hourly_rows = _fetch_all(
+        f"""
+        SELECT hour,
+               AVG(day_hour_traffic)::float AS avg_traffic,
+               MIN(day_hour_traffic)::bigint AS min_traffic,
+               MAX(day_hour_traffic)::bigint AS max_traffic,
+               COUNT(*)::int AS day_count
+        FROM (
+            SELECT date, hour, COALESCE(SUM(txn_count), 0)::bigint AS day_hour_traffic
+            FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+            GROUP BY date, hour
+        ) per_day
+        GROUP BY hour
+        """,
+        (plaza_identifier, win_start, win_end),
+        conn=conn,
+    )
+    hourly_avg_profile = []
+    for r in sorted(hourly_rows, key=lambda row: (_hour_start(row.get("hour")), str(row.get("hour") or ""))):
+        hour = str(r.get("hour") or "")
+        avg_val = float(r["avg_traffic"]) if r.get("avg_traffic") is not None else 0.0
+        hourly_avg_profile.append(
+            {
+                "hour": hour,
+                "label": hour,
+                "avg_traffic": round(avg_val, 1),
+                "min_traffic": int(r["min_traffic"] or 0),
+                "max_traffic": int(r["max_traffic"] or 0),
+                "day_count": int(r["day_count"] or 0),
+            }
+        )
+
+    # Weekday averages from date-level totals (works for day or hour grain trends).
+    by_date_traffic: dict[str, float] = {}
+    by_date_weekday: dict[str, str] = {}
+    for point in daily_trend or []:
+        day_key = point.get("date")
+        if not day_key:
+            continue
+        traffic = point.get("traffic")
+        if traffic is None:
+            continue
+        by_date_traffic[day_key] = by_date_traffic.get(day_key, 0.0) + float(traffic)
+        if day_key not in by_date_weekday and point.get("weekday"):
+            by_date_weekday[day_key] = str(point["weekday"])
+
+    weekday_sums = {name: 0.0 for name in WEEKDAYS}
+    weekday_counts = {name: 0 for name in WEEKDAYS}
+    for day_key, traffic in by_date_traffic.items():
+        name = by_date_weekday.get(day_key)
+        if name not in weekday_sums:
+            d = _as_date(day_key)
+            if d is None:
+                continue
+            name = WEEKDAYS[d.weekday()]
+        weekday_sums[name] += traffic
+        weekday_counts[name] += 1
+
+    weekday_avg_profile = []
+    for name in WEEKDAYS:
+        count = weekday_counts[name]
+        avg_val = (weekday_sums[name] / count) if count else 0.0
+        weekday_avg_profile.append(
+            {
+                "weekday": name,
+                "label": name,
+                "avg_traffic": round(avg_val, 1),
+                "day_count": count,
+            }
+        )
+
+    return hourly_avg_profile, weekday_avg_profile
+
+
+def _data_bounds(plaza_identifier: str, conn=None) -> tuple[date | None, date | None]:
     rows = _fetch_all(
         f"""
         SELECT MIN(date) AS min_date, MAX(date) AS max_date
@@ -129,6 +223,7 @@ def _data_bounds(plaza_identifier: str) -> tuple[date | None, date | None]:
         WHERE plaza_identifier = %s
         """,
         (plaza_identifier,),
+        conn=conn,
     )
     if not rows:
         return None, None
@@ -144,7 +239,7 @@ def _window_for_period(period: str, as_of: date) -> tuple[date, date]:
     return date(as_of.year, as_of.month, 1), as_of
 
 
-def _sum_traffic(plaza_identifier: str, start: date, end: date) -> int:
+def _sum_traffic(plaza_identifier: str, start: date, end: date, conn=None) -> int:
     rows = _fetch_all(
         f"""
         SELECT COALESCE(SUM(txn_count), 0)::bigint AS total
@@ -152,13 +247,56 @@ def _sum_traffic(plaza_identifier: str, start: date, end: date) -> int:
         WHERE plaza_identifier = %s AND date >= %s AND date <= %s
         """,
         (plaza_identifier, start, end),
+        conn=conn,
     )
     return int(rows[0]["total"]) if rows else 0
 
 
-def build_plaza_availability(plaza_identifier: str) -> dict:
+def _sum_traffic_windows(
+    plaza_identifier: str,
+    windows: dict[str, tuple[date, date]],
+    conn=None,
+) -> dict[str, int]:
+    """
+    Sum txn_count for multiple date windows in one query.
+    `windows` maps label -> (start, end). Same totals as repeated `_sum_traffic`.
+    """
+    if not windows:
+        return {}
+
+    select_parts: list[str] = []
+    params: list = []
+    min_start: date | None = None
+    max_end: date | None = None
+    for label, (start, end) in windows.items():
+        select_parts.append(
+            f"COALESCE(SUM(CASE WHEN date >= %s AND date <= %s "
+            f"THEN txn_count ELSE 0 END), 0)::bigint AS {label}"
+        )
+        params.extend([start, end])
+        min_start = start if min_start is None else min(min_start, start)
+        max_end = end if max_end is None else max(max_end, end)
+
+    params.extend([plaza_identifier, min_start, max_end])
+    rows = _fetch_all(
+        f"""
+        SELECT {", ".join(select_parts)}
+        FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+        WHERE plaza_identifier = %s
+          AND date >= %s AND date <= %s
+        """,
+        tuple(params),
+        conn=conn,
+    )
+    if not rows:
+        return {label: 0 for label in windows}
+    row = rows[0]
+    return {label: int(row.get(label) or 0) for label in windows}
+
+
+def build_plaza_availability(plaza_identifier: str, conn=None) -> dict:
     """Distinct dates / months / years with traffic for range pickers."""
-    min_date, max_date = _data_bounds(plaza_identifier)
+    min_date, max_date = _data_bounds(plaza_identifier, conn=conn)
     if min_date is None or max_date is None:
         return {
             "has_data": False,
@@ -178,6 +316,7 @@ def build_plaza_availability(plaza_identifier: str) -> dict:
         ORDER BY date ASC
         """,
         (plaza_identifier,),
+        conn=conn,
     )
     dates: list[str] = []
     for row in date_rows:
@@ -193,6 +332,7 @@ def build_plaza_availability(plaza_identifier: str) -> dict:
         ORDER BY 1 ASC
         """,
         (plaza_identifier,),
+        conn=conn,
     )
     months = []
     for row in month_rows:
@@ -214,6 +354,7 @@ def build_plaza_availability(plaza_identifier: str) -> dict:
         ORDER BY 1 ASC
         """,
         (plaza_identifier,),
+        conn=conn,
     )
     years = [int(r["year"]) for r in year_rows if r.get("year") is not None]
 
@@ -349,6 +490,8 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
             "ytd_end": None,
         },
         "daily_trend": [],
+        "hourly_avg_profile": [],
+        "weekday_avg_profile": [],
         "class_mix": [],
         "mop_mix": [],
         "lane_throughput": [],
@@ -425,103 +568,134 @@ def _build_gap_block(
     *,
     use_hourly: bool,
     span_days: int,
+    conn=None,
 ) -> dict:
     lane_cols = list(LANES.items())  # (L01, l01)
-    select_parts = ["date", "hour"]
-    for _lane, col in lane_cols:
-        select_parts.append(col)
-        select_parts.append(f"{col}_lt2_count")
-    rows = _fetch_all(
-        f"""
-        SELECT {", ".join(select_parts)}
-        FROM {GAP_DISTRIBUTION_TABLE}
-        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
-        ORDER BY date ASC, hour ASC
-        """,
-        (plaza_identifier, win_start, win_end),
-    )
+    if not lane_cols:
+        return {
+            "overall": {"avg": None, "min": None, "max": None, "lt2_count": 0},
+            "by_lane": [],
+            "trend": [],
+        }
 
-    per_lane_values: dict[str, list[float]] = {lane: [] for lane, _ in lane_cols}
-    per_lane_lt2: dict[str, int] = {lane: 0 for lane, _ in lane_cols}
-    trend_buckets: dict[tuple, dict[str, float | int | str | date]] = {}
-
-    for row in rows:
-        d = _as_date(row.get("date"))
-        if d is None:
-            continue
-        hour = str(row.get("hour") or "")
-        if use_hourly:
-            bucket_key = (d, hour)
-        else:
-            bucket_key = (d,)
-
-        bucket = trend_buckets.setdefault(
-            bucket_key,
-            {"date": d, "hour": hour, "sum": 0.0, "n": 0, "lt2": 0},
+    # One UNION ALL of non-null lane readings — same averaging as the prior Python loop.
+    union_parts: list[str] = []
+    for lane, col in lane_cols:
+        union_parts.append(
+            f"""
+            SELECT date, hour, '{lane}' AS lane,
+                   {col}::float AS gap_val,
+                   COALESCE({col}_lt2_count, 0)::bigint AS lt2
+            FROM {GAP_DISTRIBUTION_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+              AND {col} IS NOT NULL
+            """
         )
+    union_sql = " UNION ALL ".join(union_parts)
+    # Each union arm needs the same 3 params.
+    base_params = (plaza_identifier, win_start, win_end)
+    union_params = base_params * len(lane_cols)
 
-        for lane, col in lane_cols:
-            raw = row.get(col)
-            if raw is None:
-                continue
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                continue
-            per_lane_values[lane].append(value)
-            bucket["sum"] = float(bucket["sum"]) + value
-            bucket["n"] = int(bucket["n"]) + 1
-
-            lt2_raw = row.get(f"{col}_lt2_count")
-            try:
-                lt2 = int(lt2_raw or 0)
-            except (TypeError, ValueError):
-                lt2 = 0
-            per_lane_lt2[lane] += lt2
-            bucket["lt2"] = int(bucket["lt2"]) + lt2
-
+    by_lane_rows = _fetch_all(
+        f"""
+        SELECT lane,
+               AVG(gap_val)::float AS avg,
+               MIN(gap_val)::float AS min,
+               MAX(gap_val)::float AS max,
+               COALESCE(SUM(lt2), 0)::bigint AS lt2_count
+        FROM ({union_sql}) AS lane_gaps
+        GROUP BY lane
+        ORDER BY lane ASC
+        """,
+        union_params,
+        conn=conn,
+    )
     by_lane = []
-    all_values: list[float] = []
-    total_lt2 = 0
-    for lane, _ in lane_cols:
-        values = per_lane_values[lane]
-        if not values:
-            continue
-        all_values.extend(values)
-        lt2 = per_lane_lt2[lane]
-        total_lt2 += lt2
+    for row in by_lane_rows:
         by_lane.append(
             {
-                "lane": lane,
-                "avg": round(sum(values) / len(values), 2),
-                "min": round(min(values), 2),
-                "max": round(max(values), 2),
-                "lt2_count": lt2,
+                "lane": str(row["lane"]),
+                "avg": round(float(row["avg"]), 2) if row["avg"] is not None else None,
+                "min": round(float(row["min"]), 2) if row["min"] is not None else None,
+                "max": round(float(row["max"]), 2) if row["max"] is not None else None,
+                "lt2_count": int(row["lt2_count"] or 0),
             }
         )
 
+    overall_rows = _fetch_all(
+        f"""
+        SELECT AVG(gap_val)::float AS avg,
+               MIN(gap_val)::float AS min,
+               MAX(gap_val)::float AS max,
+               COALESCE(SUM(lt2), 0)::bigint AS lt2_count
+        FROM ({union_sql}) AS lane_gaps
+        """,
+        union_params,
+        conn=conn,
+    )
+    overall_row = overall_rows[0] if overall_rows else {}
     overall = {
-        "avg": round(sum(all_values) / len(all_values), 2) if all_values else None,
-        "min": round(min(all_values), 2) if all_values else None,
-        "max": round(max(all_values), 2) if all_values else None,
-        "lt2_count": total_lt2,
+        "avg": (
+            round(float(overall_row["avg"]), 2)
+            if overall_row.get("avg") is not None
+            else None
+        ),
+        "min": (
+            round(float(overall_row["min"]), 2)
+            if overall_row.get("min") is not None
+            else None
+        ),
+        "max": (
+            round(float(overall_row["max"]), 2)
+            if overall_row.get("max") is not None
+            else None
+        ),
+        "lt2_count": int(overall_row.get("lt2_count") or 0),
     }
 
+    if use_hourly:
+        trend_rows = _fetch_all(
+            f"""
+            SELECT date, hour,
+                   AVG(gap_val)::float AS avg_gap,
+                   COALESCE(SUM(lt2), 0)::bigint AS lt2_count
+            FROM ({union_sql}) AS lane_gaps
+            GROUP BY date, hour
+            ORDER BY date ASC, hour ASC
+            """,
+            union_params,
+            conn=conn,
+        )
+    else:
+        trend_rows = _fetch_all(
+            f"""
+            SELECT date,
+                   AVG(gap_val)::float AS avg_gap,
+                   COALESCE(SUM(lt2), 0)::bigint AS lt2_count
+            FROM ({union_sql}) AS lane_gaps
+            GROUP BY date
+            ORDER BY date ASC
+            """,
+            union_params,
+            conn=conn,
+        )
+
     trend = []
-    for key in sorted(trend_buckets.keys(), key=lambda k: (k[0], str(k[1]) if len(k) > 1 else "")):
-        bucket = trend_buckets[key]
-        d = bucket["date"]
-        assert isinstance(d, date)
-        hour = str(bucket.get("hour") or "")
-        n = int(bucket["n"])
-        avg = round(float(bucket["sum"]) / n, 2) if n else None
+    for row in trend_rows:
+        d = _as_date(row.get("date"))
+        if d is None:
+            continue
+        hour = str(row.get("hour") or "") if use_hourly else None
+        avg = row.get("avg_gap")
         trend.append(
             {
                 "date": d.isoformat(),
-                "hour": hour if use_hourly else None,
-                "label": _trend_label(d, hour if use_hourly else None, span_days=span_days, use_hourly=use_hourly),
-                "avg_gap": avg,
-                "lt2_count": int(bucket["lt2"]),
+                "hour": hour,
+                "label": _trend_label(
+                    d, hour if use_hourly else None, span_days=span_days, use_hourly=use_hourly
+                ),
+                "avg_gap": round(float(avg), 2) if avg is not None else None,
+                "lt2_count": int(row.get("lt2_count") or 0),
             }
         )
 
@@ -536,6 +710,7 @@ def _build_class_distribution_block(
     use_hourly: bool,
     span_days: int,
     class_mix: list[dict],
+    conn=None,
 ) -> dict:
     totals = [
         {"vehicle_class": row["vehicle_class"], "count": int(row["count"])}
@@ -553,6 +728,7 @@ def _build_class_distribution_block(
             ORDER BY date ASC, hour ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
     else:
         trend_rows = _fetch_all(
@@ -564,6 +740,7 @@ def _build_class_distribution_block(
             ORDER BY date ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
 
     category_keys: list[tuple] = []
@@ -603,6 +780,7 @@ def _build_class_distribution_block(
         ORDER BY lane ASC, count DESC
         """,
         (plaza_identifier, win_start, win_end),
+        conn=conn,
     )
     lanes: list[str] = []
     lane_values: dict[tuple[str, str], int] = {}
@@ -635,6 +813,7 @@ def _build_mop_distribution_block(
     use_hourly: bool,
     span_days: int,
     mop_mix: list[dict],
+    conn=None,
 ) -> dict:
     totals = [{"mop": row["mop"], "count": int(row["count"])} for row in mop_mix]
     mop_order = [row["mop"] for row in totals]
@@ -649,6 +828,7 @@ def _build_mop_distribution_block(
             ORDER BY date ASC, hour ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
     else:
         trend_rows = _fetch_all(
@@ -660,6 +840,7 @@ def _build_mop_distribution_block(
             ORDER BY date ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
 
     category_keys: list[tuple] = []
@@ -698,6 +879,7 @@ def _build_mop_distribution_block(
         ORDER BY lane ASC, count DESC
         """,
         (plaza_identifier, win_start, win_end),
+        conn=conn,
     )
     lanes: list[str] = []
     lane_values: dict[tuple[str, str], int] = {}
@@ -723,6 +905,7 @@ def _build_mop_distribution_block(
         ORDER BY vehicle_class ASC, count DESC
         """,
         (plaza_identifier, win_start, win_end),
+        conn=conn,
     )
     classes: list[str] = []
     class_values: dict[tuple[str, str], int] = {}
@@ -781,7 +964,25 @@ def build_plaza_numbers(
     if period not in {"day", "mtd", "ytd"}:
         period = "mtd"
 
-    availability = build_plaza_availability(plaza_identifier)
+    with psycopg2.connect(**get_analytics_db_connection_kwargs()) as conn:
+        return _build_plaza_numbers_with_conn(
+            conn,
+            plaza_identifier,
+            period,
+            start=start,
+            end=end,
+        )
+
+
+def _build_plaza_numbers_with_conn(
+    conn,
+    plaza_identifier: str,
+    period: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
+    availability = build_plaza_availability(plaza_identifier, conn=conn)
     min_date = _parse_iso_date(availability.get("min_date"))
     max_date = _parse_iso_date(availability.get("max_date"))
     if min_date is None or max_date is None:
@@ -801,11 +1002,22 @@ def build_plaza_numbers(
     mtd_start, mtd_end = _window_for_period("mtd", max_date)
     ytd_start, ytd_end = _window_for_period("ytd", max_date)
 
-    traffic_period = _sum_traffic(plaza_identifier, win_start, win_end)
-    traffic_today = _sum_traffic(plaza_identifier, day_start, day_end)
-    traffic_mtd = _sum_traffic(plaza_identifier, mtd_start, mtd_end)
-    traffic_ytd = _sum_traffic(plaza_identifier, ytd_start, ytd_end)
-    traffic_ly = _sum_traffic(plaza_identifier, ly_start, ly_end)
+    traffic = _sum_traffic_windows(
+        plaza_identifier,
+        {
+            "traffic_period": (win_start, win_end),
+            "traffic_today": (day_start, day_end),
+            "traffic_mtd": (mtd_start, mtd_end),
+            "traffic_ytd": (ytd_start, ytd_end),
+            "traffic_ly": (ly_start, ly_end),
+        },
+        conn=conn,
+    )
+    traffic_period = traffic["traffic_period"]
+    traffic_today = traffic["traffic_today"]
+    traffic_mtd = traffic["traffic_mtd"]
+    traffic_ytd = traffic["traffic_ytd"]
+    traffic_ly = traffic["traffic_ly"]
 
     mop_rows = _fetch_all(
         f"""
@@ -816,6 +1028,7 @@ def build_plaza_numbers(
         ORDER BY count DESC
         """,
         (plaza_identifier, win_start, win_end),
+        conn=conn,
     )
     mop_mix = [{"mop": r["mop"], "count": int(r["count"])} for r in mop_rows]
     mop_map = {r["mop"]: int(r["count"]) for r in mop_rows}
@@ -839,6 +1052,7 @@ def build_plaza_numbers(
         ORDER BY count DESC
         """,
         (plaza_identifier, win_start, win_end),
+        conn=conn,
     )
     class_ly_rows = _fetch_all(
         f"""
@@ -848,6 +1062,7 @@ def build_plaza_numbers(
         GROUP BY vehicle_class
         """,
         (plaza_identifier, ly_start, ly_end),
+        conn=conn,
     )
     class_ly = {r["vehicle_class"]: int(r["count"]) for r in class_ly_rows}
     class_mix = []
@@ -874,6 +1089,7 @@ def build_plaza_numbers(
         ORDER BY lane ASC
         """,
         (plaza_identifier, win_start, win_end),
+        conn=conn,
     )
     if not lane_rows:
         lane_rows = _fetch_all(
@@ -885,6 +1101,7 @@ def build_plaza_numbers(
             ORDER BY lane ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
     lane_throughput = [{"lane": r["lane"], "count": int(r["count"])} for r in lane_rows]
 
@@ -902,6 +1119,7 @@ def build_plaza_numbers(
             ORDER BY date ASC, hour ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
         hourly_ly_rows = _fetch_all(
             f"""
@@ -912,6 +1130,7 @@ def build_plaza_numbers(
             ORDER BY date ASC, hour ASC
             """,
             (plaza_identifier, ly_start, ly_end),
+            conn=conn,
         )
         ly_by_hour = {}
         for r in hourly_ly_rows:
@@ -950,6 +1169,7 @@ def build_plaza_numbers(
             ORDER BY date ASC
             """,
             (plaza_identifier, win_start, win_end),
+            conn=conn,
         )
         daily_ly_rows = _fetch_all(
             f"""
@@ -960,6 +1180,7 @@ def build_plaza_numbers(
             ORDER BY date ASC
             """,
             (plaza_identifier, ly_start, ly_end),
+            conn=conn,
         )
         ly_by_doy = {}
         for r in daily_ly_rows:
@@ -993,12 +1214,21 @@ def build_plaza_numbers(
             f"{win_start.strftime('%d %b %Y')} → {win_end.strftime('%d %b %Y')}"
         )
 
+    hourly_avg_profile, weekday_avg_profile = _build_avg_profiles(
+        plaza_identifier,
+        win_start,
+        win_end,
+        daily_trend,
+        conn=conn,
+    )
+
     gap = _build_gap_block(
         plaza_identifier,
         win_start,
         win_end,
         use_hourly=use_hourly,
         span_days=span_days,
+        conn=conn,
     )
     class_distribution = _build_class_distribution_block(
         plaza_identifier,
@@ -1007,6 +1237,7 @@ def build_plaza_numbers(
         use_hourly=use_hourly,
         span_days=span_days,
         class_mix=class_mix,
+        conn=conn,
     )
     mop_distribution = _build_mop_distribution_block(
         plaza_identifier,
@@ -1015,6 +1246,7 @@ def build_plaza_numbers(
         use_hourly=use_hourly,
         span_days=span_days,
         mop_mix=mop_mix,
+        conn=conn,
     )
     summary = _build_summary_block(
         mop_mix,
@@ -1053,6 +1285,8 @@ def build_plaza_numbers(
             "ytd_end": ytd_end.isoformat(),
         },
         "daily_trend": daily_trend,
+        "hourly_avg_profile": hourly_avg_profile,
+        "weekday_avg_profile": weekday_avg_profile,
         "class_mix": class_mix,
         "mop_mix": mop_mix,
         "lane_throughput": lane_throughput,

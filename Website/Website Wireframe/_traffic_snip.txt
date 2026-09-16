@@ -1,0 +1,14 @@
+=== Traffic study @549489 ===
+">   Upload  \n     Calendar upload feeds the event tags used across the traffic study tab. \n      Cancel  Save plaza  \n   \n  \n\n  C ? Basic numbers dashboard    \n\n   1g KPI strip over one hero trend \n \n   Company 01 ? Tollway A ?  Palanpur plaza  ? Aug 2026 ? \n    Numbers  Traffic study  Audit exceptions  \n   \n     \n        Revenue today      \n        Revenue MTD      \n        Revenue YTD      \n        Traffic count MTD      \n        ARPT ?/veh      \n     \n     \n        Daily revenue &amp; traffic ? this year vs last year  Rev  Count  vs LY  \n           <polyline p
+
+=== Calendar @549278 ===
+div> Upload  \n       Event calendar (holidays / mela window)     Upload  \n     Calendar upload feeds the event tags used across the traffic study tab. \n      Cancel  Save plaza  \n   \n  \n\n  C ? Basic numbers dashboard    \n\n   1g KPI strip over one hero trend \n \n   Company 01 ? Tollway A ?  Palanpur plaza  ? Aug 2026 ? \n    Numbers  Traffic study  Audit exceptions  \n   \n     \n        Revenue today      \n        Revenue MTD      \n        Revenue YTD      \n        Traffic count MTD      \n        ARPT ?/veh      \n     \n     \n        Daily revenue &amp; traffic ? this year vs last year  Rev  Count  vs LY  \n       <line x1=\"0\" y1=\"88\" x2=\"520\" y2=\"88\" stroke=\"#1a1a1a\" stroke-width=\"1
+
+=== holiday @549288 ===
+lass=\"btn\">Upload  \n       Event calendar (holidays / mela window)     Upload  \n     Calendar upload feeds the event tags used across the traffic study tab. \n      Cancel  Save plaza  \n   \n  \n\n  C ? Basic numbers dashboard    \n\n   1g KPI strip over one hero trend \n \n   Company 01 ? Tollway A ?  Palanpur plaza  ? Aug 2026 ? \n    Numbers  Traffic study  Audit exceptions  \n   \n     \n        Revenue today      \n        Revenue MTD      \n        Revenue YTD      \n        Traffic count MTD      \n        ARPT ?/veh      \n     \n     \n        Daily revenue &amp; traffic ? this year vs last year  Rev  Count  vs LY  \n        <\u00
+
+=== Heatmap @597863 ===
+2Fdiv>\n   \n  \n\n   1o Heatmap ? exception ? day (and ? lane / shift) \n \n   Palanpur plaza ?  Audit exceptions  \n    Numbers  Traffic study  Audit exceptions  \n   \n      Axis  Day  Lane  Shift  Operator    Aug 2026  \n     \n        E-01                                                                  \n        E-02        <span class=\"
+
+=== Peak @566128 ===
+  \n     \n        Hourly profile ? peak hour                                              00h ????????? 23h  \n        Day-of-week index    Mon      Tue      Wed      Thu      Fri <div class=\"ln d\" style=\"flex:0 0 82%;height:8px\

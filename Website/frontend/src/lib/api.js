@@ -43,9 +43,13 @@ async function request(path, options = {}) {
     throw error
   }
 
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
   const headers = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(options.headers || {}),
+  }
+  if (isFormData) {
+    delete headers['Content-Type']
   }
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
@@ -171,6 +175,56 @@ export function getPlazaNumbers(plazaIdentifier, period = 'mtd', range = {}) {
   if (range?.start) params.set('start', range.start)
   if (range?.end) params.set('end', range.end)
   return request(`/api/analytics/plazas/${plazaIdentifier}/numbers?${params.toString()}`)
+}
+
+export function getPlazaAuditExceptions(plazaIdentifier, { year, month } = {}) {
+  const params = new URLSearchParams()
+  if (year != null && year !== '') params.set('year', String(year))
+  if (month != null && month !== '') params.set('month', String(month))
+  const query = params.toString()
+  return request(
+    `/api/plazas/${plazaIdentifier}/audit-exceptions${query ? `?${query}` : ''}`,
+  )
+}
+
+export function getPlazaCalendarEvents(plazaIdentifier, { start, end, eventType } = {}) {
+  const params = new URLSearchParams()
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  if (eventType) params.set('event_type', eventType)
+  const query = params.toString()
+  return request(
+    `/api/plazas/${plazaIdentifier}/calendar-events${query ? `?${query}` : ''}`,
+  )
+}
+
+export function createPlazaCalendarEvent(plazaIdentifier, payload) {
+  return request(`/api/plazas/${plazaIdentifier}/calendar-events`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updatePlazaCalendarEvent(plazaIdentifier, eventId, payload) {
+  return request(`/api/plazas/${plazaIdentifier}/calendar-events/${eventId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deletePlazaCalendarEvent(plazaIdentifier, eventId) {
+  return request(`/api/plazas/${plazaIdentifier}/calendar-events/${eventId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function uploadPlazaCalendarEvents(plazaIdentifier, file) {
+  const body = new FormData()
+  body.append('file', file)
+  return request(`/api/plazas/${plazaIdentifier}/calendar-events/upload`, {
+    method: 'POST',
+    body,
+  })
 }
 
 export function getPortfolioVolume() {

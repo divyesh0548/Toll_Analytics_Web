@@ -15,3 +15,19 @@ On selecting plaza, first display cumulative vehicle count and class wise count,
 
 In compare section display how much volumn is reduced or increaed based on compare periods.
 
+
+
+
+
+
+In given 12 Exceptions these logic are present.
+
+First 3 are exempt query
+1. LNC CT, LNC FT 
+2. NLNC 
+3. commercial
+
+5th is the violation reporting bot
+
+For 6th program is ready to fetch permit data.
+

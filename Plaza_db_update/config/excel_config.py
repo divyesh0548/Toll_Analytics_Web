@@ -8,6 +8,7 @@ import re
 # looks for a separate TIME column and combines the two.
 DATE_COLUMN_ALIASES = [
     "DATE",
+    "Date & Time"
 ]
 
 # Time-only Excel header aliases used with DATE_COLUMN_ALIASES.
@@ -18,14 +19,31 @@ TIME_COLUMN_ALIASES = [
 # MOP / payment-mode Excel header aliases.
 MOP_COLUMN_ALIASES = [
     "MVC MOP",
+    "MVC_TLC_MOP",
     "PAYMENT METHOD",
+    "Payment Method",
+]
+
+# Lane Excel header aliases.
+LANE_COLUMN_ALIASES = [
+    "LANE",
+    "Lane No",
+    "Lane No.",
+]
+
+# Vehicle-class Excel header aliases.
+VEHICLE_CLASS_COLUMN_ALIASES = [
+    "MVC",
+    "TC Class",
+    "MVC_TLC_CLASS",
+    "Operator Class",
 ]
 
 # Excel column name -> logical field
 COLUMN_MAPPING = {
     "datetime": DATE_COLUMN_ALIASES[0],
-    "vehicle_class": "MVC",
-    "lane_no": "LANE",
+    "vehicle_class": VEHICLE_CLASS_COLUMN_ALIASES[0],
+    "lane_no": LANE_COLUMN_ALIASES[0],
     "mop": MOP_COLUMN_ALIASES[0],
 }
 
@@ -41,11 +59,31 @@ EXEMPT_REQUIRED_FIELDS = ("datetime", "lane_no", "mop")
 TOTAL_TRANSACTION_COLUMN = "total_transaction"
 
 # Canonical lane -> (db_column, excel_aliases)
-# Supported lanes are L01…L{MAX_SUPPORTED_LANES}. Extend this map (and DB columns)
-# before processing plazas with more lanes.
+# Standard stored form is always L01…L{MAX_SUPPORTED_LANES}.
+# Aliases such as L1 / L2 are accepted and normalized to L01 / L02.
+# Any other lane value must stop ETL (no heuristic fallback).
 MAX_SUPPORTED_LANES = 12
+
+
+def _lane_aliases(lane_number: int) -> list[str]:
+    padded = f"L{lane_number:02d}"
+    short = f"L{lane_number}"
+    aliases = [padded, short, f"LANE {lane_number}", f"LANE {lane_number:02d}"]
+    # Keep unique while preserving order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for alias in aliases:
+        key = alias.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(alias)
+    return ordered
+
+
 LANE_MAPPINGS: dict[str, tuple[str, list[str]]] = {
-    f"L{i:02d}": (f"l{i:02d}", [f"L{i:02d}"]) for i in range(1, MAX_SUPPORTED_LANES + 1)
+    f"L{i:02d}": (f"l{i:02d}", _lane_aliases(i))
+    for i in range(1, MAX_SUPPORTED_LANES + 1)
 }
 
 # Gap table: per-lane count of gaps strictly under 2 seconds.
@@ -132,6 +170,8 @@ HEADER_KEYWORDS = [
 HEADER_KEYWORDS.extend(DATE_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(TIME_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(MOP_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(LANE_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(VEHICLE_CLASS_COLUMN_ALIASES)
 # Include mapped Excel column names in header detection.
 HEADER_KEYWORDS.extend(COLUMN_MAPPING.values())
 

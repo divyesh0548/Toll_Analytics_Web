@@ -1,12 +1,25 @@
-import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { Info, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
+import { AuditExceptionsPanel, defaultAuditPeriod } from '@/components/plaza/audit-exceptions-panel'
 import { PlazaNumbersDashboard } from '@/components/plaza/numbers-dashboard'
-import { getCompany, getPlaza, getPlazaNumbers, getSpv } from '@/lib/api'
+import {
+  TrafficStudyPanel,
+  defaultTrafficMonth,
+  monthBounds,
+} from '@/components/plaza/traffic-study-panel'
+import {
+  getCompany,
+  getPlaza,
+  getPlazaAuditExceptions,
+  getPlazaCalendarEvents,
+  getPlazaNumbers,
+  getSpv,
+} from '@/lib/api'
 import { cn, formatLocalDateTime } from '@/lib/utils'
 
 const TABS = [
@@ -25,13 +38,17 @@ function defaultRangeForPeriod(period, availability) {
 
 export function PlazaDetailPage() {
   const { plazaIdentifier } = useParams()
+  const [searchParams] = useSearchParams()
+  const initialTab = TABS.some((t) => t.id === searchParams.get('tab'))
+    ? searchParams.get('tab')
+    : 'numbers'
   const [company, setCompany] = useState(null)
   const [spv, setSpv] = useState(null)
   const [plaza, setPlaza] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [infoOpen, setInfoOpen] = useState(false)
-  const [tab, setTab] = useState('numbers')
+  const [tab, setTab] = useState(initialTab)
   const [period, setPeriod] = useState('mtd')
   const [rangeDraft, setRangeDraft] = useState({ start: '', end: '' })
   const [appliedRange, setAppliedRange] = useState({ start: '', end: '' })
@@ -39,6 +56,24 @@ export function PlazaDetailPage() {
   const [numbers, setNumbers] = useState(null)
   const [numbersLoading, setNumbersLoading] = useState(false)
   const [numbersError, setNumbersError] = useState('')
+  const [auditPeriod, setAuditPeriod] = useState(defaultAuditPeriod)
+  const [auditData, setAuditData] = useState(null)
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [auditError, setAuditError] = useState('')
+  const [trafficMonth, setTrafficMonth] = useState(defaultTrafficMonth)
+  const [trafficEvents, setTrafficEvents] = useState([])
+  const [trafficLoading, setTrafficLoading] = useState(false)
+  const [trafficError, setTrafficError] = useState('')
+  const [trafficRefreshKey, setTrafficRefreshKey] = useState(0)
+  const [trafficTrend, setTrafficTrend] = useState([])
+  const [hourlyAvgProfile, setHourlyAvgProfile] = useState([])
+  const [weekdayAvgProfile, setWeekdayAvgProfile] = useState([])
+  const [trafficTrendLoading, setTrafficTrendLoading] = useState(false)
+  const suppressNumbersRefetchRef = useRef(false)
+
+  useEffect(() => {
+    suppressNumbersRefetchRef.current = false
+  }, [plazaIdentifier, period])
 
   useEffect(() => {
     let active = true
@@ -66,20 +101,26 @@ export function PlazaDetailPage() {
 
   useEffect(() => {
     if (!plazaIdentifier || tab !== 'numbers') return undefined
+    if (suppressNumbersRefetchRef.current) {
+      suppressNumbersRefetchRef.current = false
+      return undefined
+    }
     let active = true
     setNumbersLoading(true)
     setNumbersError('')
     ;(async () => {
       try {
-        const range =
-          appliedRange.start && appliedRange.end ? appliedRange : {}
+        const hasAppliedRange = Boolean(appliedRange.start && appliedRange.end)
+        const range = hasAppliedRange ? appliedRange : {}
         const data = await getPlazaNumbers(plazaIdentifier, period, range)
         if (!active) return
         setNumbers(data)
         const selection =
           data.selection || defaultRangeForPeriod(period, data.availability)
         setRangeDraft(selection)
-        if (!appliedRange.start || !appliedRange.end) {
+        if (!hasAppliedRange) {
+          // Hydrate appliedRange from server defaults without triggering a second fetch.
+          suppressNumbersRefetchRef.current = true
           setAppliedRange(selection)
         }
       } catch (err) {
@@ -95,6 +136,91 @@ export function PlazaDetailPage() {
       active = false
     }
   }, [plazaIdentifier, period, tab, appliedRange.start, appliedRange.end])
+
+  useEffect(() => {
+    if (!plazaIdentifier || tab !== 'audit') return undefined
+    let active = true
+    setAuditLoading(true)
+    setAuditError('')
+    ;(async () => {
+      try {
+        const data = await getPlazaAuditExceptions(plazaIdentifier, {
+          year: auditPeriod.year,
+          month: auditPeriod.wholeYear ? undefined : auditPeriod.month,
+        })
+        if (!active) return
+        setAuditData(data)
+      } catch (err) {
+        if (active) {
+          setAuditData(null)
+          setAuditError(err.message || 'Failed to load audit exceptions')
+        }
+      } finally {
+        if (active) setAuditLoading(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [plazaIdentifier, tab, auditPeriod.year, auditPeriod.month, auditPeriod.wholeYear])
+
+  useEffect(() => {
+    if (!plazaIdentifier || tab !== 'traffic') return undefined
+    let active = true
+    const bounds = monthBounds(trafficMonth)
+    setTrafficLoading(true)
+    setTrafficError('')
+    ;(async () => {
+      try {
+        const data = await getPlazaCalendarEvents(plazaIdentifier, {
+          start: bounds.start,
+          end: bounds.end,
+        })
+        if (!active) return
+        setTrafficEvents(data.events || [])
+      } catch (err) {
+        if (active) {
+          setTrafficEvents([])
+          setTrafficError(err.message || 'Failed to load calendar events')
+        }
+      } finally {
+        if (active) setTrafficLoading(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [plazaIdentifier, tab, trafficMonth, trafficRefreshKey])
+
+  useEffect(() => {
+    if (!plazaIdentifier || tab !== 'traffic') return undefined
+    let active = true
+    const bounds = monthBounds(trafficMonth)
+    setTrafficTrendLoading(true)
+    ;(async () => {
+      try {
+        const data = await getPlazaNumbers(plazaIdentifier, 'mtd', {
+          start: bounds.start,
+          end: bounds.end,
+        })
+        if (!active) return
+        setTrafficTrend(data.daily_trend || [])
+        setHourlyAvgProfile(data.hourly_avg_profile || [])
+        setWeekdayAvgProfile(data.weekday_avg_profile || [])
+      } catch {
+        if (active) {
+          setTrafficTrend([])
+          setHourlyAvgProfile([])
+          setWeekdayAvgProfile([])
+        }
+      } finally {
+        if (active) setTrafficTrendLoading(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [plazaIdentifier, tab, trafficMonth])
 
   function handlePeriodChange(nextPeriod) {
     if (nextPeriod === period) return
@@ -239,21 +365,47 @@ export function PlazaDetailPage() {
       )}
 
       {tab === 'traffic' && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Traffic study</CardTitle>
-            <CardDescription>Coming soon — gap and flow analysis will appear here.</CardDescription>
-          </CardHeader>
-        </Card>
+        <TrafficStudyPanel
+          plazaIdentifier={plazaIdentifier}
+          events={trafficEvents}
+          loading={trafficLoading}
+          error={trafficError}
+          monthValue={trafficMonth}
+          onMonthChange={setTrafficMonth}
+          dailyTrend={trafficTrend}
+          hourlyAvgProfile={hourlyAvgProfile}
+          weekdayAvgProfile={weekdayAvgProfile}
+          trafficLoading={trafficTrendLoading}
+          onRefresh={() => setTrafficRefreshKey((k) => k + 1)}
+        />
       )}
 
       {tab === 'audit' && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Audit exceptions</CardTitle>
-            <CardDescription>Coming soon — exception flags will appear here.</CardDescription>
-          </CardHeader>
-        </Card>
+        <AuditExceptionsPanel
+          data={auditData}
+          loading={auditLoading}
+          error={auditError}
+          yearValue={auditPeriod.year}
+          monthValue={auditPeriod.month}
+          wholeYear={auditPeriod.wholeYear}
+          onYearChange={(year) =>
+            setAuditPeriod((prev) => ({ ...prev, year: String(year) }))
+          }
+          onMonthChange={(month) =>
+            setAuditPeriod((prev) => ({ ...prev, month: String(month), wholeYear: false }))
+          }
+          onWholeYearChange={(enabled) =>
+            setAuditPeriod((prev) => {
+              if (enabled) {
+                return { ...prev, wholeYear: true }
+              }
+              const fallback =
+                prev.month ||
+                String(new Date().getMonth() + 1).padStart(2, '0')
+              return { ...prev, wholeYear: false, month: fallback }
+            })
+          }
+        />
       )}
 
       <Dialog
@@ -283,7 +435,10 @@ export function PlazaDetailPage() {
             />
           </div>
           <div className="sm:col-span-2">
-            <ReadonlyField label="Event calendar" value={plaza.event_calendar} />
+            <ReadonlyField
+              label="Event calendar"
+              value="Managed on the Traffic study tab (upload or add events)."
+            />
           </div>
           <ReadonlyField label="Updated" value={formatLocalDateTime(plaza.updated_at)} />
         </div>

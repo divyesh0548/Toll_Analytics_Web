@@ -1,0 +1,47 @@
+{
+  "plaza_identifier": "REPLACE_WITH_PLAZA_UUID",
+  "exception_type_id": 5,
+  "db_dry_run": false,
+  "columns": {
+    "input_vehicle": "Veh Reg No.",
+    "input_class": "Weight_Based_Class",
+    "scraped_vehicle": "Vehicle Number",
+    "scraped_class": "Mapper Vehicle Class"
+  },
+  "class_aliases": {
+    "Truck": [
+      "Truck 2 Axle"
+    ],
+    "Truck3X": [
+      "Truck 3 Axle"
+    ],
+    "MAV": [
+      "Truck 4 Axle",
+      "Truck 5 Axle",
+      "Truck 6 Axle"
+    ],
+    "OSV": [
+      "Truck 7 Axle",
+      "Oversized Vehicle"
+    ],
+    "Bus": [
+      "Bus 2 Axle",
+      "Bus 3 Axle"
+    ],
+    "MiniBus": [
+      "Bus 2 Axle"
+    ],
+    "LCV": [
+      "Light Commercial Vehicle - 2 Axle",
+      "Tata Ace or similar mini LCV"
+    ]
+  },
+  "scrape": {
+    "mobile_number": "9999999999",
+    "plaza_name": "Phulwaria Toll Plaza",
+    "selenium_remote_url": "http://localhost:4444/wd/hub",
+    "max_nodes": 6,
+    "headless": false,
+    "auto_manage_nodes": true
+  }
+}

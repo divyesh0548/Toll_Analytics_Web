@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import pandas as pd
 
-from config.excel_config import COLUMN_MAPPING, MOP_COLUMN_ALIASES, VOLUME_REQUIRED_FIELDS
+from config.excel_config import (
+    LANE_COLUMN_ALIASES,
+    MOP_COLUMN_ALIASES,
+    VEHICLE_CLASS_COLUMN_ALIASES,
+    VOLUME_REQUIRED_FIELDS,
+)
 from config.settings import PLAZA_IDENTIFIER, PLAZA_NAME, START_DATE_LIMIT_DATE
 from excel_common import (
     DatetimeResolution,
-    find_column,
     find_column_by_aliases,
     hour_bucket_label,
     is_blank,
+    is_ignored_mop,
     lane_limit_error_message,
     optional_normalize_lane,
     optional_normalize_mop,
@@ -44,8 +49,8 @@ def validate_dataframe(
 ) -> list[str]:
     datetime_col = datetime_resolution.date_col
     time_col = datetime_resolution.time_col
-    vehicle_col = find_column(df, COLUMN_MAPPING["vehicle_class"])
-    lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
+    vehicle_col = find_column_by_aliases(df, VEHICLE_CLASS_COLUMN_ALIASES)
+    lane_col = find_column_by_aliases(df, LANE_COLUMN_ALIASES)
     mop_col = find_column_by_aliases(df, MOP_COLUMN_ALIASES)
 
     invalid_datetimes: dict[str, int] = {}
@@ -82,6 +87,8 @@ def validate_dataframe(
 
         mop_value = row[mop_col]
         if not is_blank(mop_value):
+            if is_ignored_mop(mop_value):
+                continue
             if try_normalize_mop(mop_value) is None:
                 raw_mop = str(mop_value).strip()
                 unmapped_mops[raw_mop] = unmapped_mops.get(raw_mop, 0) + 1
@@ -122,6 +129,8 @@ def validate_dataframe(
                     f"{value!r} ({count} row(s))"
                     for value, count in sorted(remaining.items())
                 )
+                + ". Accepted forms normalize to L01–L12 (e.g. L1 → L01). "
+                "ETL stopped — no fallback remapping is applied."
             )
     if unmapped_mops:
         errors.append(
@@ -150,8 +159,8 @@ def prepare_dataframe(
     """Normalize one VRN file into shared columns for all insight modules."""
     datetime_col = datetime_resolution.date_col
     time_col = datetime_resolution.time_col
-    vehicle_col = find_column(df, COLUMN_MAPPING["vehicle_class"])
-    lane_col = find_column(df, COLUMN_MAPPING["lane_no"])
+    vehicle_col = find_column_by_aliases(df, VEHICLE_CLASS_COLUMN_ALIASES)
+    lane_col = find_column_by_aliases(df, LANE_COLUMN_ALIASES)
     mop_col = find_column_by_aliases(df, MOP_COLUMN_ALIASES)
 
     if time_col:

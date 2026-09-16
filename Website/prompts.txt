@@ -1,1 +1,7 @@
-In the portfolio page, the company graph writes all month in x-axis, which make them overlap each other. Please show only 3-4 of them.
+I want to store revenue for each plaza per day.
+
+Which is already stored in another database 'snt_form'. 
+
+So create a new table to store revenue for plaza just like "C:\Divyesh\Toll Analytics Dashboard\sync_audit_exception_metrics.py" this program.
+
+Column name in source db 'revenue'.

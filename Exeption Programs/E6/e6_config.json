@@ -1,0 +1,52 @@
+{
+  "header_keywords": [
+    "Agency Txn Id",
+    "Settlement Amount",
+    "Plaza ID",
+    "Violation Amts",
+    "VEH REG NO",
+    "CCH TXN NO",
+    "Veh Reg No.",
+    "TC Class",
+    "Settlement Type",
+    "Journey Type",
+    "MOP",
+    "Date & Time",
+    "MVC_TLC_CLASS",
+    "VEH CLASS",
+    "TRANSACTION NO",
+    "OperatorClass",
+    "TcClass",
+    "Operator Class",
+    "AVC",
+    "MVC MOP",
+    "Violation Flag",
+    "Txn ID",
+    "Violation Amt",
+    "Fare Amount",
+    "Txn Status"
+  ],
+  "header_scan_rows": 25,
+  "min_header_matches": 3,
+  "columns": {
+    "etc_vehicle": "Veh Reg No",
+    "etc_vehicle_aliases": [
+      "Veh Reg No",
+      "Veh Reg No.",
+      "Vehicle Reg No",
+      "Vehicle Number",
+      "Vehicle No",
+      "Reg No",
+      "Licence Plate No"
+    ],
+    "permit_type": "Permit Type",
+    "permit_no": "Permit/Authorization No",
+    "permit_validity": "Permit Validity"
+  },
+  "scrape": {
+    "selenium_remote_url": "http://localhost:4444/wd/hub",
+    "max_nodes": 6,
+    "headless": false,
+    "auto_manage_nodes": true
+  }
+}

@@ -1,5 +1,7 @@
 """SQLAlchemy models."""
 
+from app.models.audit_exception import AuditExceptionMetric, AuditExceptionType
+from app.models.calendar_event import PlazaCalendarEvent
 from app.models.class_distribution_per_lane import ClassDistributionPerLane
 from app.models.company import Company
 from app.models.company_contact import CompanyContact
@@ -16,8 +18,11 @@ __all__ = [
     "CompanyContact",
     "Spv",
     "Plaza",
+    "PlazaCalendarEvent",
     "MopDistributionPerClass",
     "ClassDistributionPerLane",
     "MopDistributionPerLane",
     "GapDistributionPerLane",
+    "AuditExceptionType",
+    "AuditExceptionMetric",
 ]

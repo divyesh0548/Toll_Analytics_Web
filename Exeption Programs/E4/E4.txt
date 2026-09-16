@@ -1,0 +1,13 @@
+Input files : MP.LT pass file, VRN file, Rate file
+
+1. First merge MP/LT pass file. Remove rows with these conditions Pass type = MP and NPCI Vechicle class == VC4.
+
+2. Take TC class lookup from VRN file.
+
+3. Fetch rates based on TC class. (only single journey)
+
+4. Count Trips taken * Rate  = Total charges column
+
+5. Total changes  -  Issueance fees (Take 360 by default if not available)  =  Loss
+
+Total of Loss = Amount, Count = Trips taken

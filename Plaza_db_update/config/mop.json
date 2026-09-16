@@ -1,11 +1,14 @@
 {
+  "ignore": [
+    "Violation"
+  ],
   "cash": {
     "db_column": "mop_cash",
-    "aliases": ["CASH-CASH", "EXEMPT-CASH"]
+    "aliases": ["CASH-CASH", "EXEMPT-CASH", "Cash"]
   },
   "upi": {
     "db_column": "mop_upi",
-    "aliases": ["CASH-STATIC UPI", "CASH-UPI"]
+    "aliases": ["CASH-STATIC UPI", "CASH-UPI", "UPI"]
   },
   "exempt": {
     "db_column": "mop_exempt",
@@ -15,7 +18,8 @@
       "EXEMPT-NA",
       "EXEMPTION",
       "RUNTHROUGH",
-      "RUNTHROUGH-NA"
+      "RUNTHROUGH-NA",
+      "Fleet"
     ]
   },
   "fastag": {
@@ -27,7 +31,12 @@
       "TAG-NA",
       "FASTAG",
       "FAST TAG",
-      "NETC FASTAG"
+      "NETC FASTAG",
+      "ETC"
     ]
+  },
+  "overloading": {
+    "db_column": "mop_overloading",
+    "aliases": ["OVERLOADING"]
   }
 }

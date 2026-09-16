@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { RotateCcw } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { RotateCcw, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -9,7 +9,14 @@ import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { useToast } from '@/components/toast-provider'
-import { createPlaza, getCompany, getPlaza, getSpv, updatePlaza } from '@/lib/api'
+import {
+  createPlaza,
+  getCompany,
+  getPlaza,
+  getSpv,
+  updatePlaza,
+  uploadPlazaCalendarEvents,
+} from '@/lib/api'
 
 const emptyForm = () => ({
   spv_identifier: '',
@@ -27,7 +34,6 @@ const emptyForm = () => ({
   toll_day_cutoff: '',
   om_contractor: '',
   source_daily_tms_report: '',
-  event_calendar: '',
 })
 
 function toForm(plaza) {
@@ -47,7 +53,6 @@ function toForm(plaza) {
     toll_day_cutoff: plaza.toll_day_cutoff || '',
     om_contractor: plaza.om_contractor || '',
     source_daily_tms_report: plaza.source_daily_tms_report || '',
-    event_calendar: plaza.event_calendar || '',
   }
 }
 
@@ -64,6 +69,8 @@ export function PlazaMasterPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const calendarFileRef = useRef(null)
 
   useEffect(() => {
     let active = true
@@ -110,6 +117,25 @@ export function PlazaMasterPage() {
     if (isEdit) return
     setForm({ ...emptyForm(), spv_identifier: spvIdentifier })
     setError('')
+  }
+
+  async function handleCalendarUpload(file) {
+    if (!file || !isEdit || !plazaIdentifier) return
+    setUploading(true)
+    try {
+      const result = await uploadPlazaCalendarEvents(plazaIdentifier, file)
+      const errCount = result.errors?.length || 0
+      showToast(
+        `Calendar upload: ${result.created} created, ${result.skipped} skipped` +
+          (errCount ? `, ${errCount} row error(s)` : ''),
+        errCount ? 'warning' : 'success',
+      )
+    } catch (err) {
+      showToast(err.message || 'Calendar upload failed', 'error')
+    } finally {
+      setUploading(false)
+      if (calendarFileRef.current) calendarFileRef.current.value = ''
+    }
   }
 
   async function handleSubmit(event) {
@@ -308,6 +334,9 @@ export function PlazaMasterPage() {
       <Card>
         <CardHeader>
           <CardTitle>Source & calendar</CardTitle>
+          <CardDescription>
+            Calendar upload feeds the event tags used across the Traffic study tab.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
           <Field label="Source — Daily TMS report">
@@ -316,12 +345,45 @@ export function PlazaMasterPage() {
               onChange={(e) => updateField('source_daily_tms_report', e.target.value)}
             />
           </Field>
-          <Field label="Event calendar (holidays / mela window)">
-            <Textarea
-              value={form.event_calendar}
-              onChange={(e) => updateField('event_calendar', e.target.value)}
-            />
-          </Field>
+          <div className="space-y-2">
+            <Label>Event calendar (holidays / mela window)</Label>
+            {isEdit ? (
+              <>
+                <input
+                  ref={calendarFileRef}
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  className="hidden"
+                  onChange={(e) => handleCalendarUpload(e.target.files?.[0])}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={uploading}
+                    onClick={() => calendarFileRef.current?.click()}
+                  >
+                    <Upload className="h-4 w-4" />
+                    {uploading ? 'Uploading…' : 'Upload'}
+                  </Button>
+                  <Button asChild type="button" variant="ghost">
+                    <Link to={`/companies/spvs/plazas/${plazaIdentifier}?tab=traffic`}>
+                      Manage on Traffic study
+                    </Link>
+                  </Button>
+                </div>
+                <p className="text-small text-muted-foreground">
+                  Accepts .xlsx or .csv with columns start_date, end_date (optional), label,
+                  event_type.
+                </p>
+              </>
+            ) : (
+              <p className="text-body text-muted-foreground">
+                Save the plaza first, then upload the event calendar from Edit plaza or the
+                Traffic study tab.
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 

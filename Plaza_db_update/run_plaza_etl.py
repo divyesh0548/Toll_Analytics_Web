@@ -24,7 +24,7 @@ from excel_common import (
     UnmappedValueError,
     append_run_log,
     create_run_log_file,
-    is_header_detection_error,
+    is_skippable_excel_read_error,
     list_excel_files,
     read_excel_file,
     resolve_datetime_columns,
@@ -48,13 +48,13 @@ DRY_RUN = False
 def process_file(file_path: Path, conn=None, *, dry_run: bool = False, run_log: Path | None = None) -> bool:
     """
     Parse one file and write all insight tables.
-    Returns True if the file was skipped (header issues), False otherwise.
+    Returns True if the file was skipped (header / unreadable workbook), False otherwise.
     """
     print(f"\nProcessing file: {file_path}")
     try:
         df = read_excel_file(file_path, required_fields=REQUIRED_FIELDS)
-    except ValueError as exc:
-        if is_header_detection_error(exc):
+    except Exception as exc:
+        if is_skippable_excel_read_error(exc):
             message = f"[SKIP] {file_path} — {exc}"
             print(f"  {message}")
             if run_log is not None:

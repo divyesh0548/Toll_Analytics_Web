@@ -1,0 +1,177 @@
+"""Docker Selenium Grid helpers for E6 (hub must be running; nodes can be auto-started)."""
+
+from __future__ import annotations
+
+import json
+import math
+import subprocess
+import time
+import urllib.request
+from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
+
+DEFAULT_REMOTE_URL = "http://localhost:4444/wd/hub"
+DEFAULT_HUB_CONTAINER = "selenium-hub"
+DEFAULT_NETWORK = "selenium-grid"
+DEFAULT_NODE_IMAGE = "selenium/node-chrome:latest"
+DEFAULT_NODE_STARTUP_TIMEOUT = 90
+
+
+def build_grid_status_url(remote_url: str) -> str:
+    parsed = urlsplit(remote_url)
+    path = parsed.path or ""
+    if path.endswith("/wd/hub"):
+        path = path[:-7]
+    if not path.endswith("/status"):
+        path = path.rstrip("/") + "/status"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def ensure_grid_ready(remote_url: str, timeout: int = 5) -> None:
+    status_url = build_grid_status_url(remote_url)
+    try:
+        with urllib.request.urlopen(status_url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Could not reach Selenium Grid status endpoint: {status_url}. {exc}"
+        ) from exc
+
+    value = payload.get("value", {})
+    ready = bool(value.get("ready"))
+    nodes = value.get("nodes") or []
+    if not ready:
+        raise RuntimeError(
+            f"Selenium Grid is not ready at {status_url}. "
+            f"ready={ready}, registered_nodes={len(nodes)}"
+        )
+
+
+def split_dataframe(df, max_chunks):
+    if df is None or df.empty:
+        return []
+    chunk_count = max(1, min(int(max_chunks), len(df)))
+    chunk_size = math.ceil(len(df) / chunk_count)
+    return [df.iloc[i : i + chunk_size].copy() for i in range(0, len(df), chunk_size)]
+
+
+def run_docker_command(args, check=True):
+    completed = subprocess.run(args, capture_output=True, text=True, check=False)
+    if check and completed.returncode != 0:
+        raise RuntimeError(
+            f"Docker command failed: {' '.join(args)}\n"
+            f"stdout: {completed.stdout.strip()}\n"
+            f"stderr: {completed.stderr.strip()}"
+        )
+    return completed.stdout.strip()
+
+
+def ensure_network_exists(network_name=DEFAULT_NETWORK):
+    existing = run_docker_command(["docker", "network", "ls", "--format", "{{.Name}}"], check=True)
+    networks = {line.strip() for line in existing.splitlines() if line.strip()}
+    if network_name not in networks:
+        print(f"Creating Docker network: {network_name}")
+        run_docker_command(["docker", "network", "create", network_name], check=True)
+
+
+def ensure_hub_container_running(hub_name=DEFAULT_HUB_CONTAINER):
+    running = run_docker_command(["docker", "ps", "--format", "{{.Names}}"], check=True)
+    running_names = {line.strip() for line in running.splitlines() if line.strip()}
+    if hub_name not in running_names:
+        hint = ""
+        if running_names:
+            hint = f" Running containers: {', '.join(sorted(running_names))}."
+        raise RuntimeError(
+            f"Selenium hub container '{hub_name}' is not running.{hint} "
+            "Start the hub first (e.g. docker compose up -d)."
+        )
+
+
+def ensure_hub_on_network(hub_name=DEFAULT_HUB_CONTAINER, network=DEFAULT_NETWORK):
+    try:
+        raw = run_docker_command(
+            ["docker", "inspect", hub_name, "--format", "{{json .NetworkSettings.Networks}}"],
+            check=True,
+        )
+        networks = json.loads(raw) if raw else {}
+        if network in networks:
+            return
+        print(
+            f"Connecting hub '{hub_name}' to Docker network '{network}' "
+            f"(required for auto-started Chrome nodes)",
+            flush=True,
+        )
+        run_docker_command(["docker", "network", "connect", network, hub_name], check=True)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Could not attach hub '{hub_name}' to network '{network}': {exc}."
+        ) from exc
+
+
+def start_managed_nodes(
+    node_count,
+    hub_name=DEFAULT_HUB_CONTAINER,
+    network=DEFAULT_NETWORK,
+    node_image=DEFAULT_NODE_IMAGE,
+):
+    ensure_network_exists(network)
+    ensure_hub_container_running(hub_name)
+    ensure_hub_on_network(hub_name, network)
+
+    started_nodes = []
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    for index in range(1, node_count + 1):
+        node_name = f"auto-chrome-node-{timestamp}-{index}"
+        print(f"Starting Chrome node: {node_name}", flush=True)
+        run_docker_command(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                node_name,
+                "--network",
+                network,
+                "-e",
+                f"SE_EVENT_BUS_HOST={hub_name}",
+                "-e",
+                "SE_EVENT_BUS_PUBLISH_PORT=4442",
+                "-e",
+                "SE_EVENT_BUS_SUBSCRIBE_PORT=4443",
+                node_image,
+            ],
+            check=True,
+        )
+        started_nodes.append(node_name)
+    return started_nodes
+
+
+def stop_managed_nodes(node_names):
+    for node_name in node_names:
+        try:
+            print(f"Removing Chrome node: {node_name}", flush=True)
+            run_docker_command(["docker", "rm", "-f", node_name], check=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to remove node {node_name}: {exc}", flush=True)
+
+
+def assert_grid_ready(remote_url=DEFAULT_REMOTE_URL):
+    ensure_grid_ready(remote_url)
+
+
+def wait_for_grid_ready(
+    remote_url=DEFAULT_REMOTE_URL,
+    timeout_seconds=DEFAULT_NODE_STARTUP_TIMEOUT,
+):
+    deadline = time.time() + timeout_seconds
+    last_error = None
+    while time.time() < deadline:
+        try:
+            assert_grid_ready(remote_url)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            time.sleep(3)
+    raise RuntimeError(
+        f"Selenium Grid did not become ready within {timeout_seconds}s. {last_error}"
+    )

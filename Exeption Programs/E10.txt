@@ -1,0 +1,20 @@
+1. First take VRN and fetch vehicle weight from checkpost. 
+
+2. Remove some vehicle classes rows. 
+
+3. Remove null weight rows.
+
+4. Run two queries after this.
+
+
+2nd stage
+
+1. Now merge this output with ETC file based on Veh Reg No and datetime. 
+
+2. Remove null and empty weight
+
+3. Remove null weight group
+
+4. Now get all standard weight from another sheet based on weight group. If standard weight is null then keep original weight. Store in "Standard weight"
+
+5. Now based on a custom created column apply weight lookup to a rate sheet and get rate.

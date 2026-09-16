@@ -9,7 +9,7 @@ from config.settings import (
     PLAZA_IDENTIFIER,
     PLAZA_NAME,
 )
-from insights.db_write import insert_new_rows
+from insights.db_write import upsert_rows
 
 DATA_COLUMNS = [
     "plaza_identifier",
@@ -56,7 +56,7 @@ def write(conn, rows: list[dict], *, dry_run: bool = False) -> tuple[int, int]:
     if dry_run:
         print(f"  DRY RUN mop_distribution_per_class: {len(rows)} row(s)")
         return len(rows), 0
-    return insert_new_rows(
+    return upsert_rows(
         conn,
         MOP_DISTRIBUTION_PER_CLASS_TABLE,
         DATA_COLUMNS,

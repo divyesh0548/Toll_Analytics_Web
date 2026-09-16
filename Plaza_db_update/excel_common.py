@@ -23,17 +23,24 @@ from config.excel_config import (
     DATETIME_FORMATS_24H,
     EXCEL_EXTENSIONS,
     HEADER_KEYWORDS,
+    LANE_COLUMN_ALIASES,
     LANE_LOOKUP,
     MAX_SUPPORTED_LANES,
+    MOP_COLUMN_ALIASES,
     TIME_COLUMN_ALIASES,
     TIME_ONLY_FORMATS,
     TIME_ONLY_FORMATS_12H,
     TIME_ONLY_FORMATS_24H,
+    VEHICLE_CLASS_COLUMN_ALIASES,
     normalize_key,
     required_excel_columns,
 )
-from config.mappings import load_mop_mappings, load_vehicle_class_mappings
-from config.excel_config import split_mappings, build_lookup
+from config.mappings import (
+    load_mop_ignore_aliases,
+    load_mop_mappings,
+    load_vehicle_class_mappings,
+)
+from config.excel_config import split_mappings, build_lookup, normalize_key
 
 
 class UnmappedValueError(Exception):
@@ -46,6 +53,10 @@ VEHICLE_CLASS_COLUMNS, VEHICLE_CLASS_NORMALIZATION = split_mappings(VEHICLE_CLAS
 MOP_COLUMNS, MOP_NORMALIZATION = split_mappings(MOP_MAPPINGS)
 VEHICLE_CLASS_LOOKUP = build_lookup(VEHICLE_CLASS_NORMALIZATION)
 MOP_LOOKUP = build_lookup(MOP_NORMALIZATION)
+# Case-insensitive ignore set — these MOP labels are not counted and do not stop ETL.
+MOP_IGNORE_LOOKUP = {
+    normalize_key(alias) for alias in load_mop_ignore_aliases() if normalize_key(alias)
+}
 
 
 def is_blank(value) -> bool:
@@ -377,13 +388,38 @@ def hour_bucket_label(dt: datetime) -> str:
 
 
 def try_normalize_vehicle_class(value):
+    """Map Excel vehicle class to canonical name (case-insensitive)."""
     key = normalize_key(value)
     if not key:
         return None
     return VEHICLE_CLASS_LOOKUP.get(key)
 
 
+def try_normalize_mop(value):
+    """Map Excel MOP to canonical name (case-insensitive). Ignored labels return None."""
+    key = normalize_key(value)
+    if not key:
+        return None
+    if key in MOP_IGNORE_LOOKUP:
+        return None
+    return MOP_LOOKUP.get(key)
+
+
+def is_ignored_mop(value) -> bool:
+    """True when MOP is listed under mop.json 'ignore' (case-insensitive)."""
+    key = normalize_key(value)
+    if not key:
+        return False
+    return key in MOP_IGNORE_LOOKUP
+
+
 def try_normalize_lane(value):
+    """
+    Map raw Excel lane labels to canonical L01…L12.
+
+    Only explicit aliases in LANE_MAPPINGS are accepted (e.g. L1 → L01).
+    Unknown values return None so callers can stop execution.
+    """
     key = normalize_key(value)
     if not key:
         return None
@@ -404,7 +440,7 @@ def extract_lane_number(value) -> int | None:
 def unsupported_high_lane_counts(raw_lane_values: list) -> dict[str, int]:
     """
     Labels that appear to be lane numbers above MAX_SUPPORTED_LANES.
-    Used to stop ETL so new lane columns can be added deliberately.
+    Used only for a clearer stop message — not for remapping.
     """
     found: dict[str, int] = {}
     for value in raw_lane_values:
@@ -427,15 +463,9 @@ def lane_limit_error_message(file_name: str, lane_col: str, high_lane_counts: di
     return (
         f"Plaza has lane(s) beyond supported L01–L{MAX_SUPPORTED_LANES:02d} "
         f"in '{file_name}' ({lane_col}): {details}. "
-        f"Add mappings/columns for the new lanes in config (LANE_MAPPINGS / DB), then rerun."
+        f"Add mappings/columns for the new lanes in config (LANE_MAPPINGS / DB), then rerun. "
+        f"ETL stopped — no fallback remapping is applied."
     )
-
-
-def try_normalize_mop(value):
-    key = normalize_key(value)
-    if not key:
-        return None
-    return MOP_LOOKUP.get(key)
 
 
 def optional_normalize_vehicle_class(value):
@@ -470,18 +500,30 @@ def find_header_row(
     required_fields: tuple[str, ...] | list[str] | None = None,
 ) -> int | None:
     """
-    Find the header row by matching COLUMN_MAPPING Excel names as exact cell values.
+    Find the header row by matching required Excel column names (including aliases)
+    as exact cell values.
 
     This avoids false positives from report metadata rows such as
     'FROM DATE' / 'TO DATE' that only contain DATE as a substring.
     """
     fields = required_fields or list(COLUMN_MAPPING.keys())
-    required_columns = required_excel_columns(fields)
-    required_normalized = [normalize_key(column) for column in required_columns]
+    field_alias_groups: dict[str, list[str]] = {
+        "datetime": DATE_COLUMN_ALIASES,
+        "vehicle_class": VEHICLE_CLASS_COLUMN_ALIASES,
+        "lane_no": LANE_COLUMN_ALIASES,
+        "mop": MOP_COLUMN_ALIASES,
+    }
+    required_alias_groups: list[list[str]] = []
+    for field in fields:
+        aliases = field_alias_groups.get(field)
+        if aliases:
+            required_alias_groups.append(aliases)
+        else:
+            required_alias_groups.append([COLUMN_MAPPING[field]])
 
     best_row = None
     best_score = 0
-    min_score = min(2, len(required_normalized))
+    min_score = min(2, len(required_alias_groups))
 
     for row_index in range(len(df)):
         row_cells = {
@@ -489,7 +531,11 @@ def find_header_row(
             for value in df.iloc[row_index]
             if not pd.isna(value) and str(value).strip()
         }
-        score = sum(1 for column in required_normalized if column in row_cells)
+        score = sum(
+            1
+            for aliases in required_alias_groups
+            if any(normalize_key(alias) in row_cells for alias in aliases)
+        )
         if score > best_score:
             best_score = score
             best_row = row_index
@@ -686,6 +732,31 @@ def list_excel_files(folder_path: Path) -> list[Path]:
 def is_header_detection_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "header" in message and "detect" in message
+
+
+def is_unreadable_workbook_error(exc: Exception) -> bool:
+    """True when Excel/openpyxl cannot open a corrupt or invalid workbook."""
+    message = str(exc).lower()
+    needles = (
+        "could not read stylesheet",
+        "unable to read workbook",
+        "invalid xml",
+        "not a zip file",
+        "bad zip file",
+        "file is not a zip file",
+        "workbook source files contain some invalid",
+        "there is no item named 'xl/styles",
+        "error reading existing file",
+        "content_types",
+        "does not support file format",
+        "excel file format cannot be determined",
+    )
+    return any(needle in message for needle in needles)
+
+
+def is_skippable_excel_read_error(exc: Exception) -> bool:
+    """Header-detection failures and corrupt workbooks should not stop the batch."""
+    return is_header_detection_error(exc) or is_unreadable_workbook_error(exc)
 
 
 def create_run_log_file(insights_dir: Path, module_name: str) -> Path:
