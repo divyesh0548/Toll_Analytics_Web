@@ -1,0 +1,27 @@
+{
+  "header_keywords": [
+    "Veh Reg No",
+    "Veh Reg No.",
+    "Date & Time",
+    "TC Class",
+    "Vehicle Class",
+    "Description",
+    "Lane",
+    "Transaction Date",
+    "CCH Transaction ID",
+    "Plaza"
+  ],
+  "header_scan_rows": 25,
+  "min_header_matches": 3,
+  "merge_columns": {
+    "vehicle_reg_no": [
+      "Veh Reg No.",
+      "Veh Reg No",
+      "Vehicle Reg No"
+    ],
+    "tc_class": [
+      "TC Class",
+      "TcClass"
+    ]
+  }
+}

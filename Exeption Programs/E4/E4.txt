@@ -1,6 +1,6 @@
 Input files : MP.LT pass file, VRN file, Rate file
 
-1. First merge MP/LT pass file. Remove rows with these conditions Pass type = MP and NPCI Vechicle class == VC4.
+1. First merge MP/LT pass file. Remove rows with these conditions Pass type = MP and NPCI Vechicle class == VC4/ Car/Jeep/Van.
 
 2. Take TC class lookup from VRN file.
 
@@ -11,3 +11,14 @@ Input files : MP.LT pass file, VRN file, Rate file
 5. Total changes  -  Issueance fees (Take 360 by default if not available)  =  Loss
 
 Total of Loss = Amount, Count = Trips taken
+
+
+If trips taken not present.
+
+1. First expand all dates berween pass start/end date. 
+
+2. Then take ETC file of those months.
+
+3. Then match expanded dates, ETC date and Veh reg no.
+
+4. Number of matches will be trips for that veh reg no.

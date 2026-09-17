@@ -7,7 +7,11 @@ from flask import Blueprint, jsonify, request
 from app.models.company import Company
 from app.models.plaza import Plaza
 from app.services.auth_tokens import get_current_user
-from app.services.numbers_analytics import build_plaza_numbers, build_portfolio_volume
+from app.services.numbers_analytics import (
+    build_plaza_numbers,
+    build_portfolio_rollup,
+    build_portfolio_volume,
+)
 from app.utils.api_log import log_fail, log_ok
 
 analytics_bp = Blueprint("analytics", __name__)
@@ -71,4 +75,24 @@ def portfolio_volume():
         return jsonify({"error": str(exc)}), 500
 
     log_ok(f"portfolio volume for {len(company_dicts)} companies")
+    return jsonify(payload)
+
+
+@analytics_bp.get("/portfolio/rollup")
+def portfolio_rollup():
+    companies = Company.query.order_by(Company.company_name.asc()).all()
+    company_dicts = [
+        {
+            "company_identifier": c.company_identifier,
+            "company_name": c.company_name,
+        }
+        for c in companies
+    ]
+    try:
+        payload = build_portfolio_rollup(company_dicts)
+    except Exception as exc:  # noqa: BLE001
+        log_fail(f"portfolio rollup failed: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+    log_ok(f"portfolio rollup for {len(company_dicts)} companies ({payload.get('year')})")
     return jsonify(payload)

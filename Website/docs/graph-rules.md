@@ -14,17 +14,25 @@ Rules for ApexCharts used on the Toll Analytics website (plaza Numbers Overview,
 - Last-year comparison uses the same calendar day (and hour, when hourly) from the prior year.
 - Chart title switches between **Hourly traffic** and **Daily traffic**.
 
-## X-axis label density (max 60)
+## X-axis label density
 
 Applies to **all** category charts that use `categoryXAxis` / `thinCategoryLabels`.
 
-1. Cap **visible** X-axis labels at **60**.
-2. If there are more than 60 data points, show every **2nd** label (alternate).
-3. If still more than 60 visible labels, double the step again (every 4th, then 8th, …) until ≤ 60 labels.
-4. **All data points stay plotted**; only axis label text is thinned (blanked).
-5. Tooltips always show the **full** category label for the hovered point.
+1. Cap **visible** X-axis labels at **60** for full-width charts.
+2. Cap at **30** for half-width charts (≈50% layout). Constant: `HALF_WIDTH_MAX_X_AXIS_LABELS`.
+3. **Revenue — daily** is full-width and uses the standard **60**-label cap (`MAX_X_AXIS_LABELS`).
+4. If there are more than the cap, show every **2nd** label (alternate).
+5. If still over the cap, double the step again (every 4th, then 8th, …) until ≤ the cap.
+6. **All data points stay plotted**; only axis label text is thinned (blanked).
+7. Tooltips always show the **full** category label for the hovered point.
 
 Shared helpers: `Website/frontend/src/lib/chart-axis.js`.
+
+## Month bands (more than 3 months)
+
+1. When a daily series spans **more than 3 calendar months**, show month **group labels under** the ticks (`xaxis.group`).
+2. Day tick text switches to `12 Jan` style so the month is readable.
+3. Do **not** draw vertical month-start annotation lines above the plot.
 
 ## Diagonal labels (more than 30)
 
@@ -62,3 +70,4 @@ Shared helpers: `Website/frontend/src/lib/chart-axis.js`.
 
 - KPI cards and plain tables (not Apex time-series axes).
 - Revenue Numbers tab (placeholder; no graphs yet).
++ KPI cards use lac/crore compact money formatting for revenue totals (ARPT stays in ₹).

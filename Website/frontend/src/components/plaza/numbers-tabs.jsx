@@ -1,11 +1,27 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import Chart from 'react-apexcharts'
+import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { categoryTooltipXFormatter, categoryXAxis } from '@/lib/chart-axis'
+import {
+  categoryTooltipXFormatter,
+  categoryXAxis,
+  dayMonthLabel,
+  monthAxisGroups,
+  uniqueMonthCount,
+} from '@/lib/chart-axis'
+import { cn } from '@/lib/utils'
 
 export function formatCount(value) {
   if (value == null) return '—'
   return Number(value).toLocaleString('en-IN')
+}
+
+export function formatMoney(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return Number(value).toLocaleString('en-IN', {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  })
 }
 
 export function formatPct(value) {
@@ -87,11 +103,24 @@ function StackedCategoryChart({
   mode = 'count',
   stacked = true,
   chartType = 'bar',
+  isoDates = null,
+  xAxisTitle = null,
+  yAxisTitle = null,
 }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
-  const fullCategories = categories || []
+  const alignedDates =
+    !horizontal && Array.isArray(isoDates) && isoDates.length === (categories || []).length
+      ? isoDates
+      : null
+  const fullCategories =
+    alignedDates && uniqueMonthCount(alignedDates) > 3
+      ? alignedDates.map((iso) => dayMonthLabel(iso))
+      : categories || []
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
+  const monthGroups = alignedDates
+    ? monthAxisGroups(alignedDates, theme.labelStyle)
+    : undefined
   const displaySeries = (series || [])
     .filter((row) => row && Array.isArray(row.data))
     .map((row) => ({
@@ -106,6 +135,11 @@ function StackedCategoryChart({
   const isArea = chartType === 'area'
   const isLine = chartType === 'line'
   const useStack = stacked && (isBar || isArea)
+  const countUnit = mode === 'pct' ? '%' : 'vehicles'
+  const resolvedYTitle =
+    yAxisTitle ||
+    (mode === 'pct' ? 'Share (%)' : horizontal ? null : 'Traffic (vehicles)')
+  const resolvedXTitle = xAxisTitle || (horizontal ? 'Traffic (vehicles)' : null)
 
   const options = {
     ...baseChartOptions(dark),
@@ -136,7 +170,12 @@ function StackedCategoryChart({
       : {}),
     colors: colors.series,
     xaxis: {
+      type: 'category',
       categories: xAxis.categories,
+      ...(resolvedXTitle
+        ? { title: { text: resolvedXTitle, style: { color: theme.foreColor, fontSize: '12px' } } }
+        : {}),
+      ...(monthGroups ? { group: monthGroups } : {}),
       labels: {
         ...xAxis.labels,
         ...(horizontal && mode === 'count'
@@ -146,6 +185,9 @@ function StackedCategoryChart({
     },
     yaxis: {
       ...(mode === 'pct' && isBar && !horizontal ? { max: 100 } : {}),
+      ...(resolvedYTitle
+        ? { title: { text: resolvedYTitle, style: { color: theme.foreColor } } }
+        : {}),
       labels: {
         formatter: (v) =>
           mode === 'pct'
@@ -167,7 +209,7 @@ function StackedCategoryChart({
         formatter: (v) =>
           mode === 'pct'
             ? `${Number(v).toFixed(1)}%`
-            : Number(v).toLocaleString('en-IN'),
+            : `${Number(v).toLocaleString('en-IN')} ${countUnit}`,
       },
     },
   }
@@ -187,13 +229,30 @@ function StackedCategoryChart({
   )
 }
 
-function SimpleBarChart({ categories, values, dark, height = 240, horizontal = false }) {
+function SimpleBarChart({
+  categories,
+  values,
+  dark,
+  height = 240,
+  horizontal = false,
+  xAxisTitle = null,
+  yAxisTitle = null,
+  sortAscending = false,
+}) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
-  const fullCategories = (categories || []).map((label) =>
-    label == null || String(label).trim() === '' ? '—' : String(label),
-  )
+  let pairs = (categories || []).map((label, idx) => ({
+    label: label == null || String(label).trim() === '' ? '—' : String(label),
+    value: Number(values?.[idx]) || 0,
+  }))
+  if (sortAscending) {
+    pairs = [...pairs].sort((a, b) => a.value - b.value)
+  }
+  const fullCategories = pairs.map((p) => p.label)
+  const chartValues = pairs.map((p) => p.value)
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
+  const resolvedXTitle = xAxisTitle || (horizontal ? 'Traffic (vehicles)' : null)
+  const resolvedYTitle = yAxisTitle || (horizontal ? null : 'Traffic (vehicles)')
   const options = {
     ...baseChartOptions(dark),
     chart: {
@@ -207,6 +266,9 @@ function SimpleBarChart({ categories, values, dark, height = 240, horizontal = f
     colors: [colors.primary],
     xaxis: {
       categories: fullCategories,
+      ...(resolvedXTitle
+        ? { title: { text: resolvedXTitle, style: { color: theme.foreColor, fontSize: '12px' } } }
+        : {}),
       labels: horizontal
         ? {
             formatter: (v) => {
@@ -218,6 +280,9 @@ function SimpleBarChart({ categories, values, dark, height = 240, horizontal = f
         : xAxis.labels,
     },
     yaxis: {
+      ...(resolvedYTitle
+        ? { title: { text: resolvedYTitle, style: { color: theme.foreColor } } }
+        : {}),
       labels: {
         // Horizontal bars: category names sit on the Y-axis — do not Number()-format them.
         formatter: horizontal
@@ -229,7 +294,10 @@ function SimpleBarChart({ categories, values, dark, height = 240, horizontal = f
     tooltip: {
       theme: theme.tooltipTheme,
       x: { formatter: categoryTooltipXFormatter(fullCategories) },
-      y: { formatter: (v) => Number(v).toLocaleString('en-IN') },
+      y: {
+        formatter: (v) =>
+          v == null ? '—' : `${Number(v).toLocaleString('en-IN')} vehicles`,
+      },
     },
   }
   if (!fullCategories.length) {
@@ -238,7 +306,7 @@ function SimpleBarChart({ categories, values, dark, height = 240, horizontal = f
   return (
     <Chart
       options={options}
-      series={[{ name: 'Count', data: values || [] }]}
+      series={[{ name: 'Traffic (vehicles)', data: chartValues }]}
       type="bar"
       height={height}
     />
@@ -248,8 +316,16 @@ function SimpleBarChart({ categories, values, dark, height = 240, horizontal = f
 function GapTrendChart({ trend, dark, height = 260 }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
-  const fullCategories = (trend || []).map((row) => row.label)
+  const isoDates = (trend || []).map((row) => row.date)
+  const hasAlignedDates = isoDates.every(Boolean) && isoDates.length === (trend || []).length
+  const fullCategories =
+    hasAlignedDates && uniqueMonthCount(isoDates) > 3
+      ? isoDates.map((iso) => dayMonthLabel(iso))
+      : (trend || []).map((row) => row.label)
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
+  const monthGroups = hasAlignedDates
+    ? monthAxisGroups(isoDates, theme.labelStyle)
+    : undefined
   const options = {
     ...baseChartOptions(dark),
     chart: {
@@ -260,12 +336,14 @@ function GapTrendChart({ trend, dark, height = 260 }) {
     stroke: { width: [3, 2], curve: 'smooth' },
     colors: [colors.primary, colors.danger],
     xaxis: {
+      type: 'category',
       categories: xAxis.categories,
       labels: xAxis.labels,
+      ...(monthGroups ? { group: monthGroups } : {}),
     },
     yaxis: [
       {
-        title: { text: 'Avg gap (s)', style: { color: theme.foreColor } },
+        title: { text: 'Avg gap (seconds)', style: { color: theme.foreColor } },
         labels: {
           formatter: (v) => Number(v).toFixed(1),
           style: theme.labelStyle,
@@ -273,7 +351,7 @@ function GapTrendChart({ trend, dark, height = 260 }) {
       },
       {
         opposite: true,
-        title: { text: 'LT2 count', style: { color: theme.foreColor } },
+        title: { text: 'Gaps < 2s (count)', style: { color: theme.foreColor } },
         labels: {
           formatter: (v) => Number(v).toLocaleString('en-IN'),
           style: theme.labelStyle,
@@ -297,8 +375,8 @@ function GapTrendChart({ trend, dark, height = 260 }) {
     <Chart
       options={options}
       series={[
-        { name: 'Avg gap', data: trend.map((row) => row.avg_gap) },
-        { name: 'Gaps < 2s', data: trend.map((row) => row.lt2_count) },
+        { name: 'Avg gap (s)', data: trend.map((row) => row.avg_gap) },
+        { name: 'Gaps < 2s (count)', data: trend.map((row) => row.lt2_count) },
       ]}
       type="line"
       height={height}
@@ -308,39 +386,99 @@ function GapTrendChart({ trend, dark, height = 260 }) {
 
 function MatrixTable({ rowKey, rows, series, valueLabel = 'count' }) {
   const columns = (series || []).map((item) => item.name)
+  const [sort, setSort] = useState({ key: 'total', dir: 'desc' })
+
+  const tableRows = useMemo(() => {
+    const built = (rows || []).map((rowLabel, rowIndex) => {
+      const cells = (series || []).map((item) => Number(item.data?.[rowIndex]) || 0)
+      const total = cells.reduce((sum, n) => sum + n, 0)
+      return { rowLabel: String(rowLabel ?? ''), cells, total }
+    })
+    if (!sort.key) return built
+
+    const dir = sort.dir === 'asc' ? 1 : -1
+    return [...built].sort((a, b) => {
+      if (sort.key === 'row') {
+        return a.rowLabel.localeCompare(b.rowLabel, undefined, { sensitivity: 'base' }) * dir
+      }
+      if (sort.key === 'total') {
+        return (a.total - b.total) * dir
+      }
+      const colIndex = columns.indexOf(sort.key)
+      if (colIndex < 0) return 0
+      return ((a.cells[colIndex] || 0) - (b.cells[colIndex] || 0)) * dir
+    })
+  }, [rows, series, columns, sort])
+
+  function toggleSort(key) {
+    setSort((prev) => {
+      if (prev.key === key) {
+        return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      }
+      return { key, dir: key === 'row' ? 'asc' : 'desc' }
+    })
+  }
+
+  function SortIcon({ active, dir }) {
+    if (!active) return <ArrowUpDown className="h-3.5 w-3.5 opacity-40" />
+    if (dir === 'asc') return <ArrowUp className="h-3.5 w-3.5" />
+    return <ArrowDown className="h-3.5 w-3.5" />
+  }
+
+  function SortHeader({ label, sortKey, align = 'left' }) {
+    const active = sort.key === sortKey
+    return (
+      <th className={cn('px-2 py-2 font-medium', align === 'right' && 'text-right')}>
+        <button
+          type="button"
+          onClick={() => toggleSort(sortKey)}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-sm hover:text-foreground',
+            active ? 'text-foreground' : 'text-muted-foreground',
+            align === 'right' && 'flex-row-reverse',
+          )}
+          title={`Sort by ${label}`}
+        >
+          <span>{label}</span>
+          <SortIcon active={active} dir={sort.dir} />
+        </button>
+      </th>
+    )
+  }
+
   if (!rows?.length || !columns.length) {
     return <p className="text-body text-muted-foreground">No cross-tab data.</p>
   }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[28rem] border-collapse text-left text-small">
         <thead>
           <tr className="border-b border-border text-muted-foreground">
-            <th className="px-2 py-2 font-medium">{rowKey}</th>
+            <SortHeader label={rowKey} sortKey="row" />
             {columns.map((col) => (
-              <th key={col} className="px-2 py-2 font-medium">
-                {col}
-              </th>
+              <SortHeader key={col} label={col} sortKey={col} align="right" />
             ))}
-            <th className="px-2 py-2 font-medium">Total</th>
+            <SortHeader label="Total" sortKey="total" align="right" />
           </tr>
         </thead>
         <tbody>
-          {rows.map((rowLabel, rowIndex) => {
-            const cells = (series || []).map((item) => Number(item.data?.[rowIndex]) || 0)
-            const total = cells.reduce((sum, n) => sum + n, 0)
-            return (
-              <tr key={rowLabel} className="border-b border-border/70">
-                <td className="px-2 py-2 font-medium">{rowLabel}</td>
-                {cells.map((value, index) => (
-                  <td key={`${rowLabel}-${columns[index]}`} className="px-2 py-2">
-                    {valueLabel === 'gap' ? formatGapSec(value) : formatCount(value)}
-                  </td>
-                ))}
-                <td className="px-2 py-2 font-medium">{formatCount(total)}</td>
-              </tr>
-            )
-          })}
+          {tableRows.map((row) => (
+            <tr key={row.rowLabel} className="border-b border-border/70">
+              <td className="px-2 py-2 font-medium">{row.rowLabel}</td>
+              {row.cells.map((value, index) => (
+                <td
+                  key={`${row.rowLabel}-${columns[index]}`}
+                  className="px-2 py-2 text-right tabular-nums"
+                >
+                  {valueLabel === 'gap' ? formatGapSec(value) : formatCount(value)}
+                </td>
+              ))}
+              <td className="px-2 py-2 text-right font-medium tabular-nums">
+                {formatCount(row.total)}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -493,6 +631,7 @@ export function LayoutClassDistribution({ data, dark }) {
           <StackedCategoryChart
             categories={trend.categories}
             series={trend.series}
+            isoDates={trend.dates}
             dark={dark}
             chartType="line"
             stacked={false}
@@ -568,6 +707,7 @@ export function LayoutMopDistribution({ data, dark }) {
           <StackedCategoryChart
             categories={trend.categories}
             series={trend.series}
+            isoDates={trend.dates}
             dark={dark}
             chartType="line"
             stacked={false}
@@ -621,6 +761,8 @@ export function LayoutSummary({ data, dark }) {
               categories={byMop.map((row) => row.mop)}
               values={byMop.map((row) => row.count)}
               dark={dark}
+              sortAscending
+              xAxisTitle={null}
               height={220}
             />
           </CardContent>

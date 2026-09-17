@@ -230,3 +230,7 @@ export function uploadPlazaCalendarEvents(plazaIdentifier, file) {
 export function getPortfolioVolume() {
   return request('/api/analytics/portfolio/volume')
 }
+
+export function getPortfolioRollup() {
+  return request('/api/analytics/portfolio/rollup')
+}

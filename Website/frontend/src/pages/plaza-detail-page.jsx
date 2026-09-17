@@ -11,6 +11,7 @@ import {
   TrafficStudyPanel,
   defaultTrafficMonth,
   monthBounds,
+  resolveTrafficMonth,
 } from '@/components/plaza/traffic-study-panel'
 import {
   getCompany,
@@ -69,11 +70,17 @@ export function PlazaDetailPage() {
   const [hourlyAvgProfile, setHourlyAvgProfile] = useState([])
   const [weekdayAvgProfile, setWeekdayAvgProfile] = useState([])
   const [trafficTrendLoading, setTrafficTrendLoading] = useState(false)
+  const [trafficAvailability, setTrafficAvailability] = useState(null)
   const suppressNumbersRefetchRef = useRef(false)
 
   useEffect(() => {
     suppressNumbersRefetchRef.current = false
   }, [plazaIdentifier, period])
+
+  useEffect(() => {
+    setTrafficMonth(defaultTrafficMonth())
+    setTrafficAvailability(null)
+  }, [plazaIdentifier])
 
   useEffect(() => {
     let active = true
@@ -207,6 +214,7 @@ export function PlazaDetailPage() {
         setTrafficTrend(data.daily_trend || [])
         setHourlyAvgProfile(data.hourly_avg_profile || [])
         setWeekdayAvgProfile(data.weekday_avg_profile || [])
+        if (data.availability) setTrafficAvailability(data.availability)
       } catch {
         if (active) {
           setTrafficTrend([])
@@ -221,6 +229,11 @@ export function PlazaDetailPage() {
       active = false
     }
   }, [plazaIdentifier, tab, trafficMonth])
+
+  useEffect(() => {
+    if (!trafficAvailability?.months?.length) return
+    setTrafficMonth((prev) => resolveTrafficMonth(trafficAvailability, prev))
+  }, [trafficAvailability])
 
   function handlePeriodChange(nextPeriod) {
     if (nextPeriod === period) return
@@ -241,6 +254,13 @@ export function PlazaDetailPage() {
     if (start > end) {
       ;[start, end] = [end, start]
       setRangeDraft({ start, end })
+    }
+    if (period === 'day') {
+      const startDate = new Date(`${start}T00:00:00`)
+      const endDate = new Date(`${end}T00:00:00`)
+      const span =
+        Math.floor((endDate.getTime() - startDate.getTime()) / 86400000) + 1
+      if (span < 5) return
     }
     setAppliedRange({ start, end })
   }
@@ -372,6 +392,8 @@ export function PlazaDetailPage() {
           error={trafficError}
           monthValue={trafficMonth}
           onMonthChange={setTrafficMonth}
+          availableMonths={trafficAvailability?.months || []}
+          availableYears={trafficAvailability?.years || []}
           dailyTrend={trafficTrend}
           hourlyAvgProfile={hourlyAvgProfile}
           weekdayAvgProfile={weekdayAvgProfile}

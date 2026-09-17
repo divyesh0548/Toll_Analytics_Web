@@ -1,0 +1,9 @@
+1. From plaza = exempt file, To plaza = VRN file 
+
+2. Provide these files to python program.
+
+3. Output will be 5 files, last one will be combined output.
+
+4. Now get get rate based on TC Class and journey type. Store in applicable rate column. In rates file change single journey --> First jouney.
+
+5. Toal Amount = Total of Applicable rate.

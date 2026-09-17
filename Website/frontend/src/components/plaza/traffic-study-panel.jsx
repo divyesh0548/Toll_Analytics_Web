@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Chart from 'react-apexcharts'
-import { CalendarDays, ChevronLeft, ChevronRight, Pencil, Plus, Trash2, Upload } from 'lucide-react'
+import { CalendarDays, Download, Loader2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
 import { useAuth } from '@/components/auth-provider'
 import { useTheme } from '@/components/theme-provider'
 import { useToast } from '@/components/toast-provider'
@@ -20,7 +20,7 @@ import {
   updatePlazaCalendarEvent,
   uploadPlazaCalendarEvents,
 } from '@/lib/api'
-import { categoryTooltipXFormatter, categoryXAxis } from '@/lib/chart-axis'
+import { categoryTooltipXFormatter } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 
 export const EVENT_TYPE_OPTIONS = [
@@ -75,10 +75,15 @@ export function defaultTrafficMonth() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
-function shiftMonth(yearMonth, delta) {
-  const [y, m] = String(yearMonth).split('-').map(Number)
-  const d = new Date(y, m - 1 + delta, 1)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+/** Prefer current month when present in availability; else latest available YYYY-MM. */
+export function resolveTrafficMonth(availability, preferred = defaultTrafficMonth()) {
+  const months = (availability?.months || [])
+    .map((m) => String(m.value || m).slice(0, 7))
+    .filter((v) => /^\d{4}-\d{2}$/.test(v))
+    .sort()
+  if (!months.length) return preferred
+  if (months.includes(preferred)) return preferred
+  return months[months.length - 1]
 }
 
 function isoDate(d) {
@@ -130,9 +135,15 @@ function monthSeries(dailyTrend, yearMonth) {
   return { categories, data, dates }
 }
 
-function eventRangeAnnotations(visibleEvents, dates, colors) {
+function eventChartAnnotations(visibleEvents, dates, colors) {
+  /**
+   * Vertical lines from each event down to its X-axis date (start day),
+   * with the label on the line. Multi-day windows also get a light range fill.
+   */
   const dayIndex = new Map(dates.map((iso, idx) => [iso, idx]))
-  const ranges = []
+  const xaxis = []
+  let labelSlot = 0
+
   for (const ev of visibleEvents || []) {
     const start = new Date(`${ev.start_date}T00:00:00`)
     const end = new Date(`${ev.end_date}T00:00:00`)
@@ -145,44 +156,53 @@ function eventRangeAnnotations(visibleEvents, dates, colors) {
       lastIdx = idx
     }
     if (firstIdx == null || lastIdx == null) continue
-    const fill =
-      ev.event_type === 'mela_window' ? '#d97706' : colors.danger
-    ranges.push({
-      x: dates[firstIdx]
-        ? String(new Date(`${dates[firstIdx]}T00:00:00`).getDate())
-        : String(firstIdx + 1),
-      x2: dates[lastIdx]
-        ? String(new Date(`${dates[lastIdx]}T00:00:00`).getDate())
-        : String(lastIdx + 1),
-      fillColor: fill,
-      opacity: 0.16,
+
+    const fill = ev.event_type === 'mela_window' ? '#d97706' : colors.danger
+    const startCat = String(new Date(`${dates[firstIdx]}T00:00:00`).getDate())
+    const endCat = String(new Date(`${dates[lastIdx]}T00:00:00`).getDate())
+    const labelText = ev.label || EVENT_TYPE_LABEL[ev.event_type] || 'Event'
+
+    // Light band for multi-day windows (no label on the band).
+    if (firstIdx !== lastIdx) {
+      xaxis.push({
+        x: startCat,
+        x2: endCat,
+        fillColor: fill,
+        opacity: 0.12,
+        borderColor: 'transparent',
+        label: { text: '' },
+      })
+    }
+
+    // Vertical line joined to the start date on the X-axis + event label
+    // (offsetY positive keeps labels inside the plot so they are not clipped).
+    xaxis.push({
+      x: startCat,
       borderColor: fill,
       strokeDashArray: 0,
+      opacity: 1,
       label: {
-        text: ev.label || EVENT_TYPE_LABEL[ev.event_type] || 'Event',
+        text: labelText,
         orientation: 'horizontal',
         position: 'top',
-        offsetY: -4,
+        offsetY: 8 + (labelSlot % 5) * 18,
         borderColor: fill,
         borderWidth: 1,
         borderRadius: 2,
         textAnchor: 'middle',
         style: {
-          color: dark ? '#fafafa' : '#ffffff',
+          color: '#ffffff',
           background: fill,
           fontSize: '11px',
           fontWeight: 600,
-          padding: {
-            left: 6,
-            right: 6,
-            top: 2,
-            bottom: 2,
-          },
+          padding: { left: 6, right: 6, top: 2, bottom: 2 },
         },
       },
     })
+    labelSlot += 1
   }
-  return ranges.slice(0, 20)
+
+  return xaxis.slice(0, 40)
 }
 
 function highlightMinMaxColors(values, baseColor, accentMin, accentMax) {
@@ -216,10 +236,9 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
   const annotations = {
-    xaxis: eventRangeAnnotations(visibleEvents, series.dates, {
+    xaxis: eventChartAnnotations(visibleEvents, series.dates, {
       danger: colors.danger,
-      foreground: dark ? '#e5e5e5' : '#171717',
-    }, dark),
+    }),
   }
 
   const options = {
@@ -228,6 +247,10 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
       ...baseChartOptions(dark).chart,
       type: 'line',
       zoom: { enabled: false },
+    },
+    grid: {
+      ...baseChartOptions(dark).grid,
+      padding: { top: 36, right: 8, left: 8, bottom: 0 },
     },
     stroke: { width: 3, curve: 'smooth' },
     markers: { size: 3 },
@@ -269,7 +292,7 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
       options={options}
       series={[{ name: 'Daily traffic', data: series.data }]}
       type="line"
-      height={300}
+      height={380}
     />
   )
 }
@@ -359,44 +382,153 @@ function AvgBarChart({
   )
 }
 
-function EventFilters({ enabledTypes, excludeMela, onToggleType, onToggleExcludeMela }) {
+function EventFilters({ enabledTypes, onToggleType }) {
   return (
     <div className="space-y-2">
       <span className="text-small font-medium text-muted-foreground">Filter events</span>
       <div className="flex flex-wrap gap-x-4 gap-y-2">
         {EVENT_TYPE_OPTIONS.map((opt) => {
-          const checked =
-            enabledTypes.has(opt.value) && !(excludeMela && opt.value === 'mela_window')
-          const disabled = excludeMela && opt.value === 'mela_window'
+          const checked = enabledTypes.has(opt.value)
           return (
             <label
               key={opt.value}
-              className={cn(
-                'inline-flex items-center gap-2 text-body',
-                disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
-              )}
+              className="inline-flex cursor-pointer items-center gap-2 text-body"
             >
               <input
                 type="checkbox"
                 className="h-4 w-4 rounded-sm border-border accent-primary"
                 checked={checked}
-                disabled={disabled}
                 onChange={() => onToggleType(opt.value)}
               />
               <span>{opt.label}</span>
             </label>
           )
         })}
-        <label className="inline-flex items-center gap-2 text-body cursor-pointer">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded-sm border-border accent-primary"
-            checked={excludeMela}
-            onChange={onToggleExcludeMela}
-          />
-          <span>Exclude mela window</span>
-        </label>
       </div>
+    </div>
+  )
+}
+
+function downloadCalendarTemplate() {
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8" /></head>
+<body>
+<table>
+  <tr>
+    <td>start_date</td>
+    <td>end_date</td>
+    <td>label</td>
+    <td>event_type</td>
+  </tr>
+  <tr>
+    <td>2026-01-26</td>
+    <td>2026-01-26</td>
+    <td>Republic Day</td>
+    <td>national_holiday</td>
+  </tr>
+</table>
+</body>
+</html>`
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = 'plaza_calendar_events_template.xls'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+}
+
+function MonthYearApplyControls({
+  monthValue,
+  availableMonths = [],
+  availableYears = [],
+  onApply,
+  disabled = false,
+}) {
+  const [draftYear, setDraftYear] = useState(() => String(monthValue || '').slice(0, 4))
+  const [draftMonth, setDraftMonth] = useState(() => String(monthValue || '').slice(5, 7))
+
+  useEffect(() => {
+    setDraftYear(String(monthValue || '').slice(0, 4))
+    setDraftMonth(String(monthValue || '').slice(5, 7))
+  }, [monthValue])
+
+  const years = useMemo(() => {
+    if (availableYears?.length) return availableYears.map(String)
+    const fromMonths = [
+      ...new Set((availableMonths || []).map((m) => String(m.value || m).slice(0, 4))),
+    ]
+    if (fromMonths.length) return fromMonths.sort()
+    const y = String(monthValue || '').slice(0, 4)
+    return y ? [y] : []
+  }, [availableYears, availableMonths, monthValue])
+
+  const monthsForYear = useMemo(() => {
+    const list = (availableMonths || [])
+      .filter((m) => String(m.value || m).startsWith(`${draftYear}-`))
+      .map((m) => ({
+        value: String(m.value || m).slice(5, 7),
+        label: m.label || MONTH_NAMES[Number(String(m.value || m).slice(5, 7)) - 1],
+      }))
+      .sort((a, b) => a.value.localeCompare(b.value))
+    if (list.length) return list
+    return MONTH_NAMES.map((name, idx) => ({
+      value: String(idx + 1).padStart(2, '0'),
+      label: name,
+    }))
+  }, [availableMonths, draftYear])
+
+  useEffect(() => {
+    // Keep draft month inside the selected year, preferring the latest month
+    // (never silently jump to January while parent still shows another month).
+    if (!monthsForYear.length) return
+    if (!monthsForYear.some((m) => m.value === draftMonth)) {
+      setDraftMonth(monthsForYear[monthsForYear.length - 1].value)
+    }
+  }, [monthsForYear, draftMonth])
+
+  function handleApply() {
+    if (!draftYear || !draftMonth) return
+    onApply?.(`${draftYear}-${draftMonth}`)
+  }
+
+  return (
+    <div className="flex flex-wrap items-end gap-2">
+      <label className="space-y-1">
+        <span className="block text-small text-muted-foreground">Year</span>
+        <select
+          className="h-10 min-w-[6rem] rounded-sm border border-input bg-background px-2 text-body"
+          value={draftYear}
+          disabled={disabled}
+          onChange={(e) => setDraftYear(e.target.value)}
+        >
+          {years.map((y) => (
+            <option key={y} value={y}>
+              {y}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="space-y-1">
+        <span className="block text-small text-muted-foreground">Month</span>
+        <select
+          className="h-10 min-w-[9rem] rounded-sm border border-input bg-background px-2 text-body"
+          value={draftMonth}
+          disabled={disabled}
+          onChange={(e) => setDraftMonth(e.target.value)}
+        >
+          {monthsForYear.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <Button type="button" onClick={handleApply} disabled={disabled || !draftYear || !draftMonth}>
+        Apply
+      </Button>
     </div>
   )
 }
@@ -477,6 +609,8 @@ export function TrafficStudyPanel({
   error = '',
   monthValue,
   onMonthChange,
+  availableMonths = [],
+  availableYears = [],
   dailyTrend = [],
   hourlyAvgProfile = [],
   weekdayAvgProfile = [],
@@ -494,7 +628,6 @@ export function TrafficStudyPanel({
   const [enabledTypes, setEnabledTypes] = useState(
     () => new Set(EVENT_TYPE_OPTIONS.map((o) => o.value)),
   )
-  const [excludeMela, setExcludeMela] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(emptyForm)
@@ -502,12 +635,11 @@ export function TrafficStudyPanel({
   const [formError, setFormError] = useState('')
   const [uploading, setUploading] = useState(false)
 
+  const dataLoading = Boolean(loading || trafficLoading)
+
   const visibleEvents = useMemo(() => {
-    return (events || []).filter((ev) => {
-      if (excludeMela && ev.event_type === 'mela_window') return false
-      return enabledTypes.has(ev.event_type)
-    })
-  }, [events, enabledTypes, excludeMela])
+    return (events || []).filter((ev) => enabledTypes.has(ev.event_type))
+  }, [events, enabledTypes])
 
   const [year, month] = String(monthValue || '').split('-').map(Number)
   const monthLabel = year && month ? `${MONTH_NAMES[month - 1]} ${year}` : monthValue
@@ -630,7 +762,24 @@ export function TrafficStudyPanel({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="relative space-y-4">
+      {dataLoading ? (
+        <div
+          className="absolute inset-0 z-30 flex items-center justify-center rounded-sm bg-background/75 backdrop-blur-[2px]"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div className="flex flex-col items-center gap-3 rounded-sm border border-border bg-card px-6 py-5 text-card-foreground shadow-sm">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-body font-medium">Loading traffic study…</p>
+            <p className="text-small text-muted-foreground">
+              Fetching events and traffic for {monthLabel}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-header">Traffic study</h2>
@@ -638,53 +787,13 @@ export function TrafficStudyPanel({
             Monthly traffic profile with event overlays for {monthLabel}.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1">
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={() => onMonthChange?.(shiftMonth(monthValue, -1))}
-              aria-label="Previous month"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <span className="min-w-[9rem] text-center text-body font-medium">{monthLabel}</span>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={() => onMonthChange?.(shiftMonth(monthValue, 1))}
-              aria-label="Next month"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-          {studyTab === 'events' && canWrite ? (
-            <>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv,.xlsx,.xls"
-                className="hidden"
-                onChange={(e) => handleUpload(e.target.files?.[0])}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                disabled={uploading}
-                onClick={() => fileRef.current?.click()}
-              >
-                <Upload className="h-4 w-4" />
-                {uploading ? 'Uploading…' : 'Upload'}
-              </Button>
-              <Button type="button" onClick={openCreate}>
-                <Plus className="h-4 w-4" />
-                Add event
-              </Button>
-            </>
-          ) : null}
-        </div>
+        <MonthYearApplyControls
+          monthValue={monthValue}
+          availableMonths={availableMonths}
+          availableYears={availableYears}
+          onApply={onMonthChange}
+          disabled={dataLoading}
+        />
       </div>
 
       <div className="flex flex-wrap gap-2 border-b border-border pb-2">
@@ -708,12 +817,7 @@ export function TrafficStudyPanel({
         ))}
       </div>
 
-      <EventFilters
-        enabledTypes={enabledTypes}
-        excludeMela={excludeMela}
-        onToggleType={toggleType}
-        onToggleExcludeMela={() => setExcludeMela((v) => !v)}
-      />
+      <EventFilters enabledTypes={enabledTypes} onToggleType={toggleType} />
 
       {error ? (
         <Card>
@@ -726,30 +830,12 @@ export function TrafficStudyPanel({
 
       {studyTab === 'peaks' ? (
         <div className="space-y-4">
-          <Card>
-            <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
-              <div>
-                <CardTitle>Monthly traffic</CardTitle>
-                <CardDescription>
-                  All dates on the X-axis · shaded bands mark selected event windows
-                  {trafficLoading ? ' · loading…' : ''}
-                </CardDescription>
-              </div>
-              <Button type="button" variant="outline" onClick={() => setCalendarOpen(true)}>
-                <CalendarDays className="h-4 w-4" />
-                Calendar
-              </Button>
-            </CardHeader>
-            <CardContent>
-              <MonthTrafficChart
-                dailyTrend={dailyTrend}
-                monthValue={monthValue}
-                visibleEvents={visibleEvents}
-                dark={dark}
-              />
-            </CardContent>
-          </Card>
-
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" onClick={() => setCalendarOpen(true)}>
+              <CalendarDays className="h-4 w-4" />
+              Calendar
+            </Button>
+          </div>
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardContent className="pt-6">
@@ -759,6 +845,7 @@ export function TrafficStudyPanel({
                   categories={hourlyCategories}
                   values={hourlyValues}
                   dark={dark}
+                  rotateLabels
                   emptyText="No hourly averages for this month."
                 />
               </CardContent>
@@ -780,23 +867,71 @@ export function TrafficStudyPanel({
       ) : (
         <div className="space-y-4">
           <Card>
-            <CardHeader>
-              <CardTitle>Event-tagged calendar</CardTitle>
-              <CardDescription>
-                {loading ? 'Loading events…' : `${visibleEvents.length} event(s) in view`}
-              </CardDescription>
+            <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle>Monthly traffic</CardTitle>
+                <CardDescription>
+                  Event labels use a vertical line joined to the date on the X-axis
+                </CardDescription>
+              </div>
+              <Button type="button" variant="outline" onClick={() => setCalendarOpen(true)}>
+                <CalendarDays className="h-4 w-4" />
+                Calendar
+              </Button>
             </CardHeader>
             <CardContent>
-              <CalendarGrid monthValue={monthValue} visibleEvents={visibleEvents} />
+              <MonthTrafficChart
+                dailyTrend={dailyTrend}
+                monthValue={monthValue}
+                visibleEvents={visibleEvents}
+                dark={dark}
+              />
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle>Events</CardTitle>
-              <CardDescription>
-                Upload .xlsx / .csv with columns start_date, end_date, label, event_type.
-              </CardDescription>
+            <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+              <div>
+                <CardTitle>Events</CardTitle>
+                <CardDescription>
+                  {loading
+                    ? 'Loading events…'
+                    : `${visibleEvents.length} event(s) in view. Download the Excel template, fill rows, then upload (.xls / .xlsx / .csv). Columns: start_date, end_date, label, event_type.`}
+                </CardDescription>
+              </div>
+              {canWrite ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    className="hidden"
+                    onChange={(e) => handleUpload(e.target.files?.[0])}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={uploading || dataLoading}
+                    onClick={downloadCalendarTemplate}
+                  >
+                    <Download className="h-4 w-4" />
+                    Template
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={uploading || dataLoading}
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    <Upload className="h-4 w-4" />
+                    {uploading ? 'Uploading…' : 'Upload'}
+                  </Button>
+                  <Button type="button" onClick={openCreate} disabled={dataLoading}>
+                    <Plus className="h-4 w-4" />
+                    Add event
+                  </Button>
+                </div>
+              ) : null}
             </CardHeader>
             <CardContent className="overflow-x-auto">
               <table className="w-full min-w-[40rem] border-collapse text-left text-body">

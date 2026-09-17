@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -17,6 +17,7 @@ from app.utils.analytics_config import (
     LANES,
     MOP_DISTRIBUTION_PER_CLASS_TABLE,
     MOP_DISTRIBUTION_PER_LANE_TABLE,
+    PLAZA_DAILY_REVENUE_TABLE,
 )
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -252,6 +253,120 @@ def _sum_traffic(plaza_identifier: str, start: date, end: date, conn=None) -> in
     return int(rows[0]["total"]) if rows else 0
 
 
+def _sum_revenue(plaza_identifier: str, start: date, end: date, conn=None) -> float:
+    rows = _fetch_all(
+        f"""
+        SELECT COALESCE(SUM(revenue), 0)::float AS total
+        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        """,
+        (plaza_identifier, start, end),
+        conn=conn,
+    )
+    return float(rows[0]["total"]) if rows else 0.0
+
+
+def _sum_revenue_windows(
+    plaza_identifier: str,
+    windows: dict[str, tuple[date, date]],
+    conn=None,
+) -> dict[str, float]:
+    if not windows:
+        return {}
+
+    select_parts: list[str] = []
+    params: list = []
+    min_start: date | None = None
+    max_end: date | None = None
+    for label, (start, end) in windows.items():
+        select_parts.append(
+            f"COALESCE(SUM(CASE WHEN date >= %s AND date <= %s "
+            f"THEN revenue ELSE 0 END), 0)::float AS {label}"
+        )
+        params.extend([start, end])
+        min_start = start if min_start is None else min(min_start, start)
+        max_end = end if max_end is None else max(max_end, end)
+
+    params.extend([plaza_identifier, min_start, max_end])
+    query = f"""
+        SELECT {", ".join(select_parts)}
+        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+    """
+    rows = _fetch_all(query, params, conn=conn)
+    if not rows:
+        return {label: 0.0 for label in windows}
+    row = rows[0]
+    return {label: float(row.get(label) or 0) for label in windows}
+
+
+def _build_revenue_series(
+    plaza_identifier: str,
+    win_start: date,
+    win_end: date,
+    *,
+    conn=None,
+) -> tuple[list[dict], list[dict]]:
+    """Daily and monthly revenue series for the selected window."""
+    daily_rows = _fetch_all(
+        f"""
+        SELECT date, COALESCE(revenue, 0)::float AS revenue
+        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        ORDER BY date ASC
+        """,
+        (plaza_identifier, win_start, win_end),
+        conn=conn,
+    )
+    revenue_daily = []
+    for r in daily_rows:
+        d = _as_date(r["date"])
+        if d is None:
+            continue
+        revenue_daily.append(
+            {
+                "date": d.isoformat(),
+                "weekday": WEEKDAYS[d.weekday()],
+                "label": f"{WEEKDAYS[d.weekday()]} {d.day}",
+                "revenue": round(float(r["revenue"] or 0), 2),
+            }
+        )
+
+    monthly_rows = _fetch_all(
+        f"""
+        SELECT
+            EXTRACT(YEAR FROM date)::int AS year,
+            EXTRACT(MONTH FROM date)::int AS month,
+            COALESCE(SUM(revenue), 0)::float AS revenue
+        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+        """,
+        (plaza_identifier, win_start, win_end),
+        conn=conn,
+    )
+    revenue_monthly = []
+    for r in monthly_rows:
+        year = int(r["year"])
+        month = int(r["month"])
+        revenue_monthly.append(
+            {
+                "year": year,
+                "month": month,
+                "label": f"{MONTH_LABELS[month - 1]} {year}",
+                "revenue": round(float(r["revenue"] or 0), 2),
+            }
+        )
+    return revenue_daily, revenue_monthly
+
+
+def _arpt(revenue: float | None, traffic: int | None) -> float | None:
+    if revenue is None or traffic is None or traffic <= 0:
+        return None
+    return round(float(revenue) / float(traffic), 2)
+
+
 def _sum_traffic_windows(
     plaza_identifier: str,
     windows: dict[str, tuple[date, date]],
@@ -358,8 +473,11 @@ def build_plaza_availability(plaza_identifier: str, conn=None) -> dict:
     )
     years = [int(r["year"]) for r in year_rows if r.get("year") is not None]
 
+    day_start = max_date - timedelta(days=4)
+    if min_date and day_start < min_date:
+        day_start = min_date
     defaults = {
-        "day": {"start": max_date.isoformat(), "end": max_date.isoformat()},
+        "day": {"start": day_start.isoformat(), "end": max_date.isoformat()},
         "mtd": {
             "start": f"{max_date.year:04d}-{max_date.month:02d}",
             "end": f"{max_date.year:04d}-{max_date.month:02d}",
@@ -478,6 +596,14 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
             "traffic_today": None,
             "traffic_mtd": None,
             "traffic_ytd": None,
+            "revenue_period": None,
+            "revenue_today": None,
+            "revenue_mtd": None,
+            "revenue_ytd": None,
+            "arpt": None,
+            "revenue_avg_daily_year": None,
+            "revenue_avg_monthly_year": None,
+            "revenue_avg_year": None,
             "etc_share": None,
             "exempt_share": None,
             "cash_share": None,
@@ -492,6 +618,7 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
         "daily_trend": [],
         "hourly_avg_profile": [],
         "weekday_avg_profile": [],
+        "revenue": {"daily": [], "monthly": []},
         "class_mix": [],
         "mop_mix": [],
         "lane_throughput": [],
@@ -502,12 +629,12 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
         },
         "class_distribution": {
             "totals": [],
-            "trend": {"categories": [], "series": []},
+            "trend": {"categories": [], "dates": [], "series": []},
             "by_lane": {"lanes": [], "series": []},
         },
         "mop_distribution": {
             "totals": [],
-            "trend": {"categories": [], "series": []},
+            "trend": {"categories": [], "dates": [], "series": []},
             "by_lane": {"lanes": [], "series": []},
             "by_class": {"classes": [], "series": []},
         },
@@ -768,6 +895,10 @@ def _build_class_distribution_block(
         values[(cat_label, vehicle_class)] = int(row["count"])
 
     categories = [category_labels[k] for k in category_keys]
+    category_dates = [
+        (k[0].isoformat() if hasattr(k[0], "isoformat") else str(k[0])[:10])
+        for k in category_keys
+    ]
     ordered_classes = class_order + sorted(seen_classes - set(class_order))
     trend_series = _stacked_series(categories, ordered_classes, values)
 
@@ -800,7 +931,11 @@ def _build_class_distribution_block(
 
     return {
         "totals": totals,
-        "trend": {"categories": categories, "series": trend_series},
+        "trend": {
+            "categories": categories,
+            "dates": category_dates,
+            "series": trend_series,
+        },
         "by_lane": {"lanes": lanes, "series": by_lane_series},
     }
 
@@ -867,6 +1002,10 @@ def _build_mop_distribution_block(
         values[(category_labels[key], mop)] = int(row["count"])
 
     categories = [category_labels[k] for k in category_keys]
+    category_dates = [
+        (k[0].isoformat() if hasattr(k[0], "isoformat") else str(k[0])[:10])
+        for k in category_keys
+    ]
     ordered_mops = mop_order + sorted(seen_mops - set(mop_order))
     trend_series = _stacked_series(categories, ordered_mops, values)
 
@@ -924,7 +1063,11 @@ def _build_mop_distribution_block(
 
     return {
         "totals": totals,
-        "trend": {"categories": categories, "series": trend_series},
+        "trend": {
+            "categories": categories,
+            "dates": category_dates,
+            "series": trend_series,
+        },
         "by_lane": {"lanes": lanes, "series": by_lane_series},
         "by_class": {"classes": classes, "series": by_class_series},
     }
@@ -1018,6 +1161,48 @@ def _build_plaza_numbers_with_conn(
     traffic_mtd = traffic["traffic_mtd"]
     traffic_ytd = traffic["traffic_ytd"]
     traffic_ly = traffic["traffic_ly"]
+
+    revenue_windows = _sum_revenue_windows(
+        plaza_identifier,
+        {
+            "revenue_period": (win_start, win_end),
+            "revenue_today": (day_start, day_end),
+            "revenue_mtd": (mtd_start, mtd_end),
+            "revenue_ytd": (ytd_start, ytd_end),
+        },
+        conn=conn,
+    )
+    revenue_period = revenue_windows["revenue_period"]
+    revenue_today = revenue_windows["revenue_today"]
+    revenue_mtd = revenue_windows["revenue_mtd"]
+    revenue_ytd = revenue_windows["revenue_ytd"]
+    arpt = _arpt(revenue_period, traffic_period)
+
+    # Calendar-year averages (explicitly not the selected interval).
+    cal_year = max_date.year
+    cal_year_start = date(cal_year, 1, 1)
+    cal_year_end = max_date
+    cal_year_revenue = _sum_revenue(
+        plaza_identifier, cal_year_start, cal_year_end, conn=conn
+    )
+    revenue_day_rows = _fetch_all(
+        f"""
+        SELECT COUNT(DISTINCT date)::int AS day_count,
+               COUNT(DISTINCT date_trunc('month', date))::int AS month_count
+        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        """,
+        (plaza_identifier, cal_year_start, cal_year_end),
+        conn=conn,
+    )
+    day_count = int(revenue_day_rows[0]["day_count"] or 0) if revenue_day_rows else 0
+    month_count = int(revenue_day_rows[0]["month_count"] or 0) if revenue_day_rows else 0
+    revenue_avg_daily_year = (
+        round(cal_year_revenue / day_count, 2) if day_count > 0 else None
+    )
+    revenue_avg_monthly_year = (
+        round(cal_year_revenue / month_count, 2) if month_count > 0 else None
+    )
 
     mop_rows = _fetch_all(
         f"""
@@ -1222,6 +1407,18 @@ def _build_plaza_numbers_with_conn(
         conn=conn,
     )
 
+    revenue_daily, revenue_monthly = _build_revenue_series(
+        plaza_identifier,
+        win_start,
+        win_end,
+        conn=conn,
+    )
+    # Attach day-level revenue onto traffic trend points when grain is day.
+    if not use_hourly and revenue_daily:
+        rev_by_date = {r["date"]: r["revenue"] for r in revenue_daily}
+        for point in daily_trend:
+            point["revenue"] = rev_by_date.get(point.get("date"))
+
     gap = _build_gap_block(
         plaza_identifier,
         win_start,
@@ -1273,6 +1470,14 @@ def _build_plaza_numbers_with_conn(
             "traffic_today": traffic_today,
             "traffic_mtd": traffic_mtd,
             "traffic_ytd": traffic_ytd,
+            "revenue_period": round(revenue_period, 2),
+            "revenue_today": round(revenue_today, 2),
+            "revenue_mtd": round(revenue_mtd, 2),
+            "revenue_ytd": round(revenue_ytd, 2),
+            "arpt": arpt,
+            "revenue_avg_daily_year": revenue_avg_daily_year,
+            "revenue_avg_monthly_year": revenue_avg_monthly_year,
+            "revenue_avg_year": cal_year,
             "etc_share": _pct(etc, traffic_period),
             "exempt_share": _pct(exempt, traffic_period),
             "cash_share": _pct(cash, traffic_period),
@@ -1287,6 +1492,10 @@ def _build_plaza_numbers_with_conn(
         "daily_trend": daily_trend,
         "hourly_avg_profile": hourly_avg_profile,
         "weekday_avg_profile": weekday_avg_profile,
+        "revenue": {
+            "daily": revenue_daily,
+            "monthly": revenue_monthly,
+        },
         "class_mix": class_mix,
         "mop_mix": mop_mix,
         "lane_throughput": lane_throughput,
@@ -1305,6 +1514,162 @@ def _plaza_ids_for_company(company_identifier: str) -> list[str]:
         .all()
     )
     return [r[0] for r in rows]
+
+
+def _metrics_by_plaza(
+    plaza_ids: list[str],
+    win_start: date,
+    win_end: date,
+    *,
+    conn=None,
+) -> tuple[dict[str, int], dict[str, float]]:
+    """Return (traffic_by_plaza, revenue_by_plaza) for the window."""
+    traffic_map: dict[str, int] = {}
+    revenue_map: dict[str, float] = {}
+    if not plaza_ids:
+        return traffic_map, revenue_map
+
+    placeholders = ",".join(["%s"] * len(plaza_ids))
+    traffic_rows = _fetch_all(
+        f"""
+        SELECT plaza_identifier, COALESCE(SUM(txn_count), 0)::bigint AS traffic
+        FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+        WHERE plaza_identifier IN ({placeholders})
+          AND date >= %s AND date <= %s
+        GROUP BY plaza_identifier
+        """,
+        (*plaza_ids, win_start, win_end),
+        conn=conn,
+    )
+    for row in traffic_rows:
+        traffic_map[str(row["plaza_identifier"])] = int(row["traffic"] or 0)
+
+    revenue_rows = _fetch_all(
+        f"""
+        SELECT plaza_identifier, COALESCE(SUM(revenue), 0)::float AS revenue
+        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        WHERE plaza_identifier IN ({placeholders})
+          AND date >= %s AND date <= %s
+        GROUP BY plaza_identifier
+        """,
+        (*plaza_ids, win_start, win_end),
+        conn=conn,
+    )
+    for row in revenue_rows:
+        revenue_map[str(row["plaza_identifier"])] = float(row["revenue"] or 0)
+
+    return traffic_map, revenue_map
+
+
+def build_portfolio_rollup(companies: list[dict]) -> dict:
+    """
+    Expandable portfolio tree for the latest calendar year with data
+    (falls back to the current calendar year when empty).
+
+    Returns company → SPV → plaza with year traffic + revenue totals.
+    """
+    today = date.today()
+    # Prefer the latest year that has traffic; else current calendar year.
+    year_rows = _fetch_all(
+        f"""
+        SELECT MAX(EXTRACT(YEAR FROM date)::int) AS year
+        FROM {MOP_DISTRIBUTION_PER_CLASS_TABLE}
+        """,
+        (),
+    )
+    year = int(year_rows[0]["year"]) if year_rows and year_rows[0].get("year") else today.year
+    year_start = date(year, 1, 1)
+    year_end = min(today, date(year, 12, 31)) if year == today.year else date(year, 12, 31)
+
+    # Load hierarchy once.
+    company_ids = [c["company_identifier"] for c in companies]
+    company_name = {c["company_identifier"]: c.get("company_name") for c in companies}
+
+    spv_rows = (
+        Spv.query.filter(Spv.company_identifier.in_(company_ids))
+        .order_by(Spv.spv_name.asc())
+        .all()
+        if company_ids
+        else []
+    )
+    plaza_rows = (
+        Plaza.query.filter(
+            Plaza.spv_identifier.in_([s.spv_identifier for s in spv_rows] or ["__none__"])
+        )
+        .order_by(Plaza.plaza_name.asc())
+        .all()
+        if spv_rows
+        else []
+    )
+
+    all_plaza_ids = [p.plaza_identifier for p in plaza_rows]
+    traffic_map, revenue_map = _metrics_by_plaza(all_plaza_ids, year_start, year_end)
+
+    plazas_by_spv: dict[str, list] = {}
+    for plaza in plaza_rows:
+        plazas_by_spv.setdefault(plaza.spv_identifier, []).append(plaza)
+
+    spvs_by_company: dict[str, list] = {}
+    for spv in spv_rows:
+        spvs_by_company.setdefault(spv.company_identifier, []).append(spv)
+
+    tree = []
+    for company_id in company_ids:
+        spv_payload = []
+        company_traffic = 0
+        company_revenue = 0.0
+        plaza_count = 0
+        for spv in spvs_by_company.get(company_id, []):
+            plaza_payload = []
+            spv_traffic = 0
+            spv_revenue = 0.0
+            for plaza in plazas_by_spv.get(spv.spv_identifier, []):
+                t = int(traffic_map.get(plaza.plaza_identifier, 0))
+                r = float(revenue_map.get(plaza.plaza_identifier, 0.0))
+                plaza_payload.append(
+                    {
+                        "plaza_identifier": plaza.plaza_identifier,
+                        "plaza_name": plaza.plaza_name,
+                        "plaza_code": plaza.plaza_code,
+                        "traffic": t,
+                        "revenue": round(r, 2),
+                    }
+                )
+                spv_traffic += t
+                spv_revenue += r
+                plaza_count += 1
+            spv_payload.append(
+                {
+                    "spv_identifier": spv.spv_identifier,
+                    "spv_name": spv.spv_name,
+                    "traffic": spv_traffic,
+                    "revenue": round(spv_revenue, 2),
+                    "plaza_count": len(plaza_payload),
+                    "plazas": plaza_payload,
+                }
+            )
+            company_traffic += spv_traffic
+            company_revenue += spv_revenue
+
+        tree.append(
+            {
+                "company_identifier": company_id,
+                "company_name": company_name.get(company_id) or company_id,
+                "traffic": company_traffic,
+                "revenue": round(company_revenue, 2),
+                "spv_count": len(spv_payload),
+                "plaza_count": plaza_count,
+                "spvs": spv_payload,
+            }
+        )
+
+    return {
+        "year": year,
+        "start_date": year_start.isoformat(),
+        "end_date": year_end.isoformat(),
+        "label": f"All figures are for Year {year}",
+        "companies": tree,
+    }
 
 
 def build_portfolio_volume(companies: list[dict], *, years: int = 5) -> dict:

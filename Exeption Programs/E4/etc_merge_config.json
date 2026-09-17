@@ -1,0 +1,53 @@
+{
+  "header_keywords": [
+    "Plaza Name",
+    "Settlement Amount",
+    "Plaza ID",
+    "Violation Amts",
+    "Veh Reg No",
+    "CCH TXN NO",
+    "Veh Reg No.",
+    "TC Class",
+    "Settlement Type",
+    "Journey Type",
+    "MOP",
+    "Date & Time",
+    "MVC_TLC_CLASS",
+    "VEH CLASS",
+    "Transaction Amount",
+    "OperatorClass",
+    "Fare Type",
+    "Operator Class",
+    "AVC",
+    "MVC MOP",
+    "Violation Flag",
+    "Txn ID",
+    "Violation Amt",
+    "Fare Amount",
+    "Agency Txn Id"
+  ],
+  "header_scan_rows": 20,
+  "min_header_matches": 3,
+  "merge_columns": {
+    "vehicle_reg_no": [
+      "Veh Reg No",
+      "Veh Reg No.",
+      "Vehicle Reg No",
+      "Vehicle Number",
+      "Vehicle No",
+      "Reg No",
+      "Licence Plate No"
+    ],
+    "read_datetime": [
+      "Date & Time",
+      "Date and Time",
+      "Txn Date Time",
+      "Txn Date & Time",
+      "Transaction Date Time",
+      "Transaction Date & Time",
+      "Tag Read Date Time",
+      "Transaction Date",
+      "Date"
+    ]
+  }
+}

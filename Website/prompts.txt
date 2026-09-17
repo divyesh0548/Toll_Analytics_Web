@@ -1,7 +1,6 @@
-I want to store revenue for each plaza per day.
+E15 : Same vehicles get exempted while user fee is collected at subsequent plaza in same journey
 
-Which is already stored in another database 'snt_form'. 
+E13 : Same vehicles get exempted while toll fee is collected at same plaza on different occassion. 
 
-So create a new table to store revenue for plaza just like "C:\Divyesh\Toll Analytics Dashboard\sync_audit_exception_metrics.py" this program.
 
-Column name in source db 'revenue'.
+Process bsassi plaza, once all exceptions are developed. Because it has overloading data.

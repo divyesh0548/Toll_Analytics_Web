@@ -1,32 +1,50 @@
 """
-E4 — Pass file merge (step 1).
+E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates → Loss → DB.
 
-Reads all Pass Excel/CSV files from a folder, detects the header row using
-keywords from config.json, verifies every file shares the same header, and
-merges them into one Excel (first sheet only for workbooks).
-
-config.json is mappings/aliases only (header keywords, column aliases, etc.).
-Runtime paths are set as variables below.
+1. Merge pass files; drop empty vehicles; drop MP + Car/Jeep/Van rows.
+2. If Trips taken missing: download/merge ETC for validity date range and count trips.
+3. Download/merge VRN for the same date range; map TC Class onto pass vehicles.
+4. Map TC Class → index → single journey rate (PLAZA_RATES vs Apr26 onwards by
+   validity end date). Total Charge = Trips × Rate; Loss = Total Charge − Issuance Fee
+   (default 360 if fee column missing).
+5. Sum Loss and Trips by End-date month; upsert audit_exception_metrics (E04 / id 4).
 
 Run:
-  1. Set PASS_INPUT_FOLDER (and optionally MERGED_OUTPUT_FILE) below
+  1. Set PASS_INPUT_FOLDER, ENTITY_NAME, PLAZA_IDENTIFIER below
   2. python E4_main.py
+     or: python E4_main.py odhaki_paipkhar <plaza_uuid>
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import re
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+
+from e4_db_update import update_db_from_dataframe
+from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+ETC_DOWNLOAD_MERGE_PATH = BASE_DIR / "etc-download-merge.py"
+VRN_DOWNLOAD_MERGE_PATH = BASE_DIR / "vrn-download-merge.py"
 
 # --- Runtime inputs (edit these; not in config.json) ---
-PASS_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\Pass"  # e.g. r"C:\path\to\pass\files"
+PASS_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\Pass"
 MERGED_OUTPUT_FILE = BASE_DIR / "output" / "merged_pass_files.xlsx"
+# submissions.entity_name — used for ETC/VRN download and plaza rates lookup.
+ENTITY_NAME = "odhaki_paipkhar"
+# plazas.plaza_identifier — required for audit_exception_metrics upsert.
+PLAZA_IDENTIFIER = ""
+EXCEPTION_TYPE_ID = 4
+DB_DRY_RUN = False
+SKIP_DB_UPDATE = False
 EXCEL_EXTENSIONS = [".xlsx", ".xls", ".xlsm", ".csv"]
 
 
@@ -56,6 +74,29 @@ def _normalize_header_cell(value) -> str:
 
 def _normalize_header_key(value) -> str:
     return _normalize_header_cell(value).casefold()
+
+
+def _normalize_value_key(value) -> str:
+    """Casefold + collapse whitespace for value comparisons."""
+    return _normalize_header_key(value)
+
+
+def normalize_vehicle_number(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip().upper()
+    if text in {"", "NAN", "NONE", "NAT"}:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", text)
+
+
+def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
+    by_key = {_normalize_header_key(h): h for h in headers if _normalize_header_cell(h)}
+    for alias in aliases or []:
+        key = _normalize_header_key(alias)
+        if key in by_key:
+            return by_key[key]
+    return None
 
 
 def detect_header_row(
@@ -147,7 +188,81 @@ def load_pass_file(
     return headers, df
 
 
-def merge_pass_folder(config: dict) -> Path:
+def drop_empty_vehicle_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Remove rows whose vehicle / chassis number is blank after normalize."""
+    headers = [str(c) for c in df.columns]
+    veh_col = resolve_column(headers, config.get("pass_chassis_column_names") or [])
+    if not veh_col:
+        print(
+            "WARNING: skip empty-vehicle filter — could not resolve "
+            "pass_chassis_column_names"
+        )
+        return df
+
+    keys = df[veh_col].map(normalize_vehicle_number)
+    keep = keys.ne("")
+    removed = int((~keep).sum())
+    print(
+        f"Empty vehicle filter on {veh_col!r}: removed {removed}, kept {int(keep.sum())}"
+    )
+    return df.loc[keep].reset_index(drop=True)
+
+
+def drop_mp_car_jeep_van_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Remove rows only when BOTH are true:
+      Pass Type ∈ exclude pass-type values (e.g. MP)
+      AND vehicle class ∈ Car/Jeep/Van (aliases)
+    """
+    headers = [str(c) for c in df.columns]
+    rule = config.get("exclude_mp_car_jeep_van") or {}
+
+    pass_col = resolve_column(headers, config.get("pass_type_column_names") or [])
+    class_col = resolve_column(
+        headers,
+        config.get("mapper_vehicle_class_column_names") or [],
+    )
+
+    if not pass_col or not class_col:
+        missing = []
+        if not pass_col:
+            missing.append("pass_type_column_names")
+        if not class_col:
+            missing.append("mapper_vehicle_class_column_names")
+        print(
+            "WARNING: skip MP+Car/Jeep/Van filter — could not resolve columns for "
+            + ", ".join(missing)
+        )
+        return df
+
+    pass_values = {
+        _normalize_value_key(v)
+        for v in (rule.get("pass_type_values") or [])
+        if str(v).strip()
+    }
+    class_values = {
+        _normalize_value_key(v)
+        for v in (rule.get("vehicle_class_values") or [])
+        if str(v).strip()
+    }
+    if not pass_values or not class_values:
+        print("WARNING: skip MP+Car/Jeep/Van filter — empty value lists in config")
+        return df
+
+    pass_keys = df[pass_col].map(_normalize_value_key)
+    class_keys = df[class_col].map(_normalize_value_key)
+    drop_mask = pass_keys.isin(pass_values) & class_keys.isin(class_values)
+
+    removed = int(drop_mask.sum())
+    kept = len(df) - removed
+    print(
+        f"Filter MP + Car/Jeep/Van: using columns "
+        f"{pass_col!r} + {class_col!r} — removed {removed}, kept {kept}"
+    )
+    return df.loc[~drop_mask].reset_index(drop=True)
+
+
+def merge_pass_folder(config: dict) -> tuple[Path, pd.DataFrame]:
     folder_raw = str(PASS_INPUT_FOLDER or "").strip()
     if not folder_raw:
         raise RuntimeError("Set PASS_INPUT_FOLDER at the top of E4_main.py")
@@ -204,7 +319,11 @@ def merge_pass_folder(config: dict) -> Path:
 
     merged = pd.concat(frames, ignore_index=True)
     print("=" * 60)
-    print(f"Merged rows: {len(merged)} from {len(frames)} file(s)")
+    print(f"Merged rows (before filter): {len(merged)} from {len(frames)} file(s)")
+
+    merged = drop_empty_vehicle_rows(merged, config)
+    merged = drop_mp_car_jeep_van_rows(merged, config)
+    print(f"Merged rows (after filters): {len(merged)}")
 
     output_path = Path(MERGED_OUTPUT_FILE)
     if not output_path.is_absolute():
@@ -212,12 +331,504 @@ def merge_pass_folder(config: dict) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     merged.to_excel(output_path, index=False)
     print(f"Wrote: {output_path}")
+    return output_path, merged
+
+
+def resolve_entity_name() -> str:
+    if len(sys.argv) >= 2 and str(sys.argv[1]).strip():
+        return str(sys.argv[1]).strip()
+    name = str(ENTITY_NAME or "").strip()
+    if name:
+        return name
+    name = input("Enter entity_name (submissions.entity_name): ").strip()
+    if not name:
+        raise RuntimeError("entity_name is required for ETC/VRN download and rates.")
+    return name
+
+
+def resolve_plaza_identifier() -> str:
+    if len(sys.argv) >= 3 and str(sys.argv[2]).strip():
+        return str(sys.argv[2]).strip()
+    plaza_id = str(PLAZA_IDENTIFIER or "").strip()
+    if plaza_id:
+        return plaza_id
+    plaza_id = input("Enter plaza_identifier (plazas.plaza_identifier UUID): ").strip()
+    if not plaza_id:
+        raise RuntimeError("plaza_identifier is required for audit_exception_metrics.")
+    return plaza_id
+
+
+def parse_datetime_series(series: pd.Series) -> pd.Series:
+    """Parse values like '2026-04-01 00:00:00' (and common variants) to timestamps."""
+    text = series.astype(str).str.strip()
+    text = text.replace({"": pd.NA, "nan": pd.NA, "NaT": pd.NA, "None": pd.NA})
+    parsed = pd.to_datetime(text, errors="coerce")
+    return parsed
+
+
+def validity_date_range(df: pd.DataFrame, config: dict) -> tuple[date, date]:
+    headers = [str(c) for c in df.columns]
+    start_col = resolve_column(headers, config.get("pass_start_date_column_names") or [])
+    end_col = resolve_column(headers, config.get("pass_end_date_column_names") or [])
+    if not start_col or not end_col:
+        missing = []
+        if not start_col:
+            missing.append("pass_start_date_column_names")
+        if not end_col:
+            missing.append("pass_end_date_column_names")
+        raise RuntimeError(
+            "Trips taken not found, and could not resolve validity date columns: "
+            + ", ".join(missing)
+        )
+
+    start_parsed = parse_datetime_series(df[start_col])
+    end_parsed = parse_datetime_series(df[end_col])
+    if start_parsed.isna().all():
+        raise RuntimeError(f"No valid datetimes in start column {start_col!r}")
+    if end_parsed.isna().all():
+        raise RuntimeError(f"No valid datetimes in end column {end_col!r}")
+
+    earliest = start_parsed.min()
+    latest = end_parsed.max()
+    start_d = earliest.date() if hasattr(earliest, "date") else pd.Timestamp(earliest).date()
+    end_d = latest.date() if hasattr(latest, "date") else pd.Timestamp(latest).date()
+    if end_d < start_d:
+        raise RuntimeError(
+            f"Invalid validity range: earliest start {start_d} is after latest end {end_d}"
+        )
+
+    print(
+        f"Validity range from columns {start_col!r} / {end_col!r}: "
+        f"{start_d.isoformat()} → {end_d.isoformat()}"
+    )
+    return start_d, end_d
+
+
+def load_etc_download_merge_module():
+    path = ETC_DOWNLOAD_MERGE_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"ETC download script not found: {path}")
+    spec = importlib.util.spec_from_file_location("e4_etc_download_merge", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_vrn_download_merge_module():
+    path = VRN_DOWNLOAD_MERGE_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"VRN download script not found: {path}")
+    spec = importlib.util.spec_from_file_location("e4_vrn_download_merge", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def normalize_tc_class_key(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    if text in {"", "nan", "none", "nat"}:
+        return ""
+    return text
+
+
+def build_tc_class_index_lookup(config: dict) -> dict[str, int]:
+    raw = config.get("tc_class_index_map") or {}
+    lookup: dict[str, int] = {}
+    for name, idx in raw.items():
+        key = normalize_tc_class_key(name)
+        if not key:
+            continue
+        lookup[key] = int(idx)
+    if not lookup:
+        raise RuntimeError("tc_class_index_map is empty in config.json")
+    return lookup
+
+
+def build_vrn_tc_class_lookup(vrn_path: Path) -> dict[str, str]:
+    """Map normalized vehicle → first non-empty TC Class from merged VRN CSV."""
+    print(f"Loading merged VRN: {vrn_path}")
+    vrn_df = pd.read_csv(vrn_path, dtype=str, keep_default_na=False)
+    if "vehicle_reg_no" not in vrn_df.columns or "tc_class" not in vrn_df.columns:
+        raise RuntimeError(
+            "Merged VRN file must contain columns vehicle_reg_no and tc_class"
+        )
+
+    lookup: dict[str, str] = {}
+    for veh_raw, tc_raw in zip(
+        vrn_df["vehicle_reg_no"].tolist(),
+        vrn_df["tc_class"].tolist(),
+    ):
+        veh = normalize_vehicle_number(veh_raw)
+        tc = str(tc_raw).strip() if tc_raw is not None else ""
+        if not veh or not tc or tc.lower() in {"nan", "none", "nat"}:
+            continue
+        if veh not in lookup:
+            lookup[veh] = tc
+    print(f"  Distinct vehicles with TC Class in VRN: {len(lookup)}")
+    return lookup
+
+
+def attach_tc_class_from_vrn(
+    pass_df: pd.DataFrame,
+    vrn_lookup: dict[str, str],
+    config: dict,
+) -> pd.DataFrame:
+    headers = [str(c) for c in pass_df.columns]
+    veh_col = resolve_column(headers, config.get("pass_chassis_column_names") or [])
+    if not veh_col:
+        raise RuntimeError(
+            "Cannot attach TC Class — pass chassis column not found "
+            "(pass_chassis_column_names)"
+        )
+
+    out_col = str(config.get("tc_class_output_column") or "TC Class").strip() or "TC Class"
+    vehs = pass_df[veh_col].map(normalize_vehicle_number)
+    tc_values = [vrn_lookup.get(v, "") for v in vehs.tolist()]
+
+    result = pass_df.copy()
+    result[out_col] = tc_values
+    matched = sum(1 for v in tc_values if v)
+    print(
+        f"TC Class attached via VRN on {veh_col!r} → {out_col!r}: "
+        f"{matched}/{len(result)} rows matched"
+    )
+    return result
+
+
+def resolve_tc_class_index(tc_value: str, lookup: dict[str, int]) -> int | None:
+    key = normalize_tc_class_key(tc_value)
+    if not key:
+        return None
+    if key not in lookup:
+        raise RuntimeError(
+            f"Unknown TC Class {tc_value!r} (normalized {key!r}) — "
+            "not present in tc_class_index_map. Stopping."
+        )
+    return lookup[key]
+
+
+def parse_rate_cutover_date(config: dict) -> date:
+    raw = str(config.get("rate_cutover_date") or "2026-05-01").strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid rate_cutover_date in config: {raw!r}") from exc
+
+
+def select_plaza_rates_book(end_d: date, cutover: date) -> dict:
+    """End date on/before day before cutover → PLAZA_RATES; else Apr26 onwards."""
+    if end_d < cutover:
+        return PLAZA_RATES
+    return Plaza_Rates_Apr26_onwards
+
+
+def lookup_single_rate(
+    entity_name: str,
+    rates_book: dict,
+    class_index: int,
+) -> float:
+    key = str(entity_name or "").strip()
+    plaza = rates_book.get(key)
+    if plaza is None:
+        plaza = rates_book.get(key.lower())
+    if plaza is None:
+        raise RuntimeError(
+            f"Entity {entity_name!r} not found in plaza rates "
+            f"({ 'PLAZA_RATES' if rates_book is PLAZA_RATES else 'Plaza_Rates_Apr26_onwards' })"
+        )
+    single = plaza.get("single") if isinstance(plaza, dict) else None
+    if not isinstance(single, dict):
+        raise RuntimeError(f"No 'single' rates for entity {entity_name!r}")
+    if class_index not in single:
+        raise RuntimeError(
+            f"No single rate for class index {class_index} on entity {entity_name!r}"
+        )
+    return float(single[class_index])
+
+
+def _to_float_or_none(value) -> float | None:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip().replace(",", "")
+    if text == "" or text.lower() in {"nan", "none", "nat"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def compute_total_charge_and_loss(
+    pass_df: pd.DataFrame,
+    config: dict,
+    entity_name: str,
+) -> pd.DataFrame:
+    headers = [str(c) for c in pass_df.columns]
+    tc_col = resolve_column(
+        headers,
+        [config.get("tc_class_output_column") or "TC Class", "TC Class", "Tc Class"],
+    )
+    trips_col = resolve_column(headers, config.get("trips_taken_column_names") or [])
+    end_col = resolve_column(headers, config.get("pass_end_date_column_names") or [])
+    fee_col = resolve_column(headers, config.get("issuance_fee_column_names") or [])
+
+    if not tc_col:
+        raise RuntimeError("TC Class column not found on merged pass file")
+    if not trips_col:
+        raise RuntimeError("Trips taken column not found on merged pass file")
+    if not end_col:
+        raise RuntimeError(
+            "Validity end date column not found (pass_end_date_column_names)"
+        )
+
+    charge_col = (
+        str(config.get("total_charge_output_column") or "Total Charge").strip()
+        or "Total Charge"
+    )
+    loss_col = str(config.get("loss_output_column") or "Loss").strip() or "Loss"
+    default_fee = float(config.get("default_issuance_fee", 360))
+    cutover = parse_rate_cutover_date(config)
+    index_lookup = build_tc_class_index_lookup(config)
+
+    ends = parse_datetime_series(pass_df[end_col])
+    trips = [_to_float_or_none(v) for v in pass_df[trips_col].tolist()]
+    tc_values = pass_df[tc_col].tolist()
+    fees = (
+        [_to_float_or_none(v) for v in pass_df[fee_col].tolist()]
+        if fee_col
+        else [None] * len(pass_df)
+    )
+    if fee_col:
+        print(f"Issuance fee column: {fee_col!r}")
+    else:
+        print(f"Issuance fee column not found — using default {default_fee}")
+
+    charges: list[float | None] = []
+    losses: list[float | None] = []
+    rated = 0
+
+    for tc_raw, trip_raw, end_ts, fee_raw in zip(tc_values, trips, ends.tolist(), fees):
+        # Validate / map every non-empty TC Class (raises on unknown).
+        class_index = resolve_tc_class_index(tc_raw, index_lookup)
+        if class_index is None or trip_raw is None or end_ts is None or pd.isna(end_ts):
+            charges.append(None)
+            losses.append(None)
+            continue
+
+        end_d = pd.Timestamp(end_ts).date()
+        rates_book = select_plaza_rates_book(end_d, cutover)
+        rate = lookup_single_rate(entity_name, rates_book, class_index)
+        total = float(trip_raw) * rate
+        fee = default_fee if fee_raw is None else float(fee_raw)
+        charges.append(total)
+        losses.append(total - fee)
+        rated += 1
+
+    result = pass_df.copy()
+    result[charge_col] = charges
+    result[loss_col] = losses
+    print(
+        f"Rates applied for entity {entity_name!r} "
+        f"(cutover {cutover.isoformat()}): "
+        f"{rated}/{len(result)} rows → {charge_col!r} / {loss_col!r}"
+    )
+    return result
+
+
+def run_vrn_tc_rates_loss(
+    merged: pd.DataFrame,
+    config: dict,
+    output_path: Path,
+) -> pd.DataFrame:
+    start_d, end_d = validity_date_range(merged, config)
+    entity_name = resolve_entity_name()
+    print(f"Starting VRN download/merge for entity_name={entity_name!r}")
+
+    vrn_mod = load_vrn_download_merge_module()
+    vrn_path = vrn_mod.run_vrn_download_merge(
+        entity_name,
+        start_d.isoformat(),
+        end_d.isoformat(),
+    )
+    if vrn_path is None:
+        raise RuntimeError("VRN download finished without a merged file path.")
+    print(f"VRN merge complete: {vrn_path}")
+
+    vrn_lookup = build_vrn_tc_class_lookup(Path(vrn_path))
+    with_tc = attach_tc_class_from_vrn(merged, vrn_lookup, config)
+    final = compute_total_charge_and_loss(with_tc, config, entity_name)
+    save_merged_pass(final, output_path)
+    return final
+
+
+def _to_ordinal_date(ts) -> int | None:
+    if ts is None or pd.isna(ts):
+        return None
+    stamp = pd.Timestamp(ts)
+    return int(stamp.toordinal())
+
+
+def build_etc_vehicle_date_index(etc_df: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Map normalized vehicle → sorted array of read calendar-day ordinals."""
+    work = etc_df.copy()
+    if "vehicle_reg_no" not in work.columns or "read_datetime" not in work.columns:
+        raise RuntimeError(
+            "Merged ETC file must contain columns vehicle_reg_no and read_datetime"
+        )
+
+    work["_veh"] = work["vehicle_reg_no"].map(normalize_vehicle_number)
+    work["_dt"] = parse_datetime_series(work["read_datetime"])
+    work = work.loc[work["_veh"].ne("") & work["_dt"].notna(), ["_veh", "_dt"]]
+    if work.empty:
+        return {}
+
+    work["_day"] = work["_dt"].map(_to_ordinal_date)
+    work = work.dropna(subset=["_day"])
+    index: dict[str, np.ndarray] = {}
+    for veh, group in work.groupby("_veh", sort=False):
+        days = np.sort(group["_day"].to_numpy(dtype=np.int64))
+        index[str(veh)] = days
+    return index
+
+
+def count_trips_for_range(
+    day_ordinals: np.ndarray | None,
+    start_ts,
+    end_ts,
+) -> int:
+    if day_ordinals is None or len(day_ordinals) == 0:
+        return 0
+    start_ord = _to_ordinal_date(start_ts)
+    end_ord = _to_ordinal_date(end_ts)
+    if start_ord is None or end_ord is None:
+        return 0
+    if end_ord < start_ord:
+        return 0
+    left = int(np.searchsorted(day_ordinals, start_ord, side="left"))
+    right = int(np.searchsorted(day_ordinals, end_ord, side="right"))
+    return max(0, right - left)
+
+
+def fill_trips_taken_from_etc(
+    pass_df: pd.DataFrame,
+    etc_path: Path,
+    config: dict,
+) -> pd.DataFrame:
+    headers = [str(c) for c in pass_df.columns]
+    veh_col = resolve_column(headers, config.get("pass_chassis_column_names") or [])
+    start_col = resolve_column(headers, config.get("pass_start_date_column_names") or [])
+    end_col = resolve_column(headers, config.get("pass_end_date_column_names") or [])
+    if not veh_col or not start_col or not end_col:
+        missing = []
+        if not veh_col:
+            missing.append("pass_chassis_column_names")
+        if not start_col:
+            missing.append("pass_start_date_column_names")
+        if not end_col:
+            missing.append("pass_end_date_column_names")
+        raise RuntimeError(
+            "Cannot compute Trips taken — missing pass columns: " + ", ".join(missing)
+        )
+
+    out_col = str(config.get("trips_taken_output_column") or "Trips taken").strip()
+    if not out_col:
+        out_col = "Trips taken"
+
+    print(f"Loading merged ETC: {etc_path}")
+    etc_df = pd.read_csv(etc_path, dtype=str, keep_default_na=False)
+    print(f"  ETC rows: {len(etc_df)}")
+    etc_index = build_etc_vehicle_date_index(etc_df)
+    print(f"  Distinct vehicles in ETC: {len(etc_index)}")
+
+    starts = parse_datetime_series(pass_df[start_col])
+    ends = parse_datetime_series(pass_df[end_col])
+    vehs = pass_df[veh_col].map(normalize_vehicle_number)
+
+    counts: list[int] = []
+    for veh, start_ts, end_ts in zip(vehs.tolist(), starts.tolist(), ends.tolist()):
+        counts.append(count_trips_for_range(etc_index.get(veh), start_ts, end_ts))
+
+    result = pass_df.copy()
+    result[out_col] = counts
+    matched = sum(1 for c in counts if c > 0)
+    print(
+        f"Trips taken filled via ETC match on {veh_col!r} "
+        f"within {start_col!r}–{end_col!r}: "
+        f"{matched}/{len(result)} rows have count > 0 "
+        f"(total trip rows counted: {sum(counts)})"
+    )
+    return result
+
+
+def save_merged_pass(df: pd.DataFrame, output_path: Path) -> Path:
+    output_path = Path(output_path)
+    if not output_path.is_absolute():
+        output_path = BASE_DIR / output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_excel(output_path, index=False)
+    print(f"Wrote: {output_path}")
     return output_path
+
+
+def maybe_run_etc_download(merged: pd.DataFrame, config: dict, output_path: Path) -> pd.DataFrame:
+    headers = [str(c) for c in merged.columns]
+    trips_col = resolve_column(headers, config.get("trips_taken_column_names") or [])
+    if trips_col:
+        print(
+            f"Trips taken column found ({trips_col!r}) — "
+            "skipping ETC download/merge and trip counting."
+        )
+        return merged
+
+    print("Trips taken column not found — deriving ETC date range from validity dates.")
+    start_d, end_d = validity_date_range(merged, config)
+    entity_name = resolve_entity_name()
+    print(f"Starting ETC download/merge for entity_name={entity_name!r}")
+
+    etc_mod = load_etc_download_merge_module()
+    etc_path = etc_mod.run_etc_download_merge(
+        entity_name,
+        start_d.isoformat(),
+        end_d.isoformat(),
+    )
+    if etc_path is None:
+        raise RuntimeError("ETC download finished without a merged file path.")
+    print(f"ETC merge complete: {etc_path}")
+
+    updated = fill_trips_taken_from_etc(merged, Path(etc_path), config)
+    save_merged_pass(updated, output_path)
+    return updated
 
 
 def main() -> int:
     config = load_config()
-    merge_pass_folder(config)
+    output_path, merged = merge_pass_folder(config)
+    merged = maybe_run_etc_download(merged, config, output_path)
+    merged = run_vrn_tc_rates_loss(merged, config, output_path)
+
+    if SKIP_DB_UPDATE:
+        print("SKIP_DB_UPDATE=True — audit_exception_metrics not updated.")
+        return 0
+
+    plaza_identifier = resolve_plaza_identifier()
+    print("-" * 60)
+    print("Updating audit_exception_metrics (exception_type_id=4)…")
+    update_db_from_dataframe(
+        merged,
+        plaza_identifier,
+        exception_type_id=int(EXCEPTION_TYPE_ID),
+        dry_run=bool(DB_DRY_RUN),
+        end_date_aliases=config.get("pass_end_date_column_names") or None,
+        loss_aliases=[config.get("loss_output_column") or "Loss", "Loss"],
+        trips_aliases=config.get("trips_taken_column_names") or None,
+    )
     return 0
 
 

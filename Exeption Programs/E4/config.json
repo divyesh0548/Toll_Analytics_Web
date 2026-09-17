@@ -2,6 +2,7 @@
   "header_keywords": [
     "Chassis/ Vehicle No",
     "NPCI Vehicle Class",
+    "Mapper Vehicle Class Description",
     "Start Date",
     "Plaza Name",
     "End Date",
@@ -15,6 +16,25 @@
   "header_scan_rows": 25,
   "min_header_matches": 3,
   "pass_type_column_names": ["Pass Type", "PassType", "PASS_TYPE"],
+  "mapper_vehicle_class_column_names": [
+    "Mapper Vehicle Class Description",
+    "Mapper Vehicle Class",
+    "NPCI Vehicle Class",
+    "NPCI Vehicle Class Description",
+    "Vehicle Class Description",
+    "Vehicle Class"
+  ],
+  "exclude_mp_car_jeep_van": {
+    "pass_type_values": ["MP", "M.P", "M.P.", "Monthly Pass (MP)"],
+    "vehicle_class_values": [
+      "Car/Jeep/Van",
+      "Car / Jeep / Van",
+      "Car/ Jeep / Van",
+      "VC4",
+      "VC 4",
+      "Car Jeep Van"
+    ]
+  },
   "mp_pass_type_values": [
     "MP",
     "LP",
@@ -35,14 +55,74 @@
     "Vehicle No",
     "Vehicle Reg No"
   ],
+  "trips_taken_column_names": [
+    "Trips taken",
+    "Trip taken"
+  ],
+  "trips_taken_output_column": "Trips taken",
   "pass_start_date_column_names": [
+    "Validity Start Date",
     "Start Date",
     "Start Effective Date",
-    "Validity Start Date"
+    "Pass Start Date",
+    "Valid From"
   ],
   "pass_end_date_column_names": [
+    "Validity End Date",
     "End Date",
     "End Effective Date",
-    "Validity End Date"
-  ]
+    "Pass End Date",
+    "Valid To"
+  ],
+  "tc_class_output_column": "TC Class",
+  "total_charge_output_column": "Total Charge",
+  "loss_output_column": "Loss",
+  "issuance_fee_column_names": [
+    "Issuance Fee",
+    "Issueance Fee",
+    "Issuance Fees",
+    "Issue Fee",
+    "Issuance fee"
+  ],
+  "default_issuance_fee": 360,
+  "rate_cutover_date": "2026-05-01",
+  "tc_class_index_map": {
+    "car": 1,
+    "lcv": 2,
+    "minibus": 2,
+    "lcv/mini bus": 2,
+    "truck": 3,
+    "truck/bus": 3,
+    "bus/truck": 3,
+    "bus": 3,
+    "bus 2 axle": 3,
+    "bus-2 axle": 3,
+    "truck 2 axle": 3,
+    "truck-2 axle": 3,
+    "bus 3 ax": 4,
+    "bus/truck 3 axle": 4,
+    "bus-3 axle": 4,
+    "truck 3 axle": 4,
+    "truck-3 axle": 4,
+    "truck3x": 4,
+    "truck-3ax": 4,
+    "mav": 5,
+    "hcm/mav": 5,
+    "mav (4 to 6 axle)": 5,
+    "mav 4 ax": 5,
+    "mav 4 axle": 5,
+    "mav 4 axle -2t": 5,
+    "mav 5 ax": 5,
+    "mav 5 axle": 5,
+    "mav 5 axle - 5t": 5,
+    "mav 5 axle - 5t1": 5,
+    "mav 5 axle - 5t4": 5,
+    "mav 5 axle -2t": 5,
+    "mav 5 axle -3t": 5,
+    "mav 6 ax": 5,
+    "mav 6 axle": 5,
+    "mav 6 axle - 6t1": 5,
+    "truck 4-6 axle": 5,
+    "osv": 6
+  }
 }
