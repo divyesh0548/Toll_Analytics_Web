@@ -41,7 +41,7 @@ MERGED_OUTPUT_FILE = BASE_DIR / "output" / "merged_pass_files.xlsx"
 # submissions.entity_name — used for ETC/VRN download and plaza rates lookup.
 ENTITY_NAME = "odhaki_paipkhar"
 # plazas.plaza_identifier — required for audit_exception_metrics upsert.
-PLAZA_IDENTIFIER = ""
+PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
 EXCEPTION_TYPE_ID = 4
 DB_DRY_RUN = False
 SKIP_DB_UPDATE = False
@@ -438,14 +438,54 @@ def normalize_tc_class_key(value) -> str:
     return text
 
 
+def build_tc_class_skip_set(config: dict) -> set[str]:
+    raw = config.get("tc_class_skip_list") or []
+    skip: set[str] = set()
+    for name in raw:
+        key = normalize_tc_class_key(name)
+        if key:
+            skip.add(key)
+    return skip
+
+
 def build_tc_class_index_lookup(config: dict) -> dict[str, int]:
+    """
+    Build name → index from tc_class_index_map.
+
+    Expected shape (preferred):
+      { "1": ["car", "carjeep"], "2": ["lcv", ...], ... }
+
+    Also accepts legacy flat shape: { "car": 1, "lcv": 2, ... }
+    """
     raw = config.get("tc_class_index_map") or {}
     lookup: dict[str, int] = {}
-    for name, idx in raw.items():
-        key = normalize_tc_class_key(name)
-        if not key:
-            continue
-        lookup[key] = int(idx)
+
+    # Preferred: index → list of names
+    list_style = any(isinstance(v, list) for v in raw.values())
+    if list_style:
+        for idx_raw, names in raw.items():
+            try:
+                idx = int(idx_raw)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Invalid tc_class_index_map key {idx_raw!r} — expected index number"
+                ) from exc
+            if not isinstance(names, list):
+                raise RuntimeError(
+                    f"tc_class_index_map[{idx_raw!r}] must be a list of class names"
+                )
+            for name in names:
+                key = normalize_tc_class_key(name)
+                if not key:
+                    continue
+                lookup[key] = idx
+    else:
+        for name, idx in raw.items():
+            key = normalize_tc_class_key(name)
+            if not key:
+                continue
+            lookup[key] = int(idx)
+
     if not lookup:
         raise RuntimeError("tc_class_index_map is empty in config.json")
     return lookup
@@ -502,9 +542,16 @@ def attach_tc_class_from_vrn(
     return result
 
 
-def resolve_tc_class_index(tc_value: str, lookup: dict[str, int]) -> int | None:
+def resolve_tc_class_index(
+    tc_value: str,
+    lookup: dict[str, int],
+    *,
+    skip_set: set[str] | None = None,
+) -> int | None:
     key = normalize_tc_class_key(tc_value)
     if not key:
+        return None
+    if skip_set and key in skip_set:
         return None
     if key not in lookup:
         raise RuntimeError(
@@ -596,6 +643,9 @@ def compute_total_charge_and_loss(
     default_fee = float(config.get("default_issuance_fee", 360))
     cutover = parse_rate_cutover_date(config)
     index_lookup = build_tc_class_index_lookup(config)
+    skip_set = build_tc_class_skip_set(config)
+    if skip_set:
+        print(f"TC Class skip list: {sorted(skip_set)}")
 
     ends = parse_datetime_series(pass_df[end_col])
     trips = [_to_float_or_none(v) for v in pass_df[trips_col].tolist()]
@@ -613,10 +663,18 @@ def compute_total_charge_and_loss(
     charges: list[float | None] = []
     losses: list[float | None] = []
     rated = 0
+    skipped = 0
 
     for tc_raw, trip_raw, end_ts, fee_raw in zip(tc_values, trips, ends.tolist(), fees):
+        tc_key = normalize_tc_class_key(tc_raw)
+        if tc_key and tc_key in skip_set:
+            charges.append(None)
+            losses.append(None)
+            skipped += 1
+            continue
+
         # Validate / map every non-empty TC Class (raises on unknown).
-        class_index = resolve_tc_class_index(tc_raw, index_lookup)
+        class_index = resolve_tc_class_index(tc_raw, index_lookup, skip_set=skip_set)
         if class_index is None or trip_raw is None or end_ts is None or pd.isna(end_ts):
             charges.append(None)
             losses.append(None)
@@ -638,6 +696,7 @@ def compute_total_charge_and_loss(
         f"Rates applied for entity {entity_name!r} "
         f"(cutover {cutover.isoformat()}): "
         f"{rated}/{len(result)} rows → {charge_col!r} / {loss_col!r}"
+        + (f" (skipped TC Class: {skipped})" if skipped else "")
     )
     return result
 

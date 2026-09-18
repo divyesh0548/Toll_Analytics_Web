@@ -1,6 +1,2 @@
-E15 : Same vehicles get exempted while user fee is collected at subsequent plaza in same journey
-
-E13 : Same vehicles get exempted while toll fee is collected at same plaza on different occassion. 
-
 
 Process bsassi plaza, once all exceptions are developed. Because it has overloading data.

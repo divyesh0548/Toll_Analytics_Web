@@ -86,43 +86,59 @@
   ],
   "default_issuance_fee": 360,
   "rate_cutover_date": "2026-05-01",
+  "tc_class_skip_list": [
+    "auto"
+  ],
   "tc_class_index_map": {
-    "car": 1,
-    "lcv": 2,
-    "minibus": 2,
-    "lcv/mini bus": 2,
-    "truck": 3,
-    "truck/bus": 3,
-    "bus/truck": 3,
-    "bus": 3,
-    "bus 2 axle": 3,
-    "bus-2 axle": 3,
-    "truck 2 axle": 3,
-    "truck-2 axle": 3,
-    "bus 3 ax": 4,
-    "bus/truck 3 axle": 4,
-    "bus-3 axle": 4,
-    "truck 3 axle": 4,
-    "truck-3 axle": 4,
-    "truck3x": 4,
-    "truck-3ax": 4,
-    "mav": 5,
-    "hcm/mav": 5,
-    "mav (4 to 6 axle)": 5,
-    "mav 4 ax": 5,
-    "mav 4 axle": 5,
-    "mav 4 axle -2t": 5,
-    "mav 5 ax": 5,
-    "mav 5 axle": 5,
-    "mav 5 axle - 5t": 5,
-    "mav 5 axle - 5t1": 5,
-    "mav 5 axle - 5t4": 5,
-    "mav 5 axle -2t": 5,
-    "mav 5 axle -3t": 5,
-    "mav 6 ax": 5,
-    "mav 6 axle": 5,
-    "mav 6 axle - 6t1": 5,
-    "truck 4-6 axle": 5,
-    "osv": 6
+    "1": [
+      "car",
+      "carjeep"
+    ],
+    "2": [
+      "lcv",
+      "minibus",
+      "lcv/mini bus"
+    ],
+    "3": [
+      "truck",
+      "truck/bus",
+      "bus/truck",
+      "bus",
+      "bus 2 axle",
+      "bus-2 axle",
+      "truck 2 axle",
+      "truck-2 axle"
+    ],
+    "4": [
+      "bus 3 ax",
+      "bus/truck 3 axle",
+      "bus-3 axle",
+      "truck 3 axle",
+      "truck-3 axle",
+      "truck3x",
+      "truck-3ax"
+    ],
+    "5": [
+      "mav",
+      "hcm/mav",
+      "mav (4 to 6 axle)",
+      "mav 4 ax",
+      "mav 4 axle",
+      "mav 4 axle -2t",
+      "mav 5 ax",
+      "mav 5 axle",
+      "mav 5 axle - 5t",
+      "mav 5 axle - 5t1",
+      "mav 5 axle - 5t4",
+      "mav 5 axle -2t",
+      "mav 5 axle -3t",
+      "mav 6 ax",
+      "mav 6 axle",
+      "mav 6 axle - 6t1",
+      "truck 4-6 axle"
+    ],
+    "6": [
+      "osv"
+    ]
   }
 }

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def ensure_audit_exception_types() -> int:
     """
-    Insert missing catalog rows (E01–E14) and refresh label/sort_order for existing codes.
+    Insert missing catalog rows (E01–E15) and refresh label/sort_order for existing codes.
     Returns number of rows created.
     """
     created = 0

@@ -1,0 +1,104 @@
+1. First take VRN and fetch vehicle weight from checkpost. 
+
+2. Remove some vehicle classes rows. 
+
+= Table.SelectRows(#"Expanded Output", each ([vehicle class] <> "BUS" and [vehicle class] <> "MAXI CAB" and [vehicle class] <> "MOTOR CAB" and [vehicle class] <> "OMNI BUS"))
+
+3. Remove null weight rows.
+
+4. Run two queries after this.
+
+1st stage overloading in sheet 1 is ETC and output table is Checkpost
+let
+    Source = Sheet1,
+    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Lane/Chg Standard Weight", type number}, {"Lane Weight", type number}, {"SWB Wt/Std. Weight", type number}}),
+    #"Merged Queries" = Table.NestedJoin(#"Changed Type", {"Veh Reg No."}, Output, {"Unique Vehicle Number"}, "Output", JoinKind.Inner),
+    #"Expanded Output" = Table.ExpandTableColumn(#"Merged Queries", "Output", {"weight", "vehicle class"}, {"weight", "vehicle class"}),
+    #"Filtered Rows3" = Table.SelectRows(#"Expanded Output", each ([vehicle class] <> "BUS" and [vehicle class] <> "MAXI CAB" and [vehicle class] <> "MOTOR CAB" and [vehicle class] <> "OMNI BUS")),
+    #"Filtered Rows6" = Table.SelectRows(#"Filtered Rows3", each ([weight] <> null)),
+    #"Changed Type3" = Table.TransformColumnTypes(#"Filtered Rows6",{{"weight", Int64.Type}}),
+    #"Added Conditional Column" = Table.AddColumn(#"Changed Type3", "Custom", each if [weight] = null then null else if [weight] <= 7500 then "<=7500 Kgs" else if [weight] <= 12000 then ">7500 Kgs but <=12,000 Kgs" else if [weight] <= 18500 then "> 12,000 Kgs but <= 18,500 Kgs" else if [weight] <= 28000 then "> 18,500 Kgs but <= 28,000 Kgs" else if [weight] <= 60000 then "> 28,000 Kgs but <= 60,000 Kgs" else if [weight] > 60000 then ">60,000 Kgs" else null),
+    #"Changed Type4" = Table.TransformColumnTypes(#"Added Conditional Column",{{"Custom", type text}}),
+    #"Changed Type1" = Table.TransformColumnTypes(#"Changed Type4",{{"Date & Time", type datetime}}),
+    #"Removed Errors" = Table.RemoveRowsWithErrors(#"Changed Type1", {"Date & Time", "Lane No", "TC Class", "MOP", "Veh Reg No.", "Description", "Txn NO", "SHIFT CODE", "USER NAME", "FARE CATEGORY", "AVC", "SVC", "SVC AMT", "TC AMT", "LANE OVERLOAD AMT", "SWB AMT", "SWB REFUND AMT", "OVER AMT AFTER REFUND", "TOTAL FARE", "Lane/Chg Standard Weight", "SUB CLASS LANE", "Lane Weight", "SWB STD WEIGHT", "SUB CLASS SWB", "SWB Wt/Std. Weight", "OVERLOAD AMT", "ACTION ON SWB", "TAG ID", "CCH TXN NO", "TC REMARK", "TC/AUDITOR_ID", "DESCRIPTION / QUE DELETE COUNT", "weight", "vehicle class", "Custom"})
+in
+    #"Removed Errors"
+
+
+2nd stage
+
+1. Now merge this output with ETC file based on Veh Reg No and datetime. Get "Net Settlement Amount" and "NPCI CLass" from ETC and merge.
+
+2. Remove null and empty weight, Remove null weight group
+
+3. Now take lookup of weight and weight group (avialable in command weight file) and get standard weight.
+
+4. Now get all standard weight from another sheet based on weight group. If standard weight is null then keep original weight. Store in "Standard weight"
+
+5. Now based on a custom created column apply weight lookup to a rate sheet and get rate.
+
+
+Output will be Applicable rate.
+
+
+let
+    Source = Csv.Document(File.Contents("F:\NHIT Q2 26-27\Bassi\Overloading\input\bassi q2 input August.csv"),[Delimiter=",",Encoding=1252]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Date & Time", type datetime}}),
+    #"Renamed Columns4" = Table.RenameColumns(#"Changed Type",{{"SWB Wt/Std. Weight", "SWB Std. Weight"}}),
+    #"Merged Queries" = Table.NestedJoin(#"Renamed Columns4", {"Veh Reg No.", "Date & Time"}, Query1, {"Vehicle Reg. No.", "Date & Time"}, "Query1", JoinKind.LeftOuter),
+    #"Expanded Query1" = Table.ExpandTableColumn(#"Merged Queries", "Query1", {"NPCI Class Desc", "Net Settlement Amt"}, {"NPCI Class Desc", "Net Settlement Amt"}),
+    #"Changed Type1" = Table.TransformColumnTypes(#"Expanded Query1",{{"weight", Int64.Type}}),
+    #"Filtered Rows2" = Table.SelectRows(#"Changed Type1", each [weight] <> null and [weight] <> ""),
+    Custom1 = Table.AddColumn(#"Filtered Rows2", "Weight Group", each if [weight] = 7500 then "7875" else if [weight] < 7500 then "<7500 Kgs"
+ else if [weight] = 11990 then "12600" else if [weight] > 7500 and [weight] < 11990 then ">7500 Kgs but <11990 Kgs"
+ else if [weight] = 18500 then "19425"  else if [weight] > 11990 and [weight] < 18500 then ">11990 Kgs but <18500 Kgs"
+ else if [weight] = 28000 then "29400" else if [weight] > 18500 and [weight] < 28000 then ">18500 Kgs but <28000 Kgs"
+else if [weight] = 30000 then "31500" else if [weight] > 28000 and [weight] < 30000 then ">28000 Kgs but <30000 Kgs"
+else if [weight] = 35000 then "36750" else if [weight] > 30000 and [weight] < 35000 then ">30000 Kgs but <35000 Kgs"
+else if [weight] =  39500 then "41475" else if [weight] > 35000 and [weight] < 39500 then ">35000 Kgs but <39500 Kgs"
+else if [weight] = 41500 then "43575" else if [weight] > 39500 and [weight] < 41500 and [NPCI Class Desc] = "Truck 4 - axle" then ">39500 Kgs but <41500 Kgs"
+else if [weight] = 42000 then "44100" else if [weight] > 41500 and [weight] < 42000 then ">41500 Kgs but <42000 Kgs"
+else if [weight] = 41000 then "43050" else if [weight] > 39500 and [weight] < 41000 and ([NPCI Class Desc] = "Truck 5 - axle" or [NPCI Class Desc] = "Truck 6 - axle") then ">39500 Kgs but <41000 Kgs"
+else if [weight] = 46500 then "48825" else if [weight] > 42000 and [weight] < 45500 then ">42000 Kgs but <45500 Kgs"
+else if [weight] = 45500 then "47775" else if [weight] > 45500 and [weight] < 46500 then ">45500 Kgs but <46500 Kgs"
+else if [weight] = 49000 then "51450" else if [weight] > 46500 and [weight] < 49000 then ">46500 Kgs but <49000 Kgs"
+else if [weight] = 51000 then "53550" else if [weight] > 49000 and [weight] < 51000 then ">49000 Kgs but <51000 Kgs"
+else if [weight] = 55000 then "57750" else if [weight] > 51000 then ">51000 Kgs" else null),
+    #"Filtered Rows" = Table.SelectRows(Custom1, each ([Weight Group] <> null)),
+    #"Changed Type2" = Table.TransformColumnTypes(#"Filtered Rows",{{"weight", type text}, {"Weight Group", type text}}),
+    #"Replaced Value" = Table.ReplaceValue(#"Changed Type2","Kgs","",Replacer.ReplaceText,{"Weight Group"}),
+    #"Replaced Value1" = Table.ReplaceValue(#"Replaced Value"," ","",Replacer.ReplaceText,{"Weight Group"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Replaced Value1", {"Weight Group"}, Sheet1, {"Weight Group"}, "Sheet1", JoinKind.LeftOuter),
+    #"Expanded Sheet1" = Table.ExpandTableColumn(#"Merged Queries1", "Sheet1", {"Std Weight"}, {"Std Weight"}),
+    #"Added Custom" = Table.AddColumn(#"Expanded Sheet1", "Custom.1", each if [Std Weight] = null then [Weight Group] else [Std Weight]),
+    #"Removed Columns" = Table.RemoveColumns(#"Added Custom",{"Std Weight"}),
+    #"Renamed Columns" = Table.RenameColumns(#"Removed Columns",{{"Custom.1", "Std Weight"}, {"SWB Std. Weight", "SWB Wt/Std. Weight"}}),
+    #"Changed Type3" = Table.TransformColumnTypes(#"Renamed Columns",{{"Std Weight", Int64.Type}, {"SWB Wt/Std. Weight", Int64.Type}, {"Lane Weight", Int64.Type}}),
+    #"Replaced Value2" = Table.ReplaceValue(#"Changed Type3",null,0,Replacer.ReplaceValue,{"SWB Wt/Std. Weight"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Replaced Value2", each [#"SWB Wt/Std. Weight"] <> null and [#"SWB Wt/Std. Weight"] <> ""),
+    Custom2 = Table.AddCo`lumn(#"Filtered Rows1", "Overweight", each if [#"SWB Wt/Std. Weight"]  > 0  then [#"SWB Wt/Std. Weight"] - [#"Std Weight"] else [#"Lane Weight"] - [#"Std Weight"]),
+    Custom4 = Table.AddColumn(Custom2, "Custom.1", each ([Overweight] / [#"Std Weight"]) * 100),
+    #"Inserted Month Name" = Table.AddColumn(Custom4, "Month Name", each Date.MonthName([#"Date & Time"]), type text),
+    #"Filtered Rows3" = Table.SelectRows(#"Inserted Month Name", each ([Month Name] <> "April")),
+    #"Removed Columns1" = Table.RemoveColumns(#"Filtered Rows3",{"Month Name"}),
+    #"Merged Queries2" = Table.NestedJoin(#"Removed Columns1", {"Custom"}, #"bassi rates Jan to march", {"Weight/Capacity"}, "dhaneshwar rates", JoinKind.LeftOuter),
+    #"Expanded dhaneshwar rates" = Table.ExpandTableColumn(#"Merged Queries2", "dhaneshwar rates", {"Value"}, {"Value"}),
+    #"Changed Type4" = Table.TransformColumnTypes(#"Expanded dhaneshwar rates",{{"Custom.1", type number}}),
+    #"Rounded Off" = Table.TransformColumns(#"Changed Type4",{{"Custom.1", each Number.Round(_, 2), type number}}),
+    #"Renamed Columns1" = Table.RenameColumns(#"Rounded Off",{{"Custom.1", "Overweight %"}, {"Value", "Applicable Rate"}}),
+    #"Removed Duplicates" = Table.Distinct(#"Renamed Columns1"),
+    #"Filtered Rows4" = Table.SelectRows(#"Removed Duplicates", each [Overweight] > 0),
+    #"Filtered Rows5" = Table.SelectRows(#"Filtered Rows4", each ([LANE OVERLOAD AMT] = "0") and ([SWB AMT] = "0")),
+    #"Changed Type5" = Table.TransformColumnTypes(#"Filtered Rows5",{{"Std Weight", type text}}),
+    #"Added Conditional Column" = Table.AddColumn(#"Changed Type5", "Custom.1", each if [#"Lane/Chg Standard Weight"] = [Std Weight] then true else false),
+    #"Added Custom1" = Table.AddColumn(#"Added Conditional Column", "Custom.2", each if [Custom.1] = true then
+            if [#"SWB Wt/Std. Weight"] = 0 then
+                "OW At WIM"
+            else
+                "Not Charged At SWB"
+        else
+            "Altered at WIM/SWB"),
+    #"Filtered Rows6" = Table.SelectRows(#"Added Custom1", each ([Custom] = "<=7500 Kgs"))
+in
+    #"Filtered Rows6"

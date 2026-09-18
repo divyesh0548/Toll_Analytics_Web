@@ -84,13 +84,24 @@ AUDIT_EXCEPTION_CATALOG: list[dict] = [
     },
     {
         "code": "E13",
-        "label": "Same vehicles get exempted while toll fee is collected at same plaza",
+        "label": (
+            "Same vehicles get exempted while toll fee is collected at same "
+            "plaza on different occasion"
+        ),
         "sort_order": 13,
     },
     {
         "code": "E14",
         "label": "Same vehicles get exempted under multiple class exemption",
         "sort_order": 14,
+    },
+    {
+        "code": "E15",
+        "label": (
+            "Same vehicles get exempted while user fee is collected at "
+            "subsequent plaza in same journey"
+        ),
+        "sort_order": 15,
     },
 ]
 

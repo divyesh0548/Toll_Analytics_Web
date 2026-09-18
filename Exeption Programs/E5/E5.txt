@@ -1,0 +1,5 @@
+First take output of invalid table. 
+
+For upto LCV keep only some classes. VC20, VC4, VC5, VC9
+
+For 2-axel and above. Remove the above classes. (This is used for lookup with IHMCL)

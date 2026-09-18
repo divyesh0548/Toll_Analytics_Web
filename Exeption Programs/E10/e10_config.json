@@ -1,0 +1,37 @@
+{
+  "tc_class_exclude": [
+    "BUS",
+    "MAXI CAB",
+    "MOTOR CAB",
+    "OMNI BUS"
+  ],
+  "tc_class_column_aliases": [
+    "tc_class",
+    "TC Class",
+    "Tc Class",
+    "TcClass",
+    "Vehicle Class",
+    "vehicle class"
+  ],
+  "vehicle_column_aliases": [
+    "vehicle_reg_no",
+    "Veh Reg No.",
+    "Veh Reg No",
+    "Vehicle Reg No",
+    "Unique Vehicle Number"
+  ],
+  "checkpost_vehicle_column": "Unique Vehicle Number",
+  "checkpost_weight_column": "weight",
+  "weight_output_column": "Weight",
+  "weight_invalid_values": [
+    "",
+    "0",
+    "0.0",
+    "n/a",
+    "na",
+    "null",
+    "none",
+    "nan"
+  ],
+  "checkpost_fetch_batch_size": 1000
+}

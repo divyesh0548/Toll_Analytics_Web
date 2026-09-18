@@ -1,4 +1,3 @@
-
 1. First take ETC file and merge it with Permit data file based on veh reg no. 
 
 2. Now get Tc class from VRN file.
