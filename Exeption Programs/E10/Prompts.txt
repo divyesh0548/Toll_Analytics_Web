@@ -1,0 +1,6 @@
+@Exeption Programs/E10/Main_E10.py 
+After removing null weight rows. We have to perform these steps. .  @Exeption Programs/E10/E10.txt:11-25 
+
+Download ETC file for the give date range and entity_name and merge them for this.@Exeption Programs/E6/E6_main.py Same as this program does. Just copy the config for ETC merge from here.
+
+Implement the ETC merge step and first give me explaination what does this step do, then we will implement them.

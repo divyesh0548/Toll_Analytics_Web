@@ -8,7 +8,7 @@
 
 4. Run two queries after this.
 
-1st stage overloading in sheet 1 is ETC and output table is Checkpost
+1st stage sheet 1 is ETC and output table is Checkpost
 let
     Source = Sheet1,
     #"Changed Type" = Table.TransformColumnTypes(Source,{{"Lane/Chg Standard Weight", type number}, {"Lane Weight", type number}, {"SWB Wt/Std. Weight", type number}}),
