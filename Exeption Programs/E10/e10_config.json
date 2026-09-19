@@ -20,9 +20,40 @@
     "Vehicle Reg No",
     "Unique Vehicle Number"
   ],
+  "datetime_column_aliases": [
+    "read_datetime",
+    "Date & Time",
+    "Date and Time",
+    "Txn Date Time",
+    "Tag Read Date Time"
+  ],
   "checkpost_vehicle_column": "Unique Vehicle Number",
   "checkpost_weight_column": "weight",
   "weight_output_column": "Weight",
+  "weight_range_output_column": "Custom",
+  "weight_ranges": [
+    {
+      "max_weight": 7500,
+      "label": "<=7500 Kgs"
+    },
+    {
+      "max_weight": 12000,
+      "label": ">7500 Kgs but <=12,000 Kgs"
+    },
+    {
+      "max_weight": 18500,
+      "label": "> 12,000 Kgs but <= 18,500 Kgs"
+    },
+    {
+      "max_weight": 28000,
+      "label": "> 18,500 Kgs but <= 28,000 Kgs"
+    },
+    {
+      "max_weight": 60000,
+      "label": "> 28,000 Kgs but <= 60,000 Kgs"
+    }
+  ],
+  "weight_range_above_max_label": ">60,000 Kgs",
   "weight_invalid_values": [
     "",
     "0",
@@ -33,5 +64,117 @@
     "none",
     "nan"
   ],
-  "checkpost_fetch_batch_size": 1000
+  "checkpost_fetch_batch_size": 1000,
+  "vrn_merge": {
+    "header_keywords": [
+      "Veh Reg No",
+      "Veh Reg No.",
+      "Date & Time",
+      "TC Class",
+      "Vehicle Class",
+      "Description",
+      "Lane",
+      "Transaction Date",
+      "CCH Transaction ID",
+      "Plaza"
+    ],
+    "header_scan_rows": 25,
+    "min_header_matches": 3,
+    "merge_columns": {
+      "vehicle_reg_no": [
+        "Veh Reg No.",
+        "Veh Reg No",
+        "Vehicle Reg No"
+      ],
+      "tc_class": [
+        "TC Class",
+        "TcClass"
+      ],
+      "read_datetime": [
+        "Date and Time",
+        "Date & Time",
+        "Txn Date Time",
+        "Txn Date & Time",
+        "Transaction Date Time",
+        "Transaction Date & Time",
+        "Tag Read Date Time",
+        "Transaction Date",
+        "Date"
+      ]
+    }
+  },
+  "etc_merge": {
+    "header_keywords": [
+      "Plaza Name",
+      "Settlement Amount",
+      "Net Settlement Amt",
+      "Plaza ID",
+      "Violation Amts",
+      "Veh Reg No",
+      "CCH TXN NO",
+      "Veh Reg No.",
+      "TC Class",
+      "Settlement Type",
+      "Journey Type",
+      "MOP",
+      "Date & Time",
+      "Tag Read Date Time",
+      "NPCI Class Desc",
+      "NPCI Class",
+      "MVC_TLC_CLASS",
+      "VEH CLASS",
+      "Transaction Amount",
+      "OperatorClass",
+      "Fare Type",
+      "Operator Class",
+      "AVC",
+      "MVC MOP",
+      "Violation Flag",
+      "Txn ID",
+      "Violation Amt",
+      "Fare Amount",
+      "Agency Txn Id"
+    ],
+    "header_scan_rows": 25,
+    "min_header_matches": 3,
+    "merge_columns": {
+      "vehicle_reg_no": [
+        "Veh Reg No",
+        "Veh Reg No.",
+        "Vehicle Reg No",
+        "Vehicle Reg. No.",
+        "Vehicle Number",
+        "Vehicle No",
+        "Reg No",
+        "Licence Plate No"
+      ],
+      "read_datetime": [
+        "Date & Time",
+        "Date and Time",
+        "Txn Date Time",
+        "Txn Date & Time",
+        "Transaction Date Time",
+        "Transaction Date & Time",
+        "Tag Read Date Time",
+        "Transaction Date",
+        "Date"
+      ],
+      "net_settlement_amt": [
+        "Net Settlement Amt",
+        "Net Settlement Amount",
+        "Net Settlement",
+        "Settlement Amount",
+        "Settled Amount",
+        "Net Settled Amount"
+      ],
+      "npci_class": [
+        "NPCI Class Desc",
+        "NPCI Class",
+        "NPCI CLass",
+        "NPCIClass",
+        "NPCI Class Description",
+        "Mapper VC"
+      ]
+    }
+  }
 }
