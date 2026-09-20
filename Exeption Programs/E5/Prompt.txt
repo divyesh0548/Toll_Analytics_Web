@@ -1,5 +1,12 @@
-Currently there are 12 Exception seeded by program. 
-AdD two more in seed list. 
+This program fetches IHMCL data for all vehicles and then match the TC Class. If TC Class do not match then it removes those rows and count total.
 
-E13 : Same vehicles get exempted while toll fee is collected at same plaza
-E14 : Same vehicles get exempted under multiple class exemption
+I want some TC class exlcuded from comparision. Means do not fetch their data from IHMCL and compare them with mapper vehicle class. Just keep those rows and include them for calculation of total. 
+
+For other classes, do the existing process.
+
+Here is the list of them.
+
+"LCV"
+"MiniBus"
+
+

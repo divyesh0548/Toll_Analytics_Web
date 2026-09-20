@@ -9,6 +9,8 @@ E10 — VRN + checkpost Weight, then ETC download/merge, then VRN↔ETC join.
 6) Join VRN↔ETC on normalized vehicle + date/hour key
    (e.g. "25-11-2025 08:00:17" → "25/11/2025|8 AM")
 7) Add Custom weight-range band from Weight (ranges in e10_config.json)
+8) Add Weight Group (E10.txt stage-2 rules), drop null groups, lookup Std Weight
+   from OW multiple LSW std weights.xlsx; store in Std Weight
 
 DB credentials / source DBs: Website/backend/.env
   Source_DB_NAME + exceptions_Table_NAME → submissions (VRN + ETC)
@@ -670,6 +672,340 @@ def add_weight_range_column(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     return result
 
 
+def _norm_weight_join_key(value) -> str:
+    """Normalize weight for lookup (7500 / 7500.0 → '7500')."""
+    num = _parse_weight_number(value)
+    if num is None:
+        return ""
+    if float(num).is_integer():
+        return str(int(num))
+    return str(num)
+
+
+def _clean_weight_group_join_key(value) -> str:
+    """PQ: remove 'Kgs' then spaces from Weight Group before sheet join."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    if not text or text.casefold() in {"nan", "none", "nat"}:
+        return ""
+    text = re.sub(r"(?i)kgs", "", text)
+    text = re.sub(r"\s+", "", text)
+    return text.casefold()
+
+
+def _norm_npci_key(value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip().casefold()
+    text = re.sub(r"[\s_\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if text in {"", "nan", "none", "nat"}:
+        return ""
+    return text
+
+
+def _npci_matches(npci_raw, aliases: list) -> bool:
+    key = _norm_npci_key(npci_raw)
+    if not key:
+        return False
+    for alias in aliases or []:
+        alias_key = _norm_npci_key(alias)
+        if not alias_key:
+            continue
+        if key == alias_key or alias_key in key or key in alias_key:
+            return True
+    return False
+
+
+def weight_to_weight_group(
+    weight_value,
+    npci_value,
+    config: dict,
+) -> str:
+    """E10.txt lines 53–67 — map weight (+ NPCI when needed) → Weight Group."""
+    weight = _parse_weight_number(weight_value)
+    if weight is None:
+        return ""
+
+    for rule in config.get("weight_group_rules") or []:
+        rule_type = str(rule.get("type") or "").strip().casefold()
+        label = str(rule.get("label") or "").strip()
+        if not label:
+            continue
+
+        npci_any = list(rule.get("npci_any") or [])
+        if npci_any and not _npci_matches(npci_value, npci_any):
+            continue
+
+        try:
+            if rule_type == "eq":
+                if weight == float(rule["weight"]):
+                    return label
+            elif rule_type == "lt":
+                if weight < float(rule["weight"]):
+                    return label
+            elif rule_type == "gt":
+                if weight > float(rule["weight"]):
+                    return label
+            elif rule_type == "between":
+                gt = float(rule["gt"])
+                lt = float(rule["lt"])
+                if weight > gt and weight < lt:
+                    return label
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    return ""
+
+
+def add_weight_group_column(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Add Weight Group from stage-2 rules; drop rows with null/empty group."""
+    if not (config.get("weight_group_rules") or []):
+        raise RuntimeError("e10_config.json weight_group_rules is empty.")
+
+    headers = [str(c) for c in df.columns]
+    weight_col = resolve_column(
+        headers,
+        [
+            str(config.get("weight_output_column") or "Weight"),
+            "Weight",
+            "weight",
+        ],
+    )
+    if not weight_col:
+        raise RuntimeError(
+            "Weight column not found for Weight Group. "
+            f"Available: {list(df.columns)}"
+        )
+
+    npci_col = resolve_column(
+        headers,
+        [
+            "NPCI Class",
+            "NPCI Class Desc",
+            "npci_class",
+            "NPCI CLass",
+        ],
+    )
+
+    out_col = (
+        str(config.get("weight_group_output_column") or "Weight Group").strip()
+        or "Weight Group"
+    )
+    result = df.copy()
+    npci_series = (
+        result[npci_col].tolist()
+        if npci_col
+        else [""] * len(result)
+    )
+    groups = [
+        weight_to_weight_group(w, n, config)
+        for w, n in zip(result[weight_col].tolist(), npci_series)
+    ]
+    result[out_col] = groups
+
+    keep = result[out_col].astype(str).str.strip().ne("")
+    dropped = int((~keep).sum())
+    result = result.loc[keep].reset_index(drop=True)
+    print(
+        f"Weight Group on {weight_col!r}"
+        + (f" (+ {npci_col!r})" if npci_col else "")
+        + f" -> {out_col!r}: kept {len(result)}, dropped null group {dropped}"
+    )
+    return result
+
+
+def _load_std_weight_tables(config: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    From OW multiple LSW std weights.xlsx:
+      by_weight[weight_key] → Std Weight
+      by_group[cleaned Weight Group] → Std Weight
+    """
+    cfg = config.get("std_weight_lookup") or {}
+    file_name = str(cfg.get("file") or "OW multiple LSW std weights.xlsx").strip()
+    path = Path(file_name)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    if not path.is_file():
+        raise FileNotFoundError(f"Std weight lookup file not found: {path}")
+
+    sheet = cfg.get("sheet")
+    df = pd.read_excel(
+        path,
+        sheet_name=0 if not sheet else sheet,
+        dtype=str,
+    )
+    if isinstance(df, dict):
+        df = next(iter(df.values()))
+
+    headers = [str(c) for c in df.columns]
+    weight_col = resolve_column(
+        headers,
+        [str(cfg.get("weight_column") or "Weight"), "Weight"],
+    )
+    range_col = resolve_column(
+        headers,
+        [
+            str(cfg.get("weight_range_column") or "Weight Group"),
+            "Weight Group",
+        ],
+    )
+    std_col = resolve_column(
+        headers,
+        [str(cfg.get("std_weight_column") or "Std Weight"), "Std Weight"],
+    )
+    if not weight_col or not std_col:
+        raise RuntimeError(
+            "Std weight file missing Weight / Std Weight. "
+            f"Available: {list(df.columns)}"
+        )
+
+    by_weight: dict[str, str] = {}
+    by_group: dict[str, str] = {}
+    for idx in range(len(df)):
+        std_raw = df[std_col].iloc[idx]
+        std_text = (
+            ""
+            if std_raw is None or (isinstance(std_raw, float) and pd.isna(std_raw))
+            else str(std_raw).strip()
+        )
+        if not std_text or std_text.casefold() in {"nan", "none"}:
+            continue
+
+        w_key = _norm_weight_join_key(df[weight_col].iloc[idx])
+        if w_key and w_key not in by_weight:
+            by_weight[w_key] = std_text
+
+        if range_col:
+            g_raw = df[range_col].iloc[idx]
+            g_key = _clean_weight_group_join_key(g_raw)
+            if g_key and g_key not in by_group:
+                by_group[g_key] = std_text
+            # Also index raw-ish normalized form
+            if g_raw is not None and not (isinstance(g_raw, float) and pd.isna(g_raw)):
+                raw_key = re.sub(r"\s+", " ", str(g_raw).strip()).casefold()
+                if raw_key and raw_key not in by_group:
+                    by_group[raw_key] = std_text
+
+    print(
+        f"Loaded std-weight lookup from {path.name}: "
+        f"{len(by_weight)} by Weight, {len(by_group)} by Weight Group"
+    )
+    return by_weight, by_group
+
+
+def _is_numeric_std_token(value) -> bool:
+    """True when Weight Group already holds a std-weight number (exact-weight path)."""
+    num = _parse_weight_number(value)
+    if num is None:
+        return False
+    text = str(value).strip()
+    # Reject range labels that happen to parse partially
+    if any(ch.isalpha() for ch in text):
+        return False
+    if "<" in text or ">" in text:
+        return False
+    return True
+
+
+def attach_std_weight_from_lookup(
+    df: pd.DataFrame,
+    config: dict,
+) -> pd.DataFrame:
+    """
+    After Weight Group is set (E10.txt):
+      1) Join sheet on cleaned Weight Group → Std Weight
+      2) Also try match on Weight
+      3) If Weight Group is already a number (exact path), use it when sheet misses
+      4) Else keep original Weight
+    Writes Std Weight (Power Query name). Falls back to Weight when no match.
+    """
+    cfg = config.get("std_weight_lookup") or {}
+    headers = [str(c) for c in df.columns]
+    weight_col = resolve_column(
+        headers,
+        [
+            str(config.get("weight_output_column") or "Weight"),
+            "Weight",
+            "weight",
+        ],
+    )
+    group_col = resolve_column(
+        headers,
+        [
+            str(config.get("weight_group_output_column") or "Weight Group"),
+            "Weight Group",
+        ],
+    )
+    if not weight_col or not group_col:
+        raise RuntimeError(
+            "Need Weight and Weight Group for std-weight lookup. "
+            f"Available: {list(df.columns)}"
+        )
+
+    out_col = str(cfg.get("output_column") or "Std Weight").strip() or "Std Weight"
+    by_weight, by_group = _load_std_weight_tables(config)
+
+    originals: list[str] = []
+    matched_group = 0
+    matched_weight = 0
+    matched_exact_token = 0
+    fallback = 0
+
+    for w_raw, g_raw in zip(df[weight_col].tolist(), df[group_col].tolist()):
+        g_text = "" if g_raw is None else str(g_raw).strip()
+        std = None
+        source = ""
+
+        # 1) Sheet join on cleaned Weight Group (PQ Merged Queries1)
+        g_key = _clean_weight_group_join_key(g_text)
+        if g_key and g_key in by_group:
+            std = by_group[g_key]
+            source = "group"
+        else:
+            raw_key = re.sub(r"\s+", " ", g_text).casefold() if g_text else ""
+            if raw_key and raw_key in by_group:
+                std = by_group[raw_key]
+                source = "group"
+
+        # 2) Sheet join on Weight (helps when group label text differs slightly)
+        if not std:
+            w_key = _norm_weight_join_key(w_raw)
+            if w_key and w_key in by_weight:
+                std = by_weight[w_key]
+                source = "weight"
+
+        # 3) Exact-weight path: Weight Group already stores std (e.g. "7875")
+        if not std and _is_numeric_std_token(g_text):
+            std = _norm_weight_join_key(g_text) or g_text
+            source = "exact_token"
+
+        # 4) Fallback — keep checkpost weight
+        if not std:
+            std = "" if w_raw is None else str(w_raw).strip()
+            source = "fallback"
+
+        originals.append(std)
+        if source == "group":
+            matched_group += 1
+        elif source == "weight":
+            matched_weight += 1
+        elif source == "exact_token":
+            matched_exact_token += 1
+        else:
+            fallback += 1
+
+    result = df.copy()
+    result[out_col] = originals
+    print(
+        f"Std Weight lookup: group={matched_group}, "
+        f"weight={matched_weight}, exact_token={matched_exact_token}, "
+        f"fallback={fallback} / {len(result)}"
+    )
+    return result
+
+
 def save_output(df: pd.DataFrame, path: Path) -> Path:
     path = Path(path)
     if not path.is_absolute():
@@ -687,7 +1023,7 @@ def save_output(df: pd.DataFrame, path: Path) -> Path:
 
 def main() -> int:
     print("=" * 60)
-    print("E10 — VRN + Weight + ETC join + Custom weight band")
+    print("E10 — VRN + Weight + ETC + Custom + Weight Group + Std Weight")
     print("=" * 60)
 
     load_env()
@@ -730,6 +1066,14 @@ def main() -> int:
     print("-" * 60)
     print("Adding Custom weight-range band…")
     merged = add_weight_range_column(merged, config)
+
+    print("-" * 60)
+    print("Adding Weight Group (stage-2 rules)…")
+    merged = add_weight_group_column(merged, config)
+
+    print("-" * 60)
+    print("Looking up Std Weight…")
+    merged = attach_std_weight_from_lookup(merged, config)
 
     merged_out = save_output(merged, Path(MERGED_VRN_ETC_OUTPUT_FILE))
     print(f"Merged rows: {len(merged)} | Columns: {list(merged.columns)}")

@@ -32,7 +32,7 @@ from e5_db_update import update_db_from_dataframe
 # ---------------------------------------------------------------------------
 # Single-click toggles / paths
 # ---------------------------------------------------------------------------
-USE_SELENIUM_GRID = True  # False = local Chrome via IHMCL_bot.py
+USE_SELENIUM_GRID = False  # False = local Chrome via IHMCL_bot.py
 SKIP_DB_UPDATE = False  # True = scrape/compare only, no DB write
 
 BASE_DIR = Path(__file__).resolve().parent

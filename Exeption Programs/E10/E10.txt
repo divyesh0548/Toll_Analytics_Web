@@ -31,7 +31,7 @@ in
 
 2. Remove null and empty weight, Remove null weight group
 
-3. Now take lookup of weight and weight group (avialable in command weight file) and get standard weight.
+3. Now take lookup of weight and weight group (avialable in comman weight file) and get standard weight.
 
 4. Now get all standard weight from another sheet based on weight group. If standard weight is null then keep original weight. Store in "Standard weight"
 

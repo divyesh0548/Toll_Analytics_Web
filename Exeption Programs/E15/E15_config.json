@@ -1,0 +1,235 @@
+{
+  "header_keywords": [
+    "LANE",
+    "LANENO",
+    "VEHREGNO",
+    "VEHREGNO.",
+    "VRN",
+    "TRANSACTIONID",
+    "DATE",
+    "DATE&TIME",
+    "TIME",
+    "MOP",
+    "CUSTOM",
+    "TCCLASS",
+    "PAYMENT METHOD",
+    "SVC FARE",
+    "DESCRIPTION",
+    "CCH TRANSACTION ID"
+  ],
+  "header_scan_rows": 25,
+  "min_header_matches": 2,
+  "months": [
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC"
+  ],
+  "default_year": "2026",
+  "from_plaza_side_a_lanes": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"],
+  "from_plaza_side_b_lanes": ["L9", "L10", "L11", "L12", "L13", "L14", "L15", "L16"],
+  "to_plaza_side_a_lanes": ["L1", "L2", "L3", "L4", "L5", "L6", "L7"],
+  "to_plaza_side_b_lanes": ["L8", "L9", "L10", "L11", "L12", "L13", "L14"],
+  "from_plaza_column_aliases": {
+    "Veh Reg No.": [
+      "VEH REG NO.",
+      "VEH REG NO",
+      "VRN",
+      "VEHICLE REG NO"
+    ],
+    "Lane No": [
+      "LANE NO",
+      "LANE",
+      "LANE NO."
+    ],
+    "Custom": [
+      "CUSTOM"
+    ],
+    "Date & Time": [
+      "DATE & TIME",
+      "DATE AND TIME"
+    ],
+    "TIME": [
+      "TIME"
+    ]
+  },
+  "to_plaza_column_aliases": {
+    "lane": [
+      "Lane No",
+      "LANE NO",
+      "LANE",
+      "LANE NO.",
+      "lane_no"
+    ],
+    "datetime": [
+      "Date & Time",
+      "DATE & TIME",
+      "DATE AND TIME",
+      "DATE",
+      "TRANSACTION DATE",
+      "read_datetime"
+    ],
+    "vehicle": [
+      "Veh Reg No.",
+      "VEH REG NO.",
+      "VEH REG NO",
+      "VRN",
+      "VEHICLE NO",
+      "VEHICLE REG NO",
+      "vehicle_reg_no"
+    ],
+    "PAYMENT METHOD": [
+      "PAYMENT METHOD",
+      "PAYMENT_METHOD",
+      "MVC MOP",
+      "SUB MOP",
+      "MOP",
+      "payment_method"
+    ],
+    "SVC FARE": [
+      "SVC FARE",
+      "SVC",
+      "FARE",
+      "TOTAL FARE",
+      "svc_fare"
+    ],
+    "DESCRIPTION": [
+      "DESCRIPTION",
+      "TC REMARK",
+      "REMARK",
+      "COMMENTS",
+      "description"
+    ],
+    "CCH TRANSACTION ID": [
+      "CCH TRANSACTION ID",
+      "CCH TXN NO",
+      "TRANSACTION NO",
+      "TRANSACTION ID",
+      "cch_transaction_id"
+    ]
+  },
+  "vrn_merge": {
+    "header_keywords": [
+      "Veh Reg No",
+      "Veh Reg No.",
+      "Date & Time",
+      "TC Class",
+      "Lane",
+      "Lane No",
+      "MOP",
+      "PAYMENT METHOD",
+      "SVC FARE",
+      "DESCRIPTION",
+      "CCH TRANSACTION ID",
+      "CCH TXN NO",
+      "Transaction Date",
+      "Plaza"
+    ],
+    "header_scan_rows": 25,
+    "min_header_matches": 3,
+    "merge_columns": {
+      "Veh Reg No.": [
+        "Veh Reg No.",
+        "Veh Reg No",
+        "Vehicle Reg No",
+        "Vehicle No",
+        "VRN"
+      ],
+      "Date & Time": [
+        "Date & Time",
+        "Date and Time",
+        "Txn Date Time",
+        "Transaction Date Time",
+        "Tag Read Date Time",
+        "Transaction Date",
+        "Date"
+      ],
+      "Lane No": [
+        "Lane No",
+        "Lane No.",
+        "Lane",
+        "LANE NO",
+        "LANE"
+      ],
+      "PAYMENT METHOD": [
+        "PAYMENT METHOD",
+        "PAYMENT_METHOD",
+        "MVC MOP",
+        "SUB MOP",
+        "MOP"
+      ],
+      "SVC FARE": [
+        "SVC FARE",
+        "SVC",
+        "FARE",
+        "TOTAL FARE"
+      ],
+      "DESCRIPTION": [
+        "DESCRIPTION",
+        "TC REMARK",
+        "REMARK",
+        "COMMENTS"
+      ],
+      "CCH TRANSACTION ID": [
+        "CCH TRANSACTION ID",
+        "CCH TXN NO",
+        "TRANSACTION NO",
+        "TRANSACTION ID"
+      ]
+    }
+  },
+  "time_formats": [
+    "%I:%M:%S %p",
+    "%H:%M:%S",
+    "%I:%M %p",
+    "%H:%M",
+    "%I:%M:%S%p",
+    "%I:%M%p",
+    "%H:%M:%S.%f"
+  ],
+  "datetime_formats": [
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+    "%m/%d/%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %I:%M:%S %p",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %I:%M:%S %p",
+    "%d-%b-%Y %I:%M:%S %p",
+    "%d-%b-%Y %H:%M:%S",
+    "%d-%m-%Y %I:%M:%S %p",
+    "%m-%d-%Y %I:%M:%S %p",
+    "%m-%d-%Y %H:%M:%S"
+  ],
+  "datetime_formats_us_ampm": [
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+    "%m/%d/%Y %H:%M:%S"
+  ],
+  "datetime_formats_dayfirst": [
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %I:%M:%S %p",
+    "%d-%m-%Y %I:%M:%S %p"
+  ],
+  "null_time_values": [
+    "nan",
+    "nat",
+    "none",
+    "null"
+  ],
+  "match_max_hours": 2,
+  "min_vrn_length": 6,
+  "from_plaza_custom_keep_value": "exception"
+}

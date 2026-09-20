@@ -54,6 +54,68 @@
     }
   ],
   "weight_range_above_max_label": ">60,000 Kgs",
+  "weight_group_output_column": "Weight Group",
+  "weight_group_rules": [
+    {"type": "eq", "weight": 7500, "label": "7875"},
+    {"type": "lt", "weight": 7500, "label": "<7500 Kgs"},
+    {"type": "eq", "weight": 11990, "label": "12600"},
+    {"type": "between", "gt": 7500, "lt": 11990, "label": ">7500 Kgs but <11990 Kgs"},
+    {"type": "eq", "weight": 18500, "label": "19425"},
+    {"type": "between", "gt": 11990, "lt": 18500, "label": ">11990 Kgs but <18500 Kgs"},
+    {"type": "eq", "weight": 28000, "label": "29400"},
+    {"type": "between", "gt": 18500, "lt": 28000, "label": ">18500 Kgs but <28000 Kgs"},
+    {"type": "eq", "weight": 30000, "label": "31500"},
+    {"type": "between", "gt": 28000, "lt": 30000, "label": ">28000 Kgs but <30000 Kgs"},
+    {"type": "eq", "weight": 35000, "label": "36750"},
+    {"type": "between", "gt": 30000, "lt": 35000, "label": ">30000 Kgs but <35000 Kgs"},
+    {"type": "eq", "weight": 39500, "label": "41475"},
+    {"type": "between", "gt": 35000, "lt": 39500, "label": ">35000 Kgs but <39500 Kgs"},
+    {"type": "eq", "weight": 41500, "label": "43575"},
+    {
+      "type": "between",
+      "gt": 39500,
+      "lt": 41500,
+      "npci_any": ["Truck 4 - axle", "Truck 4-axle", "4 axle", "4 - axle"],
+      "label": ">39500 Kgs but <41500 Kgs"
+    },
+    {"type": "eq", "weight": 42000, "label": "44100"},
+    {"type": "between", "gt": 41500, "lt": 42000, "label": ">41500 Kgs but <42000 Kgs"},
+    {"type": "eq", "weight": 41000, "label": "43050"},
+    {
+      "type": "between",
+      "gt": 39500,
+      "lt": 41000,
+      "npci_any": [
+        "Truck 5 - axle",
+        "Truck 6 - axle",
+        "Truck 5-axle",
+        "Truck 6-axle",
+        "5 axle",
+        "6 axle",
+        "5 - axle",
+        "6 - axle"
+      ],
+      "label": ">39500 Kgs but <41000 Kgs"
+    },
+    {"type": "eq", "weight": 46500, "label": "48825"},
+    {"type": "between", "gt": 42000, "lt": 45500, "label": ">42000 Kgs but <45500 Kgs"},
+    {"type": "eq", "weight": 45500, "label": "47775"},
+    {"type": "between", "gt": 45500, "lt": 46500, "label": ">45500 Kgs but <46500 Kgs"},
+    {"type": "eq", "weight": 49000, "label": "51450"},
+    {"type": "between", "gt": 46500, "lt": 49000, "label": ">46500 Kgs but <49000 Kgs"},
+    {"type": "eq", "weight": 51000, "label": "53550"},
+    {"type": "between", "gt": 49000, "lt": 51000, "label": ">49000 Kgs but <51000 Kgs"},
+    {"type": "eq", "weight": 55000, "label": "57750"},
+    {"type": "gt", "weight": 51000, "label": ">51000 Kgs"}
+  ],
+  "std_weight_lookup": {
+    "file": "OW multiple LSW std weights.xlsx",
+    "sheet": "Sheet1",
+    "weight_column": "Weight",
+    "weight_range_column": "Weight Group",
+    "std_weight_column": "Std Weight",
+    "output_column": "Std Weight"
+  },
   "weight_invalid_values": [
     "",
     "0",
