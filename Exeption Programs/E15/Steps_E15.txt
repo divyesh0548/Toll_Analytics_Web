@@ -1,12 +1,15 @@
-1. From plaza = exempt file, To plaza = VRN file 
-
-2. Provide these files to python program.
-
-3. Output will be 5 files, last one will be combined output.
-
-4. Now get get rate based on TC Class and journey type. Store in applicable rate column. In rates file change single journey --> First jouney.
-
-5. Toal Amount = Total of Applicable rate.
-
-
-For which plaza output will be considered?
+1. From plaza = exempt file, To plaza = VRN file 
+
+2. Provide these files to python program.
+
+3. Output will be 5 files, last one will be combined output.
+
+4. Now get get rate based on TC Class and journey type. Store in applicable rate column. In rates file change single journey --> First jouney.
+
+5. Total Amount = Total of Applicable rate (group by year+month of Date & Time).
+
+6. Upsert audit_exception_metrics with exception_type_id = 15 (plaza_identifier required).
+   - total_count = rows with Applicable Rate > 0
+   - total_amount = sum(Applicable Rate)
+   - Insert if missing; update only if new count or amount is greater
+

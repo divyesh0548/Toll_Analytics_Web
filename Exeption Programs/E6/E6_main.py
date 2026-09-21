@@ -1,26 +1,20 @@
 """
-E6 — Enrich ETC with Parivahan permit scrape + VRN TC Class + rates/Loss.
+E6 — ETC (path or download) + VRN → Permit scrape → TC Class → rates/Loss → DB.
 
-1) Load ETC Excel — detect header row via keywords in e6_config.json
-2) Resolve vehicle column from e6_config.json
-3) Scrape unique VRNs once via web_scrap_for_permit (Selenium Grid or local)
-4) Join permit columns back onto every ETC row by vehicle reg no
-5) From Tag Read Date Time, take oldest→newest date range; download/merge VRN
-   for entity_name (same module as E4); attach TC Class onto ETC
-6) Normalize Journey Type → single / return / local; lookup plaza rate by
-   journey + TC Class → Applicable Rate; Loss = Applicable Rate − Net Settlement Amt
-7) Write enriched ETC
-
-e6_config.json holds column aliases, journey/TC maps, and scrape settings.
-Runtime paths / entity are set as variables below.
+1) Provide ETC_INPUT_FILE path OR download/merge ETC for entity_name + date range
+2) Identify duplicate VRNs; scrape unique vehicles only (Selenium Grid or local)
+3) Join permit columns onto every ETC row by vehicle reg no (all rows kept)
+4) Download/merge VRN:
+   - if ETC path given → date range from Tag Read Date Time in that file
+   - if ETC downloaded → same FROM_DATE / TO_DATE
+5) Normalize Journey Type → rates → Loss; write enriched ETC
+6) Optionally upsert audit_exception_metrics (exception id 6)
 
 Run:
-  1. Set ETC_INPUT_FILE, ENTITY_NAME (and optionally ETC_OUTPUT_FILE)
-  2. Fill header_keywords / journey_type_map in e6_config.json
-  3. For development: set SKIP_PERMIT_SCRAPE_FOR_DEV = True to reuse
-     existing ETC_OUTPUT_FILE and skip Parivahan scraping
-  4. python E6_main.py
-     or: python E6_main.py odhaki_paipkhar
+  1. Set ENTITY_NAME; either ETC_INPUT_FILE or FROM_DATE/TO_DATE
+  2. python E6_main.py
+     or: python E6_main.py odhaki_paipkhar 2026-01-01 2026-04-30 <plaza_uuid>
+  3. DEV: SKIP_PERMIT_SCRAPE_FOR_DEV=True reuses ETC_OUTPUT_FILE (skip scrape only)
 """
 
 from __future__ import annotations
@@ -34,13 +28,16 @@ from pathlib import Path
 
 import pandas as pd
 
+from e6_db_update import update_db_from_dataframe
 from vehicle_number_utils import normalize_vehicle_number
 from web_scrap_for_permit import PERMIT_FIELDS, scrape_vehicle_details_for_permit
 
 BASE_DIR = Path(__file__).resolve().parent
 E4_DIR = BASE_DIR.parent / "E4"
 CONFIG_PATH = BASE_DIR / "e6_config.json"
+ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
+OUTPUT_DIR = BASE_DIR / "output"
 
 # Import plaza rates from E4
 if str(E4_DIR) not in sys.path:
@@ -49,14 +46,20 @@ from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # --- Runtime inputs (edit these; not in config) ---
 USE_SELENIUM_GRID = True  # False = local Chrome
-ETC_INPUT_FILE = BASE_DIR / "input" / "odhaki_etc_trimmed_Apr_26.xlsx"
-# Enriched ETC with permit columns. Set equal to ETC_INPUT_FILE to overwrite.
-ETC_OUTPUT_FILE = BASE_DIR / "output" / "etc_with_permit.xlsx"
-# submissions.entity_name — used for VRN download/merge and plaza rates
 ENTITY_NAME = "odhaki_paipkhar"
-# DEV ONLY: skip Parivahan permit scrape; start from existing ETC_OUTPUT_FILE
-# (already has permit columns). Set False for the full production pipeline.
-SKIP_PERMIT_SCRAPE_FOR_DEV = True
+# If set, load this ETC file and skip ETC download. Leave "" to download.
+ETC_INPUT_FILE = "C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E6\input\odhaki_etc_trimmed_Apr_26.xlsx"
+FROM_DATE = "2026-07-01"  # used when ETC_INPUT_FILE is empty (download mode)
+TO_DATE = "2026-07-01"
+ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_with_permit.xlsx"
+# DEV ONLY: skip Parivahan permit scrape; start from existing ETC_OUTPUT_FILE.
+SKIP_PERMIT_SCRAPE_FOR_DEV = False
+# plazas.plaza_identifier — required when UPDATE_DB is True
+PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
+EXCEPTION_TYPE_ID = 6
+# Last step: write monthly Loss totals into audit_exception_metrics
+UPDATE_DB = True
+DB_DRY_RUN = False
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -218,12 +221,44 @@ def resolve_entity_name() -> str:
         return name
     name = input("Enter entity_name (submissions.entity_name): ").strip()
     if not name:
-        raise RuntimeError("entity_name is required for VRN download.")
+        raise RuntimeError("entity_name is required.")
     return name
 
 
-def tag_read_date_range(etc_df: pd.DataFrame, columns_cfg: dict) -> tuple[date, date]:
-    """Oldest and newest calendar dates from Tag Read Date Time (YYYY-MM-DD HH:MM:SS)."""
+def resolve_date_range(*, required: bool = True) -> tuple[str, str]:
+    from_date = FROM_DATE
+    to_date = TO_DATE
+    if len(sys.argv) >= 3 and str(sys.argv[2]).strip():
+        from_date = str(sys.argv[2]).strip()
+    if len(sys.argv) >= 4 and str(sys.argv[3]).strip():
+        to_date = str(sys.argv[3]).strip()
+    from_date = str(from_date or "").strip()
+    to_date = str(to_date or "").strip()
+    if required:
+        if not from_date:
+            from_date = input("Enter FROM_DATE (YYYY-MM-DD): ").strip()
+        if not to_date:
+            to_date = input("Enter TO_DATE (YYYY-MM-DD): ").strip()
+        if not from_date or not to_date:
+            raise RuntimeError("FROM_DATE and TO_DATE are required (YYYY-MM-DD).")
+    return from_date, to_date
+
+
+def resolve_etc_input_file() -> Path | None:
+    """Return ETC path when provided; None means download mode."""
+    text = str(ETC_INPUT_FILE or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    if not path.is_file():
+        raise FileNotFoundError(f"ETC_INPUT_FILE not found: {path}")
+    return path
+
+
+def tag_read_date_range(etc_df: pd.DataFrame, columns_cfg: dict) -> tuple[str, str]:
+    """Oldest → newest calendar dates from Tag Read Date Time / read_datetime."""
     col = resolve_column(
         etc_df,
         str(columns_cfg.get("tag_read_datetime") or ""),
@@ -231,11 +266,11 @@ def tag_read_date_range(etc_df: pd.DataFrame, columns_cfg: dict) -> tuple[date, 
     )
     if not col:
         raise RuntimeError(
-            "Tag Read Date Time column not found. "
+            "Tag Read Date Time column not found to derive VRN date range. "
             f"Available: {list(etc_df.columns)}"
         )
 
-    parsed = pd.to_datetime(etc_df[col], errors="coerce")
+    parsed = pd.to_datetime(etc_df[col], errors="coerce", format="mixed")
     if parsed.isna().all():
         raise RuntimeError(f"No valid datetimes in column {col!r}")
 
@@ -248,10 +283,103 @@ def tag_read_date_range(etc_df: pd.DataFrame, columns_cfg: dict) -> tuple[date, 
             f"Invalid Tag Read Date Time range: {start_d} is after {end_d}"
         )
     print(
-        f"Tag Read Date Time range from {col!r}: "
+        f"VRN date range from {col!r}: "
         f"{start_d.isoformat()} → {end_d.isoformat()}"
     )
-    return start_d, end_d
+    return start_d.isoformat(), end_d.isoformat()
+
+
+def load_etc_from_path(path: Path, config: dict) -> pd.DataFrame:
+    """Load a provided ETC workbook/CSV (header detection via e6_config)."""
+    print(f"Loading ETC from path (download skipped):\n  {path}")
+    df, header_idx, headers = load_etc(path, config)
+    print(
+        f"ETC header_idx={header_idx}, columns={len(headers)}, rows={len(df)}"
+    )
+    return df
+
+
+def resolve_plaza_identifier() -> str:
+    if len(sys.argv) >= 5 and str(sys.argv[4]).strip():
+        return str(sys.argv[4]).strip()
+    plaza_id = str(PLAZA_IDENTIFIER or "").strip()
+    if plaza_id:
+        return plaza_id
+    plaza_id = input("Enter plaza_identifier (plazas.plaza_identifier UUID): ").strip()
+    if not plaza_id:
+        raise RuntimeError("plaza_identifier is required for audit_exception_metrics.")
+    return plaza_id
+
+
+def build_etc_merge_config(e6_config: dict) -> dict:
+    """ETC download merge config: only the columns required for E6."""
+    explicit = e6_config.get("etc_merge")
+    if isinstance(explicit, dict) and explicit.get("merge_columns"):
+        return explicit
+
+    columns_cfg = e6_config.get("columns") or {}
+
+    def _aliases(preferred_key: str, aliases_key: str) -> list[str]:
+        out: list[str] = []
+        preferred = str(columns_cfg.get(preferred_key) or "").strip()
+        if preferred:
+            out.append(preferred)
+        for name in columns_cfg.get(aliases_key) or []:
+            text = str(name).strip()
+            if text and text not in out:
+                out.append(text)
+        return out
+
+    return {
+        "header_keywords": e6_config.get("header_keywords") or [],
+        "header_scan_rows": int(e6_config.get("header_scan_rows") or 25),
+        "min_header_matches": int(e6_config.get("min_header_matches") or 3),
+        "merge_columns": {
+            "vehicle_reg_no": _aliases("etc_vehicle", "etc_vehicle_aliases"),
+            "read_datetime": _aliases(
+                "tag_read_datetime", "tag_read_datetime_aliases"
+            ),
+            "journey_type": _aliases("journey_type", "journey_type_aliases"),
+            "net_settlement_amt": _aliases(
+                "net_settlement", "net_settlement_aliases"
+            ),
+        },
+    }
+
+
+def load_etc_download_merge_module():
+    path = ETC_DOWNLOAD_MERGE_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"ETC download script not found: {path}")
+    spec = importlib.util.spec_from_file_location("e4_etc_download_merge", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def download_merged_etc(
+    entity_name: str,
+    from_date: str,
+    to_date: str,
+    e6_config: dict,
+) -> pd.DataFrame:
+    print(f"Starting ETC download/merge for entity_name={entity_name!r}")
+    etc_mod = load_etc_download_merge_module()
+    etc_path = etc_mod.run_etc_download_merge(
+        entity_name,
+        from_date,
+        to_date,
+        merged_output_dir=OUTPUT_DIR,
+        config=build_etc_merge_config(e6_config),
+    )
+    if etc_path is None:
+        raise RuntimeError("ETC download finished without a merged file path.")
+    print(f"ETC merge complete: {etc_path}")
+    df = pd.read_csv(etc_path, dtype=str, keep_default_na=False)
+    print(f"Merged ETC rows: {len(df)} | columns: {list(df.columns)}")
+    return df
 
 
 def load_vrn_download_merge_module():
@@ -315,15 +443,20 @@ def enrich_etc_with_vrn_tc_class(
     vehicle_col: str,
     columns_cfg: dict,
     entity_name: str,
+    from_date: str,
+    to_date: str,
 ) -> pd.DataFrame:
-    start_d, end_d = tag_read_date_range(etc_df, columns_cfg)
-    print(f"Starting VRN download/merge for entity_name={entity_name!r}")
+    print(
+        f"Starting VRN download/merge for entity_name={entity_name!r} "
+        f"({from_date} → {to_date})"
+    )
 
     vrn_mod = load_vrn_download_merge_module()
     vrn_path = vrn_mod.run_vrn_download_merge(
         entity_name,
-        start_d.isoformat(),
-        end_d.isoformat(),
+        from_date,
+        to_date,
+        merged_output_dir=OUTPUT_DIR,
     )
     if vrn_path is None:
         raise RuntimeError("VRN download finished without a merged file path.")
@@ -612,15 +745,26 @@ def apply_rates_and_loss(
 
 
 def unique_vehicle_frame(etc_df: pd.DataFrame, vehicle_col: str) -> pd.DataFrame:
-    series = (
-        etc_df[vehicle_col]
-        .map(normalize_vehicle_number)
-        .replace("", pd.NA)
-        .dropna()
-        .drop_duplicates()
-        .reset_index(drop=True)
+    """
+    Return one row per distinct non-empty vehicle for scraping only.
+    Original ETC rows (including duplicates) are left untouched and receive
+    permit fields later via merge_permit_into_etc.
+    """
+    normalized = etc_df[vehicle_col].map(normalize_vehicle_number)
+    non_empty = normalized.replace("", pd.NA).dropna()
+    unique = non_empty.drop_duplicates().reset_index(drop=True)
+
+    total_rows = len(etc_df)
+    with_vehicle = int(len(non_empty))
+    unique_count = int(len(unique))
+    duplicate_extra = with_vehicle - unique_count
+    print(
+        f"Vehicle dedupe for scrape on {vehicle_col!r}: "
+        f"ETC rows={total_rows:,}, with VRN={with_vehicle:,}, "
+        f"unique to scrape={unique_count:,}, "
+        f"duplicate row extras skipped={duplicate_extra:,}"
     )
-    return pd.DataFrame({vehicle_col: series})
+    return pd.DataFrame({vehicle_col: unique})
 
 
 def merge_permit_into_etc(
@@ -631,7 +775,8 @@ def merge_permit_into_etc(
 ) -> pd.DataFrame:
     """
     Left-join scrape results onto full ETC by normalized VRN.
-    Duplicate ETC rows for the same VRN all receive the same permit fields.
+    Duplicate ETC rows for the same VRN all receive the same permit fields —
+    no ETC rows are removed.
     """
     permit_type = columns_cfg.get("permit_type") or PERMIT_FIELDS[0]
     permit_no = columns_cfg.get("permit_no") or PERMIT_FIELDS[1]
@@ -702,19 +847,24 @@ def save_etc(df: pd.DataFrame, path: Path) -> Path:
 
 def main() -> int:
     print("=" * 60)
-    print("E6 — ETC + Permit scrape + VRN TC Class + rates/Loss")
+    print("E6 — ETC (path/download) + Permit scrape + VRN + rates/Loss")
     print(f"USE_SELENIUM_GRID = {USE_SELENIUM_GRID}")
     print(f"SKIP_PERMIT_SCRAPE_FOR_DEV = {SKIP_PERMIT_SCRAPE_FOR_DEV}")
+    print(f"ETC_INPUT_FILE = {ETC_INPUT_FILE!r}")
     print("=" * 60)
 
     config = load_config()
     columns_cfg = config.get("columns") or {}
     scrape_cfg = config.get("scrape") or {}
     entity_name = resolve_entity_name()
+    etc_input_path = resolve_etc_input_file()
     print(f"entity_name: {entity_name}")
 
+    # VRN date range: from file Tag Read dates when path given; else FROM/TO.
+    from_date = ""
+    to_date = ""
+
     if SKIP_PERMIT_SCRAPE_FOR_DEV:
-        # Development shortcut: reuse already-scraped permit output.
         start_path = Path(ETC_OUTPUT_FILE)
         if not start_path.is_file():
             raise FileNotFoundError(
@@ -722,26 +872,23 @@ def main() -> int:
                 f"{start_path}"
             )
         print(
-            "DEV: skipping permit scrape — loading existing file:\n"
+            "DEV: skipping ETC download + permit scrape — loading existing file:\n"
             f"  {start_path}"
         )
-        enriched, header_idx, headers = load_etc(start_path, config)
+        enriched, _header_idx, headers = load_etc(start_path, config)
         vehicle_col = resolve_vehicle_column(enriched, columns_cfg)
-        print(f"ETC header_idx: {header_idx}")
         print(f"ETC headers: {headers}")
         print(f"ETC rows: {len(enriched)}")
         print(f"Vehicle column: {vehicle_col}")
-    else:
-        etc_df, header_idx, headers = load_etc(Path(ETC_INPUT_FILE), config)
+        from_date, to_date = tag_read_date_range(enriched, columns_cfg)
+    elif etc_input_path is not None:
+        print("-" * 60)
+        etc_df = load_etc_from_path(etc_input_path, config)
         vehicle_col = resolve_vehicle_column(etc_df, columns_cfg)
-        print(f"ETC header_idx: {header_idx}")
-        print(f"ETC headers: {headers}")
-        print(f"ETC rows: {len(etc_df)}")
         print(f"Vehicle column: {vehicle_col}")
+        from_date, to_date = tag_read_date_range(etc_df, columns_cfg)
 
         unique_df = unique_vehicle_frame(etc_df, vehicle_col)
-        print(f"Unique VRNs to scrape: {len(unique_df)}")
-
         if unique_df.empty:
             print(
                 "No vehicle numbers found — writing ETC unchanged "
@@ -751,6 +898,10 @@ def main() -> int:
                 etc_df, pd.DataFrame(), vehicle_col, columns_cfg
             )
         else:
+            print(
+                f"Scraping {len(unique_df):,} unique VRNs "
+                f"(will map results back onto all {len(etc_df):,} ETC rows)."
+            )
             remote_url = (
                 scrape_cfg.get("selenium_remote_url") if USE_SELENIUM_GRID else None
             )
@@ -764,12 +915,62 @@ def main() -> int:
             enriched = merge_permit_into_etc(
                 etc_df, scraped, vehicle_col, columns_cfg
             )
-        # Persist permit stage so DEV skip can reuse it later.
+            print(
+                f"Permit fields applied to full ETC: "
+                f"{len(enriched):,} rows retained (no rows removed)."
+            )
+        save_etc(enriched, Path(ETC_OUTPUT_FILE))
+    else:
+        from_date, to_date = resolve_date_range(required=True)
+        print(f"date range (ETC download): {from_date} → {to_date}")
+        print("-" * 60)
+        etc_df = download_merged_etc(entity_name, from_date, to_date, config)
+        vehicle_col = resolve_vehicle_column(etc_df, columns_cfg)
+        print(f"Vehicle column: {vehicle_col}")
+
+        unique_df = unique_vehicle_frame(etc_df, vehicle_col)
+
+        if unique_df.empty:
+            print(
+                "No vehicle numbers found — writing ETC unchanged "
+                "with empty permit columns."
+            )
+            enriched = merge_permit_into_etc(
+                etc_df, pd.DataFrame(), vehicle_col, columns_cfg
+            )
+        else:
+            print(
+                f"Scraping {len(unique_df):,} unique VRNs "
+                f"(will map results back onto all {len(etc_df):,} ETC rows)."
+            )
+            remote_url = (
+                scrape_cfg.get("selenium_remote_url") if USE_SELENIUM_GRID else None
+            )
+            scraped = scrape_vehicle_details_for_permit(
+                unique_df,
+                remote_url=remote_url,
+                use_selenium_grid=USE_SELENIUM_GRID,
+                scrape_cfg=scrape_cfg,
+                vehicle_column=vehicle_col,
+            )
+            enriched = merge_permit_into_etc(
+                etc_df, scraped, vehicle_col, columns_cfg
+            )
+            print(
+                f"Permit fields applied to full ETC: "
+                f"{len(enriched):,} rows retained (no rows removed)."
+            )
         save_etc(enriched, Path(ETC_OUTPUT_FILE))
 
+    print(f"VRN download date range: {from_date} → {to_date}")
     print("-" * 60)
     enriched = enrich_etc_with_vrn_tc_class(
-        enriched, vehicle_col, columns_cfg, entity_name
+        enriched,
+        vehicle_col,
+        columns_cfg,
+        entity_name,
+        from_date,
+        to_date,
     )
 
     print("-" * 60)
@@ -779,6 +980,29 @@ def main() -> int:
     out_path = save_etc(enriched, Path(ETC_OUTPUT_FILE))
     print(f"Wrote enriched ETC: {out_path}")
     print(f"Rows: {len(enriched)} | Columns: {list(enriched.columns)}")
+
+    if not UPDATE_DB:
+        print("UPDATE_DB=False — audit_exception_metrics not updated.")
+        return 0
+
+    plaza_identifier = resolve_plaza_identifier()
+    print("-" * 60)
+    print("Updating audit_exception_metrics (exception_type_id=6)…")
+    columns_cfg = config.get("columns") or {}
+    update_db_from_dataframe(
+        enriched,
+        plaza_identifier,
+        exception_type_id=int(EXCEPTION_TYPE_ID),
+        dry_run=bool(DB_DRY_RUN),
+        tag_date_aliases=(
+            [str(columns_cfg.get("tag_read_datetime") or "")]
+            + list(columns_cfg.get("tag_read_datetime_aliases") or [])
+        ),
+        loss_aliases=[
+            str(columns_cfg.get("loss_output") or "Loss"),
+            "Loss",
+        ],
+    )
     return 0
 
 

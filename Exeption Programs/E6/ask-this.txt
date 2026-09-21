@@ -1,0 +1,3 @@
+In loss there are some negative values like -15, -10. 
+
+Currenrtly neglacting those in calculation of total.

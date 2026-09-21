@@ -122,6 +122,8 @@
       "Veh Reg No.",
       "Date & Time",
       "TC Class",
+      "Journey Type",
+      "Fare Type",
       "Lane",
       "Lane No",
       "MOP",
@@ -158,6 +160,20 @@
         "Lane",
         "LANE NO",
         "LANE"
+      ],
+      "TC Class": [
+        "TC Class",
+        "Tc Class",
+        "TcClass",
+        "Operator Class",
+        "Vehicle Class"
+      ],
+      "Journey Type": [
+        "Journey Type",
+        "JourneyType",
+        "Journey",
+        "Fare Type",
+        "TripType"
       ],
       "PAYMENT METHOD": [
         "PAYMENT METHOD",
@@ -231,5 +247,114 @@
   ],
   "match_max_hours": 2,
   "min_vrn_length": 6,
-  "from_plaza_custom_keep_value": "exception"
+  "from_plaza_custom_keep_value": "exception",
+  "rate_cutover_date": "2026-05-01",
+  "applicable_rate_output": "Applicable Rate",
+  "tc_class_column_aliases": [
+    "TC Class",
+    "TC Class_TO",
+    "Tc Class",
+    "TcClass",
+    "tc_class",
+    "Operator Class",
+    "Vehicle Class"
+  ],
+  "journey_type_column_aliases": [
+    "Journey Type",
+    "Journey Type_TO",
+    "JourneyType",
+    "Journey",
+    "Fare Type",
+    "TripType",
+    "journey_type"
+  ],
+  "journey_type_map": {
+    "single": [
+      "single",
+      "single journey",
+      "s",
+      "sj",
+      "first journey",
+      "1st journey",
+      "first jouney",
+      "First Journey",
+      "annualpass",
+      "annual pass"
+    ],
+    "return": [
+      "return",
+      "return journey",
+      "r",
+      "rj",
+      "round trip",
+      "roundtrip"
+    ],
+    "local": [
+      "local",
+      "local journey",
+      "l",
+      "lj",
+      "monthly pass",
+      "local pass"
+    ]
+  },
+  "tc_class_index_map": {
+    "1": [
+      "car",
+      "carjeep",
+      "car/jeep",
+      "car / jeep",
+      "car/jeep/van",
+      "jeep",
+      "van"
+    ],
+    "2": [
+      "lcv",
+      "minibus",
+      "mini bus",
+      "lcv/mini bus",
+      "lcv / mini bus"
+    ],
+    "3": [
+      "truck",
+      "truck/bus",
+      "bus/truck",
+      "bus",
+      "bus 2 axle",
+      "bus-2 axle",
+      "truck 2 axle",
+      "truck-2 axle"
+    ],
+    "4": [
+      "truck3x",
+      "truck 3x",
+      "truck-3ax",
+      "truck 3 axle",
+      "truck-3 axle",
+      "bus 3 ax",
+      "bus-3 axle",
+      "bus/truck 3 axle"
+    ],
+    "5": [
+      "mav",
+      "hcm/mav",
+      "mav (4 to 6 axle)",
+      "mav 4 ax",
+      "mav 4 axle",
+      "mav 5 ax",
+      "mav 5 axle",
+      "mav 6 ax",
+      "mav 6 axle",
+      "truck 4-6 axle"
+    ],
+    "6": [
+      "osv"
+    ]
+  },
+  "tc_class_skip_list": [
+    "auto",
+    "na",
+    "unknown",
+    "---select vehicle class---"
+  ]
 }

@@ -1,0 +1,8 @@
+SWB Wt/Std. Weight
+Lane Weight
+Lane/Chg Standard Weight
+LANE OVERLOAD AMT
+SWB AMT
+
+
+These columns should be in VRN file.

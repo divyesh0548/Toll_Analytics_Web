@@ -30,9 +30,62 @@
   ],
   "header_scan_rows": 25,
   "min_header_matches": 3,
+  "etc_merge": {
+    "header_keywords": [
+      "Agency Txn Id",
+      "Settlement Amount",
+      "Net Settlement Amt",
+      "Plaza ID",
+      "VEH REG NO",
+      "Veh Reg No.",
+      "Veh Reg No",
+      "Journey Type",
+      "Fare Type",
+      "Date & Time",
+      "Tag Read Date Time",
+      "Txn Status"
+    ],
+    "header_scan_rows": 25,
+    "min_header_matches": 3,
+    "merge_columns": {
+      "vehicle_reg_no": [
+        "Veh Reg No",
+        "Veh Reg No.",
+        "Vehicle Reg No",
+        "Vehicle Number",
+        "Vehicle No",
+        "Reg No",
+        "Licence Plate No"
+      ],
+      "read_datetime": [
+        "Tag Read Date Time",
+        "Tag Read Datetime",
+        "TagRead Date Time",
+        "Date & Time",
+        "Txn Date Time",
+        "Transaction Date Time"
+      ],
+      "journey_type": [
+        "Journey Type",
+        "JourneyType",
+        "Journey",
+        "Fare Type",
+        "TripType"
+      ],
+      "net_settlement_amt": [
+        "Net Settlement Amt",
+        "Net Settlement Amount",
+        "Net Settlement",
+        "Settlement Amount",
+        "Settled Amount",
+        "Net Settled Amount"
+      ]
+    }
+  },
   "columns": {
-    "etc_vehicle": "Veh Reg No",
+    "etc_vehicle": "vehicle_reg_no",
     "etc_vehicle_aliases": [
+      "vehicle_reg_no",
       "Veh Reg No",
       "Veh Reg No.",
       "Vehicle Reg No",
@@ -41,8 +94,9 @@
       "Reg No",
       "Licence Plate No"
     ],
-    "tag_read_datetime": "Tag Read Date Time",
+    "tag_read_datetime": "read_datetime",
     "tag_read_datetime_aliases": [
+      "read_datetime",
       "Tag Read Date Time",
       "Tag Read Datetime",
       "TagRead Date Time",
@@ -50,16 +104,18 @@
       "Txn Date Time",
       "Transaction Date Time"
     ],
-    "journey_type": "Journey Type",
+    "journey_type": "journey_type",
     "journey_type_aliases": [
+      "journey_type",
       "Journey Type",
       "JourneyType",
       "Journey",
       "Fare Type",
       "TripType"
     ],
-    "net_settlement": "Net Settlement Amt",
+    "net_settlement": "net_settlement_amt",
     "net_settlement_aliases": [
+      "net_settlement_amt",
       "Net Settlement Amt",
       "Net Settlement Amount",
       "Net Settlement",
@@ -72,11 +128,12 @@
       "TC Class",
       "Tc Class",
       "TcClass",
+      "tc_class",
       "Operator Class",
       "Vehicle Class"
     ],
     "tc_class_output": "TC Class",
-    "journey_type_normalized_output": "Journey Type",
+    "journey_type_normalized_output": "journey_type",
     "applicable_rate_output": "Applicable Rate",
     "loss_output": "Loss",
     "permit_type": "Permit Type",
@@ -161,7 +218,7 @@
   },
   "scrape": {
     "selenium_remote_url": "http://localhost:4444/wd/hub",
-    "max_nodes": 6,
+    "max_nodes": 8,
     "headless": false,
     "auto_manage_nodes": true
   }
