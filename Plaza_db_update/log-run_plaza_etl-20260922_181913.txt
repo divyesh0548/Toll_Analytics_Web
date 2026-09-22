@@ -1,0 +1,8 @@
+run_plaza_etl processing log
+Started: 2026-09-22 18:19:13
+================================================================================
+Plaza identifier: 94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6
+Plaza: bassi
+Input folder: C:\Divyesh\Toll Analytics Dashboard\Bassi VRNs\pending
+Files found: 248
+Dry run: False

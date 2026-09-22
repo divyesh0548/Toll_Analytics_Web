@@ -7,14 +7,15 @@ E10 — VRN + checkpost Weight, then ETC download/merge, then VRN↔ETC join.
 4) Drop rows with null / empty / "0" / "N/A" Weight
 5) Download/merge ETC (vehicle, datetime, Net Settlement, NPCI Class)
 6) Join VRN↔ETC on normalized vehicle + date/hour key
-   (e.g. "25-11-2025 08:00:17" → "25/11/2025|8 AM")
 7) Add Custom weight-range band from Weight (ranges in e10_config.json)
 8) Add Weight Group (E10.txt stage-2 rules), drop null groups, lookup Std Weight
-   from OW multiple LSW std weights.xlsx; store in Std Weight
+9) Map Custom → vehicle-class index → plaza single rate (Applicable Rate);
+   rates book switches on read_datetime after April 2026
 
-DB credentials / source DBs: Website/backend/.env
-  Source_DB_NAME + exceptions_Table_NAME → submissions (VRN + ETC)
-  CHECKPOST_DB + CHECKPOST_TABLE → checkpost weights
+DB credentials:
+  Website/backend/.env — Source_DB_NAME + exceptions_Table_NAME → submissions (VRN + ETC)
+  E4/.env — Checkpost_DB_NAME + Checkpost_Table_NAME → checkpost weights
+  (aliases CHECKPOST_DB / CHECKPOST_TABLE also accepted)
 
 Run:
   1. Set ENTITY_NAME, FROM_DATE, TO_DATE
@@ -29,6 +30,7 @@ import json
 import os
 import re
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -40,11 +42,34 @@ from psycopg2.extras import RealDictCursor
 BASE_DIR = Path(__file__).resolve().parent
 E4_DIR = BASE_DIR.parent / "E4"
 WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
+E4_ENV = E4_DIR / ".env"
 CONFIG_PATH = BASE_DIR / "e10_config.json"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
+VEHICLE_CLASS_PATH = BASE_DIR / "vehicle-class.py"
 OUTPUT_DIR = BASE_DIR / "output"
 ETC_DOWNLOAD_FOLDER = BASE_DIR / "etc_downloads"
+
+# Plaza rates (E4)
+if str(E4_DIR) not in sys.path:
+    sys.path.insert(0, str(E4_DIR))
+from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
+
+
+def _load_vehicle_class_module():
+    path = VEHICLE_CLASS_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"vehicle-class.py not found: {path}")
+    spec = importlib.util.spec_from_file_location("e10_vehicle_class", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_VEHICLE_CLASS_MOD = _load_vehicle_class_module()
+WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
 # --- Runtime inputs (edit these; not in config) ---
 ENTITY_NAME = "odhaki_paipkhar"
@@ -64,7 +89,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 
 def load_env() -> None:
-    """Load Website/backend/.env and map names used by E4 download scripts."""
+    """Load Website + E4 .env files and map names used by downloads / checkpost."""
     if not WEBSITE_ENV.is_file():
         raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
     load_dotenv(WEBSITE_ENV, override=True)
@@ -80,19 +105,29 @@ def load_env() -> None:
     )
     os.environ["Table_NAME"] = table
 
-    # Checkpost aliases used by this script
-    checkpost_db = os.getenv("CHECKPOST_DB", "").strip()
-    if checkpost_db:
-        os.environ["Checkpost_DB_NAME"] = checkpost_db
-    checkpost_table = os.getenv("CHECKPOST_TABLE", "").strip()
-    if checkpost_table:
-        os.environ["Checkpost_Table_NAME"] = checkpost_table
+    # Checkpost lives in E4/.env (Checkpost_DB_NAME / Checkpost_Table_NAME).
+    # override=False so Website Source_DB_NAME → DB_NAME mapping stays intact.
+    if E4_ENV.is_file():
+        load_dotenv(E4_ENV, override=False)
+
+    # Accept CHECKPOST_* aliases if Checkpost_* not already set
+    if not os.getenv("Checkpost_DB_NAME", "").strip():
+        alias_db = os.getenv("CHECKPOST_DB", "").strip()
+        if alias_db:
+            os.environ["Checkpost_DB_NAME"] = alias_db
+    if not os.getenv("Checkpost_Table_NAME", "").strip():
+        alias_table = os.getenv("CHECKPOST_TABLE", "").strip()
+        if alias_table:
+            os.environ["Checkpost_Table_NAME"] = alias_table
 
 
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {WEBSITE_ENV})")
+        searched = f"{WEBSITE_ENV}"
+        if E4_ENV.is_file():
+            searched += f" and {E4_ENV}"
+        raise RuntimeError(f"Missing required env var: {name} (checked {searched})")
     return value
 
 
@@ -1006,6 +1041,192 @@ def attach_std_weight_from_lookup(
     return result
 
 
+def _normalize_custom_label_key(value) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\u00a0", " ").strip().casefold()
+    text = text.replace(",", "")
+    return " ".join(text.split())
+
+
+def build_custom_to_class_index(config: dict) -> dict[str, int]:
+    """
+    Map Custom weight-band labels → vehicle-class indexes.
+    Ordered weight_ranges align with WEIGHT_RANGE_INDEXES (1..N);
+    above-max label → OSV = 6.
+    """
+    ranges = config.get("weight_ranges") or []
+    indexes = list(WEIGHT_RANGE_INDEXES)
+    if not ranges:
+        raise RuntimeError("e10_config.json weight_ranges is empty.")
+    if len(ranges) > len(indexes):
+        raise RuntimeError(
+            f"weight_ranges has {len(ranges)} bands but vehicle-class "
+            f"WEIGHT_RANGE_INDEXES has only {len(indexes)} indexes."
+        )
+
+    lookup: dict[str, int] = {}
+    for i, entry in enumerate(ranges):
+        label = str(entry.get("label") or "").strip()
+        idx = int(indexes[i][1])
+        key = _normalize_custom_label_key(label)
+        if key:
+            lookup[key] = idx
+
+    above = str(config.get("weight_range_above_max_label") or ">60,000 Kgs").strip()
+    above_key = _normalize_custom_label_key(above)
+    if above_key:
+        lookup[above_key] = 6  # OSV
+    return lookup
+
+
+def parse_rate_cutover_date(config: dict) -> date:
+    """First day when Plaza_Rates_Apr26_onwards applies (default: after April 2026)."""
+    raw = str(config.get("rate_cutover_date") or "2026-05-01").strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid rate_cutover_date: {raw!r}") from exc
+
+
+def select_plaza_rates_book(read_d: date, cutover: date) -> dict:
+    if read_d < cutover:
+        return PLAZA_RATES
+    return Plaza_Rates_Apr26_onwards
+
+
+def lookup_single_rate(
+    entity_name: str,
+    rates_book: dict,
+    class_index: int,
+) -> float:
+    key = str(entity_name or "").strip()
+    plaza = rates_book.get(key) or rates_book.get(key.lower())
+    if plaza is None:
+        book = (
+            "PLAZA_RATES"
+            if rates_book is PLAZA_RATES
+            else "Plaza_Rates_Apr26_onwards"
+        )
+        raise RuntimeError(f"Entity {entity_name!r} not found in plaza rates ({book})")
+    journey_rates = plaza.get("single") if isinstance(plaza, dict) else None
+    if not isinstance(journey_rates, dict):
+        raise RuntimeError(f"No 'single' rates for entity {entity_name!r}")
+    if class_index not in journey_rates:
+        raise RuntimeError(
+            f"No single rate for class index {class_index} on entity {entity_name!r}"
+        )
+    return float(journey_rates[class_index])
+
+
+def apply_applicable_rates_from_custom(
+    df: pd.DataFrame,
+    config: dict,
+    entity_name: str,
+) -> pd.DataFrame:
+    """
+    Custom weight band → vehicle-class index → plaza single rate → Applicable Rate.
+    Rate book: PLAZA_RATES until day before cutover; Plaza_Rates_Apr26_onwards after.
+    """
+    if df is None or df.empty:
+        return df
+
+    headers = [str(c) for c in df.columns]
+    custom_col = resolve_column(
+        headers,
+        [
+            str(config.get("weight_range_output_column") or "Custom"),
+            "Custom",
+        ],
+    )
+    dt_col = resolve_column(
+        headers,
+        (config.get("datetime_column_aliases") or []) + ["read_datetime"],
+    )
+    if not custom_col:
+        raise RuntimeError(
+            f"Custom column not found for rate lookup. Available: {list(df.columns)}"
+        )
+    if not dt_col:
+        raise RuntimeError(
+            f"read_datetime column not found for rate cutover. "
+            f"Available: {list(df.columns)}"
+        )
+
+    index_col = str(config.get("class_index_output_column") or "Class Index").strip()
+    if not index_col:
+        index_col = "Class Index"
+    rate_col = str(config.get("applicable_rate_output") or "Applicable Rate").strip()
+    if not rate_col:
+        rate_col = "Applicable Rate"
+
+    custom_to_index = build_custom_to_class_index(config)
+    cutover = parse_rate_cutover_date(config)
+    parsed_dt = pd.to_datetime(df[dt_col], errors="coerce", format="mixed")
+
+    class_indexes: list[str] = []
+    rates: list[str] = []
+    missing_custom = 0
+    missing_date = 0
+    used_default_book = 0
+    used_apr26_book = 0
+
+    for custom_raw, dt_val in zip(df[custom_col].tolist(), parsed_dt.tolist()):
+        custom_key = _normalize_custom_label_key(custom_raw)
+        class_index = custom_to_index.get(custom_key) if custom_key else None
+        if class_index is None:
+            missing_custom += 1
+            class_indexes.append("")
+            rates.append("")
+            continue
+
+        if pd.isna(dt_val):
+            missing_date += 1
+            class_indexes.append(str(class_index))
+            rates.append("")
+            continue
+
+        if isinstance(dt_val, datetime):
+            read_d = dt_val.date()
+        elif isinstance(dt_val, date):
+            read_d = dt_val
+        else:
+            read_d = pd.Timestamp(dt_val).date()
+
+        rates_book = select_plaza_rates_book(read_d, cutover)
+        if rates_book is Plaza_Rates_Apr26_onwards:
+            used_apr26_book += 1
+        else:
+            used_default_book += 1
+
+        rate = lookup_single_rate(entity_name, rates_book, int(class_index))
+        class_indexes.append(str(class_index))
+        rates.append(str(rate))
+
+    result = df.copy()
+    result[index_col] = class_indexes
+    result[rate_col] = rates
+
+    filled = sum(1 for v in rates if str(v).strip())
+    print(
+        f"Applicable Rate (single) for entity {entity_name!r}: "
+        f"{filled}/{len(result)} filled | "
+        f"PLAZA_RATES={used_default_book}, Apr26_onwards={used_apr26_book} "
+        f"(cutover={cutover.isoformat()}) | "
+        f"unknown Custom={missing_custom}, missing date={missing_date}"
+    )
+    if missing_custom:
+        unknown = sorted(
+            {
+                str(v).strip()
+                for v in df[custom_col].tolist()
+                if _normalize_custom_label_key(v) not in custom_to_index
+                and str(v).strip()
+            }
+        )
+        print(f"  Unknown Custom labels (sample): {unknown[:10]}")
+    return result
+
+
 def save_output(df: pd.DataFrame, path: Path) -> Path:
     path = Path(path)
     if not path.is_absolute():
@@ -1074,6 +1295,10 @@ def main() -> int:
     print("-" * 60)
     print("Looking up Std Weight…")
     merged = attach_std_weight_from_lookup(merged, config)
+
+    print("-" * 60)
+    print("Applying Applicable Rate (Custom → class index → single rates)…")
+    merged = apply_applicable_rates_from_custom(merged, config, entity_name)
 
     merged_out = save_output(merged, Path(MERGED_VRN_ETC_OUTPUT_FILE))
     print(f"Merged rows: {len(merged)} | Columns: {list(merged.columns)}")

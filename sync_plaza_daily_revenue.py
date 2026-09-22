@@ -46,10 +46,10 @@ from psycopg2.extras import RealDictCursor
 # ---------------------------------------------------------------------------
 
 # Source submissions.entity_name value for this plaza.
-ENTITY_NAME = "aroli"
+ENTITY_NAME = "bassi"
 
 # Target plaza UUID in toll_analytics.plazas.
-PLAZA_IDENTIFIER = "39d45059-341d-435b-8824-9963b4e2068e"
+PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 
 # Inclusive cutoff (YYYY-MM-DD). Rows after this date are ignored.
 END_DATE = "2026-08-31"

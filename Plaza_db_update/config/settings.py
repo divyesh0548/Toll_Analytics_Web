@@ -8,12 +8,12 @@ from pathlib import Path
 PLAZA_UPDATE_DIR = Path(__file__).resolve().parent.parent
 
 # Must match plazas.plaza_identifier created on the website.
-PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
+PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 
 # Display name stored alongside plaza_identifier.
-PLAZA_NAME = "odhaki_paipkhar"
+PLAZA_NAME = "bassi"
 
-INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\odhaki_paipkhar"
+INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Bassi VRNs\pending"
 
 # Rows before this date are skipped (noisy / sparse history).
 START_DATE_LIMIT = "2025-11-23"

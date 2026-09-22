@@ -54,6 +54,9 @@
     }
   ],
   "weight_range_above_max_label": ">60,000 Kgs",
+  "rate_cutover_date": "2026-05-01",
+  "class_index_output_column": "Class Index",
+  "applicable_rate_output": "Applicable Rate",
   "weight_group_output_column": "Weight Group",
   "weight_group_rules": [
     {"type": "eq", "weight": 7500, "label": "7875"},

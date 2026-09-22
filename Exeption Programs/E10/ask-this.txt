@@ -1,0 +1,3 @@
+For geting rates, we need to take lookup of Custom column with rates file.
+
+In selecting rates the vioalation bot has a range 18500 to 31000, but code from Mihir has a range 18500 to 28000. Which one is correct?

@@ -575,47 +575,53 @@ def remove_duplicate_header_rows(df: pd.DataFrame) -> pd.DataFrame:
 def unmerge_workbook(input_path: Path, output_path: Path, sheet_name: str | None = None) -> str:
     """Unmerge all merged cells and save to a new workbook."""
     workbook = load_workbook(input_path)
-    worksheet = workbook[sheet_name] if sheet_name else workbook.active
-    resolved_sheet_name = worksheet.title
+    try:
+        worksheet = workbook[sheet_name] if sheet_name else workbook.active
+        resolved_sheet_name = worksheet.title
 
-    for merged_range in list(worksheet.merged_cells):
-        worksheet.unmerge_cells(range_string=str(merged_range))
+        for merged_range in list(worksheet.merged_cells):
+            worksheet.unmerge_cells(range_string=str(merged_range))
 
-    workbook.save(output_path)
-    return resolved_sheet_name
+        workbook.save(output_path)
+        return resolved_sheet_name
+    finally:
+        workbook.close()
 
 
 def remove_empty_columns(filename: Path, sheet_name: str, header_row: int) -> Path:
     """Delete columns with empty headers or no data below the header row."""
     workbook = load_workbook(filename)
-    worksheet = workbook[sheet_name]
-    max_col = worksheet.max_column
-    cols_to_delete: list[int] = []
+    try:
+        worksheet = workbook[sheet_name]
+        max_col = worksheet.max_column
+        cols_to_delete: list[int] = []
 
-    for col_idx in range(1, max_col + 1):
-        col_letter = get_column_letter(col_idx)
-        header_value = worksheet[f"{col_letter}{header_row}"].value
+        for col_idx in range(1, max_col + 1):
+            col_letter = get_column_letter(col_idx)
+            header_value = worksheet[f"{col_letter}{header_row}"].value
 
-        if header_value is None or str(header_value).strip() == "":
-            cols_to_delete.append(col_idx)
-            continue
+            if header_value is None or str(header_value).strip() == "":
+                cols_to_delete.append(col_idx)
+                continue
 
-        empty_below = True
-        for row_idx in range(header_row + 1, worksheet.max_row + 1):
-            value = worksheet.cell(row=row_idx, column=col_idx).value
-            if value not in (None, ""):
-                empty_below = False
-                break
+            empty_below = True
+            for row_idx in range(header_row + 1, worksheet.max_row + 1):
+                value = worksheet.cell(row=row_idx, column=col_idx).value
+                if value not in (None, ""):
+                    empty_below = False
+                    break
 
-        if empty_below:
-            cols_to_delete.append(col_idx)
+            if empty_below:
+                cols_to_delete.append(col_idx)
 
-    for col_idx in sorted(cols_to_delete, reverse=True):
-        worksheet.delete_cols(col_idx, 1)
+        for col_idx in sorted(cols_to_delete, reverse=True):
+            worksheet.delete_cols(col_idx, 1)
 
-    output_path = filename.with_name(f"{filename.stem}_cleaned{filename.suffix}")
-    workbook.save(output_path)
-    return output_path
+        output_path = filename.with_name(f"{filename.stem}_cleaned{filename.suffix}")
+        workbook.save(output_path)
+        return output_path
+    finally:
+        workbook.close()
 
 
 def read_csv_with_header_detection(path: Path) -> pd.DataFrame:
@@ -682,7 +688,10 @@ def prepare_excel_dataframe(
         no_dup_path = temp_dir_path / "no_duplicate_headers.xlsx"
         df_full.to_excel(no_dup_path, index=False, header=False)
 
-        sheet_name = pd.ExcelFile(no_dup_path).sheet_names[0]
+        # Close ExcelFile before the next open — Windows locks the xlsx otherwise.
+        with pd.ExcelFile(no_dup_path) as excel_file:
+            sheet_name = excel_file.sheet_names[0]
+
         unmerged_path = temp_dir_path / "unmerged.xlsx"
         sheet_name = unmerge_workbook(no_dup_path, unmerged_path, sheet_name=sheet_name)
 

@@ -28,7 +28,7 @@ from config.excel_config import (
 # Inputs — update these before running
 # ---------------------------------------------------------------------------
 
-INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Odhaki test"
+INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Bassi test"
 OUTPUT_FILE = SCRIPT_DIR / "Distinct Values" / "distinct_values.txt"
 
 HEADER_SCAN_ROWS = 25

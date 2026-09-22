@@ -1,0 +1,7 @@
+@Exeption Programs/E10/Main_E10.py In the last process file gets generated with a "Custom" column whihc stores the range of weight. 
+
+@Exeption Programs/E10/output/e10_vrn_etc_merged.csv Based on that range get the index of vehicle from @Exeption Programs/E10/vehicle-class.py this and based on the index get rate for plaza @Exeption Programs/E4/plaza_rates.py.
+
+Only for this program consider single rates, because there is no journey type involved in this. And match ENTITY_NAME for finding rates.
+
+Get the date from "read_datetime" column and if it is after April 2026, then consider "Plaza_Rates_Apr26_onwards" rates, otherwise default one.

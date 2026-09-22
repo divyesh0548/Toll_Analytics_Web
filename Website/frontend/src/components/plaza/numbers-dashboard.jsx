@@ -781,9 +781,9 @@ function LayoutRevenue({ data, dark }) {
           hint="Period revenue ÷ traffic"
         />
         <Kpi
-          label="ETC share"
+          label="Fastag share"
           value={kpis.etc_share == null ? '—' : `${kpis.etc_share}%`}
-          hint="Traffic MOP mix for same interval"
+          hint="Share of period traffic with Fastag (TAG) MOP"
         />
       </div>
 

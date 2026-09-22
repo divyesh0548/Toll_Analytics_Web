@@ -1,9 +1,22 @@
+# WEIGHT_RANGE_INDEXES = [
+#     (7500, 1, "Car"),
+#     (12000, 2, "LCV"),
+#     (18500, 3, "Truck"),
+#     (31000, 4, "Truck3X"),
+#     (60000, 5, "MAV"),
+# ]
+
+
+# Upper logic is original logic, used in violation bot
+
+# Lower logic is specifically used for this query. Also the coondition for OSV is different in this query.
+
 WEIGHT_RANGE_INDEXES = [
     (7500, 1, "Car"),
     (12000, 2, "LCV"),
     (18500, 3, "Truck"),
-    (31000, 4, "Truck3X"),
-    (60000, 5, "MAV"),
+    (28000, 4, "Truck3X"),
+    (55000, 5, "MAV"),
 ]
 
 
