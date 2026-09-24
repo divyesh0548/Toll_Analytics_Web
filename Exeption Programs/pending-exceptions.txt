@@ -1,0 +1,17 @@
+E07	Local passes issued at a lower or zero charge - Filter VC4 and then count months. No of months * 360. Result - Issuance fee = Loss
+E08	Local passes issued to users not owning the vehicle or residing beyond 20 km - Removed
+E09	Revenue loss due to transactions not getting settled - ETC Not settled rows
+E11	AVC failure to detect the correct class, or higher class detected but no violation raised  - Pivot tabel of vehivles and AVC classes.
+E12	Multiple FASTags issued to same vehicle (lower class tags) resulting in revenue loss - Removed 
+
+
+
+Overloading conditions
+
+A = Std weight is grater then that column.
+
+
+This conditions are for less than.
+
+U is zero = b 
+U is not zero = C

@@ -115,6 +115,8 @@ class AuditExceptionType(db.Model):
     description = db.Column(db.Text, nullable=True)
     sort_order = db.Column(db.Integer, nullable=False, default=0)
     is_active = db.Column(db.Boolean, nullable=False, default=True)
+    # When True, keep type + metrics in DB but omit from website Audit Exceptions UI.
+    is_hidden = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -137,6 +139,7 @@ class AuditExceptionType(db.Model):
             "description": self.description,
             "sort_order": self.sort_order,
             "is_active": self.is_active,
+            "is_hidden": self.is_hidden,
         }
 
     def __repr__(self) -> str:

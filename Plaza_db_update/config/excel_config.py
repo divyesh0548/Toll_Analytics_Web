@@ -8,7 +8,8 @@ import re
 # looks for a separate TIME column and combines the two.
 DATE_COLUMN_ALIASES = [
     "DATE",
-    "Date & Time"
+    "Date & Time",
+    "DATE TIME "
 ]
 
 # Time-only Excel header aliases used with DATE_COLUMN_ALIASES.
@@ -22,6 +23,7 @@ MOP_COLUMN_ALIASES = [
     "MVC_TLC_MOP",
     "PAYMENT METHOD",
     "Payment Method",
+    "MOP"
 ]
 
 # Lane Excel header aliases.

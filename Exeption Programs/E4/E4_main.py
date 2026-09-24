@@ -6,7 +6,8 @@ E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates →
 3. Download/merge VRN for the same date range; map TC Class onto pass vehicles.
 4. Map TC Class → index → single journey rate (PLAZA_RATES vs Apr26 onwards by
    validity end date). Total Charge = Trips × Rate; Loss = Total Charge − Issuance Fee
-   (default 360 if fee column missing).
+   (default fee from config if fee column/value missing). Missing other columns/keywords
+   stop execution.
 5. Sum Loss and Trips by End-date month; upsert audit_exception_metrics (E04 / id 4).
 
 Run:
@@ -39,9 +40,9 @@ VRN_DOWNLOAD_MERGE_PATH = BASE_DIR / "vrn-download-merge.py"
 PASS_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\Pass"
 MERGED_OUTPUT_FILE = BASE_DIR / "output" / "merged_pass_files.xlsx"
 # submissions.entity_name — used for ETC/VRN download and plaza rates lookup.
-ENTITY_NAME = "odhaki_paipkhar"
+ENTITY_NAME = "bassi"
 # plazas.plaza_identifier — required for audit_exception_metrics upsert.
-PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
+PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 4
 DB_DRY_RUN = False
 SKIP_DB_UPDATE = False
@@ -191,13 +192,16 @@ def load_pass_file(
 def drop_empty_vehicle_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """Remove rows whose vehicle / chassis number is blank after normalize."""
     headers = [str(c) for c in df.columns]
-    veh_col = resolve_column(headers, config.get("pass_chassis_column_names") or [])
+    aliases = config.get("pass_chassis_column_names") or []
+    if not aliases:
+        raise RuntimeError("pass_chassis_column_names is empty in config.json")
+    veh_col = resolve_column(headers, aliases)
     if not veh_col:
-        print(
-            "WARNING: skip empty-vehicle filter — could not resolve "
-            "pass_chassis_column_names"
+        raise RuntimeError(
+            "Vehicle/chassis column not found "
+            f"(pass_chassis_column_names={aliases!r}). "
+            f"Available: {list(df.columns)}"
         )
-        return df
 
     keys = df[veh_col].map(normalize_vehicle_number)
     keep = keys.ne("")
@@ -215,25 +219,31 @@ def drop_mp_car_jeep_van_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
       AND vehicle class ∈ Car/Jeep/Van (aliases)
     """
     headers = [str(c) for c in df.columns]
-    rule = config.get("exclude_mp_car_jeep_van") or {}
+    rule = config.get("exclude_mp_car_jeep_van")
+    if not isinstance(rule, dict) or not rule:
+        raise RuntimeError("exclude_mp_car_jeep_van is missing or empty in config.json")
 
-    pass_col = resolve_column(headers, config.get("pass_type_column_names") or [])
-    class_col = resolve_column(
-        headers,
-        config.get("mapper_vehicle_class_column_names") or [],
-    )
+    pass_aliases = config.get("pass_type_column_names") or []
+    class_aliases = config.get("mapper_vehicle_class_column_names") or []
+    if not pass_aliases:
+        raise RuntimeError("pass_type_column_names is empty in config.json")
+    if not class_aliases:
+        raise RuntimeError("mapper_vehicle_class_column_names is empty in config.json")
+
+    pass_col = resolve_column(headers, pass_aliases)
+    class_col = resolve_column(headers, class_aliases)
 
     if not pass_col or not class_col:
         missing = []
         if not pass_col:
-            missing.append("pass_type_column_names")
+            missing.append(f"pass_type_column_names={pass_aliases!r}")
         if not class_col:
-            missing.append("mapper_vehicle_class_column_names")
-        print(
-            "WARNING: skip MP+Car/Jeep/Van filter — could not resolve columns for "
+            missing.append(f"mapper_vehicle_class_column_names={class_aliases!r}")
+        raise RuntimeError(
+            "Could not resolve columns for MP+Car/Jeep/Van filter: "
             + ", ".join(missing)
+            + f". Available: {list(df.columns)}"
         )
-        return df
 
     pass_values = {
         _normalize_value_key(v)
@@ -246,8 +256,10 @@ def drop_mp_car_jeep_van_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         if str(v).strip()
     }
     if not pass_values or not class_values:
-        print("WARNING: skip MP+Car/Jeep/Van filter — empty value lists in config")
-        return df
+        raise RuntimeError(
+            "exclude_mp_car_jeep_van pass_type_values / vehicle_class_values "
+            "must be non-empty in config.json"
+        )
 
     pass_keys = df[pass_col].map(_normalize_value_key)
     class_keys = df[class_col].map(_normalize_value_key)
@@ -276,6 +288,8 @@ def merge_pass_folder(config: dict) -> tuple[Path, pd.DataFrame]:
         raise FileNotFoundError(f"No Pass files found in: {folder}")
 
     keywords = config.get("header_keywords") or []
+    if not keywords:
+        raise RuntimeError("header_keywords is empty in config.json")
     scan_rows = int(config.get("header_scan_rows") or 25)
     min_matches = int(config.get("min_header_matches") or 3)
 
@@ -368,17 +382,25 @@ def parse_datetime_series(series: pd.Series) -> pd.Series:
 
 def validity_date_range(df: pd.DataFrame, config: dict) -> tuple[date, date]:
     headers = [str(c) for c in df.columns]
-    start_col = resolve_column(headers, config.get("pass_start_date_column_names") or [])
-    end_col = resolve_column(headers, config.get("pass_end_date_column_names") or [])
+    start_aliases = config.get("pass_start_date_column_names") or []
+    end_aliases = config.get("pass_end_date_column_names") or []
+    if not start_aliases:
+        raise RuntimeError("pass_start_date_column_names is empty in config.json")
+    if not end_aliases:
+        raise RuntimeError("pass_end_date_column_names is empty in config.json")
+
+    start_col = resolve_column(headers, start_aliases)
+    end_col = resolve_column(headers, end_aliases)
     if not start_col or not end_col:
         missing = []
         if not start_col:
-            missing.append("pass_start_date_column_names")
+            missing.append(f"pass_start_date_column_names={start_aliases!r}")
         if not end_col:
-            missing.append("pass_end_date_column_names")
+            missing.append(f"pass_end_date_column_names={end_aliases!r}")
         raise RuntimeError(
-            "Trips taken not found, and could not resolve validity date columns: "
+            "Could not resolve validity date columns: "
             + ", ".join(missing)
+            + f". Available: {list(df.columns)}"
         )
 
     start_parsed = parse_datetime_series(df[start_col])
@@ -618,21 +640,41 @@ def compute_total_charge_and_loss(
     entity_name: str,
 ) -> pd.DataFrame:
     headers = [str(c) for c in pass_df.columns]
-    tc_col = resolve_column(
-        headers,
-        [config.get("tc_class_output_column") or "TC Class", "TC Class", "Tc Class"],
-    )
-    trips_col = resolve_column(headers, config.get("trips_taken_column_names") or [])
-    end_col = resolve_column(headers, config.get("pass_end_date_column_names") or [])
-    fee_col = resolve_column(headers, config.get("issuance_fee_column_names") or [])
+    tc_aliases = [
+        str(config.get("tc_class_output_column") or "").strip(),
+        "TC Class",
+        "Tc Class",
+    ]
+    tc_aliases = [a for a in tc_aliases if a]
+    trips_aliases = config.get("trips_taken_column_names") or []
+    end_aliases = config.get("pass_end_date_column_names") or []
+    fee_aliases = config.get("issuance_fee_column_names") or []
+
+    if not trips_aliases:
+        raise RuntimeError("trips_taken_column_names is empty in config.json")
+    if not end_aliases:
+        raise RuntimeError("pass_end_date_column_names is empty in config.json")
+
+    tc_col = resolve_column(headers, tc_aliases)
+    trips_col = resolve_column(headers, trips_aliases)
+    end_col = resolve_column(headers, end_aliases)
+    fee_col = resolve_column(headers, fee_aliases) if fee_aliases else None
 
     if not tc_col:
-        raise RuntimeError("TC Class column not found on merged pass file")
+        raise RuntimeError(
+            f"TC Class column not found (tried {tc_aliases!r}). "
+            f"Available: {list(pass_df.columns)}"
+        )
     if not trips_col:
-        raise RuntimeError("Trips taken column not found on merged pass file")
+        raise RuntimeError(
+            f"Trips taken column not found (trips_taken_column_names={trips_aliases!r}). "
+            f"Available: {list(pass_df.columns)}"
+        )
     if not end_col:
         raise RuntimeError(
-            "Validity end date column not found (pass_end_date_column_names)"
+            "Validity end date column not found "
+            f"(pass_end_date_column_names={end_aliases!r}). "
+            f"Available: {list(pass_df.columns)}"
         )
 
     charge_col = (

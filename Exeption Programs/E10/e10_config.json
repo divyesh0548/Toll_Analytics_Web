@@ -8,8 +8,10 @@
   "tc_class_column_aliases": [
     "tc_class",
     "TC Class",
+    "TC CLASS",
     "Tc Class",
     "TcClass",
+    "MVC",
     "Vehicle Class",
     "vehicle class"
   ],
@@ -17,16 +19,44 @@
     "vehicle_reg_no",
     "Veh Reg No.",
     "Veh Reg No",
+    "VEH REG NO",
+    "VEH. REG. NO",
     "Vehicle Reg No",
     "Unique Vehicle Number"
   ],
   "datetime_column_aliases": [
     "read_datetime",
+    "DATE TIME",
+    "Date Time",
     "Date & Time",
     "Date and Time",
+    "DATE",
+    "Date",
     "Txn Date Time",
     "Tag Read Date Time"
   ],
+  "vrn_lane_columns": {
+    "swb_wt_std_weight": {
+      "output": "SWB Wt/Std. Weight",
+      "aliases": ["SWB STD WEIGHT", "SWB Wt/Std. Weight"]
+    },
+    "lane_weight": {
+      "output": "Lane Weight",
+      "aliases": ["LANE WEIGHT", "Lane Weight"]
+    },
+    "lane_chg_standard_weight": {
+      "output": "Lane/Chg Standard Weight",
+      "aliases": ["LANE STD WEIGHT", "Lane/Chg Standard Weight"]
+    },
+    "lane_overload_amt": {
+      "output": "LANE OVERLOAD AMT",
+      "aliases": ["OVERLOAD AMT", "LANE OVERLOAD AMT"]
+    },
+    "swb_amt": {
+      "output": "SWB AMT",
+      "aliases": ["SWB AMT"]
+    }
+  },
   "checkpost_vehicle_column": "Unique Vehicle Number",
   "checkpost_weight_column": "weight",
   "weight_output_column": "Weight",
@@ -134,28 +164,46 @@
     "header_keywords": [
       "Veh Reg No",
       "Veh Reg No.",
+      "VEH REG NO",
+      "VEH. REG. NO",
+      "DATE",
+      "TIME",
+      "DATE TIME",
       "Date & Time",
       "TC Class",
+      "TC CLASS",
+      "MVC",
       "Vehicle Class",
-      "Description",
       "Lane",
-      "Transaction Date",
-      "CCH Transaction ID",
+      "LANE",
+      "MOP",
+      "PAYMENT METHOD",
+      "LANE WEIGHT",
+      "LANE STD WEIGHT",
+      "SWB STD WEIGHT",
+      "OVERLOAD AMT",
+      "SWB AMT",
       "Plaza"
     ],
     "header_scan_rows": 25,
     "min_header_matches": 3,
     "merge_columns": {
       "vehicle_reg_no": [
+        "VEH REG NO",
         "Veh Reg No.",
         "Veh Reg No",
+        "VEH. REG. NO",
         "Vehicle Reg No"
       ],
       "tc_class": [
+        "MVC",
         "TC Class",
+        "TC CLASS",
         "TcClass"
       ],
       "read_datetime": [
+        "DATE TIME",
+        "Date Time",
         "Date and Time",
         "Date & Time",
         "Txn Date Time",
@@ -163,8 +211,34 @@
         "Transaction Date Time",
         "Transaction Date & Time",
         "Tag Read Date Time",
-        "Transaction Date",
+        "Transaction Date"
+      ],
+      "date_part": [
+        "DATE",
         "Date"
+      ],
+      "time_part": [
+        "TIME",
+        "Time"
+      ],
+      "swb_wt_std_weight": [
+        "SWB STD WEIGHT",
+        "SWB Wt/Std. Weight"
+      ],
+      "lane_weight": [
+        "LANE WEIGHT",
+        "Lane Weight"
+      ],
+      "lane_chg_standard_weight": [
+        "LANE STD WEIGHT",
+        "Lane/Chg Standard Weight"
+      ],
+      "lane_overload_amt": [
+        "OVERLOAD AMT",
+        "LANE OVERLOAD AMT"
+      ],
+      "swb_amt": [
+        "SWB AMT"
       ]
     }
   },

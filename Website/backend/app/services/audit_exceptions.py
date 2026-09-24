@@ -83,7 +83,7 @@ def build_plaza_audit_exceptions(
         raise ValueError("year out of supported range")
 
     types = (
-        AuditExceptionType.query.filter_by(is_active=True)
+        AuditExceptionType.query.filter_by(is_active=True, is_hidden=False)
         .order_by(AuditExceptionType.sort_order.asc(), AuditExceptionType.code.asc())
         .all()
     )

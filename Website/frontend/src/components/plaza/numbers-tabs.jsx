@@ -237,6 +237,8 @@ function SimpleBarChart({
   horizontal = false,
   xAxisTitle = null,
   yAxisTitle = null,
+  seriesName = null,
+  valueSuffix = null,
   sortAscending = false,
 }) {
   const colors = chartColors(dark)
@@ -251,8 +253,16 @@ function SimpleBarChart({
   const fullCategories = pairs.map((p) => p.label)
   const chartValues = pairs.map((p) => p.value)
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
+  const resolvedSeriesName = seriesName || 'Traffic (vehicles)'
   const resolvedXTitle = xAxisTitle || (horizontal ? 'Traffic (vehicles)' : null)
   const resolvedYTitle = yAxisTitle || (horizontal ? null : 'Traffic (vehicles)')
+  const formatValue = (v) => {
+    if (v == null) return '—'
+    const n = Number(v)
+    if (!Number.isFinite(n)) return String(v)
+    const base = n.toLocaleString('en-IN')
+    return valueSuffix ? `${base} ${valueSuffix}` : `${base} vehicles`
+  }
   const options = {
     ...baseChartOptions(dark),
     chart: {
@@ -295,8 +305,7 @@ function SimpleBarChart({
       theme: theme.tooltipTheme,
       x: { formatter: categoryTooltipXFormatter(fullCategories) },
       y: {
-        formatter: (v) =>
-          v == null ? '—' : `${Number(v).toLocaleString('en-IN')} vehicles`,
+        formatter: formatValue,
       },
     },
   }
@@ -306,7 +315,7 @@ function SimpleBarChart({
   return (
     <Chart
       options={options}
-      series={[{ name: 'Traffic (vehicles)', data: chartValues }]}
+      series={[{ name: resolvedSeriesName, data: chartValues }]}
       type="bar"
       height={height}
     />
@@ -522,6 +531,9 @@ export function LayoutGap({ data, dark }) {
               categories={byLane.map((row) => row.lane)}
               values={byLane.map((row) => row.avg)}
               dark={dark}
+              yAxisTitle="Avg gap (seconds)"
+              seriesName="Avg gap (s)"
+              valueSuffix="s"
             />
           </CardContent>
         </Card>
@@ -535,6 +547,9 @@ export function LayoutGap({ data, dark }) {
               categories={byLane.map((row) => row.lane)}
               values={byLane.map((row) => row.lt2_count)}
               dark={dark}
+              yAxisTitle="Gaps < 2s (count)"
+              seriesName="Gaps < 2s"
+              valueSuffix="gaps"
             />
           </CardContent>
         </Card>
