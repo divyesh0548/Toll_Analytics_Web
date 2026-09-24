@@ -227,15 +227,45 @@ def ensure_gap_distribution_per_lane_table(conn, table_name: str) -> None:
     )
 
 
+def ensure_revenue_distribution_per_class_table(conn, table_name: str) -> None:
+    if not fetch_existing_columns(conn, table_name):
+        _create_table(
+            conn,
+            table_name,
+            [
+                "id BIGSERIAL PRIMARY KEY",
+                "plaza_identifier TEXT NOT NULL",
+                "plaza_name TEXT NOT NULL",
+                "date DATE NOT NULL",
+                "hour TEXT NOT NULL",
+                "vehicle_class TEXT NOT NULL",
+                "revenue NUMERIC(18, 2) NOT NULL DEFAULT 0",
+                "txn_count INTEGER NOT NULL DEFAULT 0",
+            ],
+        )
+    else:
+        print(f"Table '{table_name}' already exists.")
+    ensure_unique_constraint(
+        conn,
+        table_name,
+        "uq_revenue_distribution_per_class",
+        ["plaza_identifier", "date", "hour", "vehicle_class"],
+    )
+
+
 def ensure_all_analytics_tables(conn) -> None:
     from config.settings import (
         CLASS_DISTRIBUTION_PER_LANE_TABLE,
         GAP_DISTRIBUTION_PER_LANE_TABLE,
         MOP_DISTRIBUTION_PER_CLASS_TABLE,
         MOP_DISTRIBUTION_PER_LANE_TABLE,
+        REVENUE_DISTRIBUTION_PER_CLASS_TABLE,
     )
 
     ensure_mop_distribution_per_class_table(conn, MOP_DISTRIBUTION_PER_CLASS_TABLE)
     ensure_class_distribution_per_lane_table(conn, CLASS_DISTRIBUTION_PER_LANE_TABLE)
     ensure_mop_distribution_per_lane_table(conn, MOP_DISTRIBUTION_PER_LANE_TABLE)
     ensure_gap_distribution_per_lane_table(conn, GAP_DISTRIBUTION_PER_LANE_TABLE)
+    ensure_revenue_distribution_per_class_table(
+        conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE
+    )

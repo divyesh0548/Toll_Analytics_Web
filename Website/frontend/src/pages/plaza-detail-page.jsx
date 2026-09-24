@@ -24,6 +24,7 @@ import {
 import { cn, formatLocalDateTime } from '@/lib/utils'
 
 const TABS = [
+  { id: 'overall', label: 'Overall', to: '/overall-toll-analysis' },
   { id: 'numbers', label: 'Numbers' },
   { id: 'traffic', label: 'Traffic study' },
   { id: 'audit', label: 'Audit exceptions' },
@@ -40,7 +41,7 @@ function defaultRangeForPeriod(period, availability) {
 export function PlazaDetailPage() {
   const { plazaIdentifier } = useParams()
   const [searchParams] = useSearchParams()
-  const initialTab = TABS.some((t) => t.id === searchParams.get('tab'))
+  const initialTab = TABS.some((t) => t.id === searchParams.get('tab') && t.id !== 'overall')
     ? searchParams.get('tab')
     : 'numbers'
   const [company, setCompany] = useState(null)
@@ -328,21 +329,34 @@ export function PlazaDetailPage() {
       </div>
 
       <div className="flex flex-wrap gap-1 border-b border-border pb-2">
-        {TABS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setTab(item.id)}
-            className={cn(
-              'rounded-sm px-3 py-1.5 text-small',
-              tab === item.id
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-muted',
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
+        {TABS.map((item) =>
+          item.to ? (
+            <Link
+              key={item.id}
+              to={`${item.to}?plaza=${encodeURIComponent(plazaIdentifier)}`}
+              className={cn(
+                'rounded-sm px-3 py-1.5 text-small',
+                'text-muted-foreground hover:bg-muted',
+              )}
+            >
+              {item.label}
+            </Link>
+          ) : (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTab(item.id)}
+              className={cn(
+                'rounded-sm px-3 py-1.5 text-small',
+                tab === item.id
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted',
+              )}
+            >
+              {item.label}
+            </button>
+          ),
+        )}
       </div>
 
       {tab === 'numbers' && (

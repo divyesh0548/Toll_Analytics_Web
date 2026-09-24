@@ -21,6 +21,9 @@ from config.excel_config import (
     DATETIME_FORMATS,
     DATETIME_FORMATS_12H,
     DATETIME_FORMATS_24H,
+    ETC_DATETIME_COLUMN_ALIASES,
+    ETC_NPCI_CLASS_COLUMN_ALIASES,
+    ETC_SETTLEMENT_COLUMN_ALIASES,
     EXCEL_EXTENSIONS,
     HEADER_KEYWORDS,
     LANE_COLUMN_ALIASES,
@@ -512,6 +515,9 @@ def find_header_row(
         "vehicle_class": VEHICLE_CLASS_COLUMN_ALIASES,
         "lane_no": LANE_COLUMN_ALIASES,
         "mop": MOP_COLUMN_ALIASES,
+        "etc_datetime": ETC_DATETIME_COLUMN_ALIASES,
+        "etc_npci": ETC_NPCI_CLASS_COLUMN_ALIASES,
+        "etc_settlement": ETC_SETTLEMENT_COLUMN_ALIASES,
     }
     required_alias_groups: list[list[str]] = []
     for field in fields:

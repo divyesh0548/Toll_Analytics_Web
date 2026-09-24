@@ -24,6 +24,7 @@ MOP_DISTRIBUTION_PER_CLASS_TABLE = "mop_distribution_per_class"
 CLASS_DISTRIBUTION_PER_LANE_TABLE = "class_distribution_per_lane"
 MOP_DISTRIBUTION_PER_LANE_TABLE = "mop_distribution_per_lane"
 GAP_DISTRIBUTION_PER_LANE_TABLE = "gap_distribution_per_lane"
+REVENUE_DISTRIBUTION_PER_CLASS_TABLE = "revenue_distribution_per_class"
 
 # Gaps strictly below this threshold (seconds) count as potential tailgating.
 GAP_LT_2S_THRESHOLD = 2.0

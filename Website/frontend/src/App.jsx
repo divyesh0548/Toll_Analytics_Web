@@ -7,6 +7,7 @@ import { WriteProtectedRoute } from '@/components/write-protected-route'
 import { AppShell } from '@/components/layout/app-shell'
 import { LandingPage } from '@/pages/landing-page'
 import { PortfolioPage } from '@/pages/portfolio-page'
+import { OverallTollAnalysisPage } from '@/pages/overall-toll-analysis-page'
 import { CompanyMasterPage } from '@/pages/company-master-page'
 import { CompanyDetailPage } from '@/pages/company-detail-page'
 import { SpvMasterPage } from '@/pages/spv-master-page'
@@ -42,6 +43,10 @@ export default function App() {
 
                   <Route element={<ProtectedRoute roles={['snt', 'viewer']} />}>
                     <Route path="portfolio" element={<PortfolioPage />} />
+                    <Route
+                      path="overall-toll-analysis"
+                      element={<OverallTollAnalysisPage />}
+                    />
 
                     <Route element={<WriteProtectedRoute />}>
                       <Route path="companies/new" element={<CompanyMasterPage />} />

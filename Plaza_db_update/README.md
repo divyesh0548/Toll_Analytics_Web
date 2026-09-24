@@ -29,3 +29,15 @@ One parse per file → writes all tables:
 Shared Excel mapping/normalization: `config/excel_config.py` + `excel_common.py`.
 
 Legacy `module1.py` / `module2.py` / `module3.py` are superseded by `run_plaza_etl.py`.
+
+## Module 4 (standalone — ETC revenue by class)
+
+```bash
+cd Plaza_db_update
+# Edit FROM_DATE / TO_DATE / ENTITY_NAME in module4.py
+python module4.py
+```
+
+Downloads ETC files via `etc_file_url` into `etc_downloads/{entity_name}/…`, then upserts hourly
+`revenue_distribution_per_class` (unique on plaza + date + hour + vehicle_class; overwrite only
+when new revenue is greater).

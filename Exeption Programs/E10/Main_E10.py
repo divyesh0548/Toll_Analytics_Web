@@ -880,6 +880,28 @@ def _clean_weight_group_join_key(value) -> str:
     return text.casefold()
 
 
+def _weight_group_join_key_aliases(key: str) -> list[str]:
+    """
+    Sheet uses '<=N' in range labels; PQ rules historically used '<N'.
+    Return join-key variants so either style matches.
+    """
+    if not key:
+        return []
+    keys = [key]
+    if "<=" in key:
+        keys.append(key.replace("<=", "<"))
+    elif "<" in key:
+        keys.append(key.replace("<", "<="))
+    # Preserve order, drop dupes
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in keys:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
 def _norm_npci_key(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
@@ -1066,13 +1088,19 @@ def _load_std_weight_tables(config: dict) -> tuple[dict[str, str], dict[str, str
         if range_col:
             g_raw = df[range_col].iloc[idx]
             g_key = _clean_weight_group_join_key(g_raw)
-            if g_key and g_key not in by_group:
-                by_group[g_key] = std_text
+            for alias_key in _weight_group_join_key_aliases(g_key):
+                if alias_key and alias_key not in by_group:
+                    by_group[alias_key] = std_text
             # Also index raw-ish normalized form
             if g_raw is not None and not (isinstance(g_raw, float) and pd.isna(g_raw)):
                 raw_key = re.sub(r"\s+", " ", str(g_raw).strip()).casefold()
                 if raw_key and raw_key not in by_group:
                     by_group[raw_key] = std_text
+                for alias_key in _weight_group_join_key_aliases(
+                    _clean_weight_group_join_key(raw_key)
+                ):
+                    if alias_key and alias_key not in by_group:
+                        by_group[alias_key] = std_text
 
     print(
         f"Loaded std-weight lookup from {path.name}: "
@@ -1145,11 +1173,14 @@ def attach_std_weight_from_lookup(
         source = ""
 
         # 1) Sheet join on cleaned Weight Group (PQ Merged Queries1)
+        #    Also try < ↔ <= variants (sheet vs historical PQ labels).
         g_key = _clean_weight_group_join_key(g_text)
-        if g_key and g_key in by_group:
-            std = by_group[g_key]
-            source = "group"
-        else:
+        for try_key in _weight_group_join_key_aliases(g_key):
+            if try_key and try_key in by_group:
+                std = by_group[try_key]
+                source = "group"
+                break
+        if not std:
             raw_key = re.sub(r"\s+", " ", g_text).casefold() if g_text else ""
             if raw_key and raw_key in by_group:
                 std = by_group[raw_key]

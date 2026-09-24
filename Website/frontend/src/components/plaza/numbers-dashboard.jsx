@@ -67,7 +67,7 @@ function inclusiveDaySpan(startIso, endIso) {
   return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1
 }
 
-function PeriodRangeControls({
+export function PeriodRangeControls({
   period,
   onPeriodChange,
   draft,

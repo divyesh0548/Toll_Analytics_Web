@@ -18,6 +18,7 @@ from app.utils.analytics_config import (
     MOP_DISTRIBUTION_PER_CLASS_TABLE,
     MOP_DISTRIBUTION_PER_LANE_TABLE,
     PLAZA_DAILY_REVENUE_TABLE,
+    REVENUE_DISTRIBUTION_PER_CLASS_TABLE,
 )
 
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -609,6 +610,8 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
             "cash_share": None,
             "upi_share": None,
             "vs_ly_traffic_pct": None,
+            "vs_ly_revenue_pct": None,
+            "revenue_ly": None,
             "day_date": None,
             "mtd_start": None,
             "mtd_end": None,
@@ -1169,6 +1172,7 @@ def _build_plaza_numbers_with_conn(
             "revenue_today": (day_start, day_end),
             "revenue_mtd": (mtd_start, mtd_end),
             "revenue_ytd": (ytd_start, ytd_end),
+            "revenue_ly": (ly_start, ly_end),
         },
         conn=conn,
     )
@@ -1176,6 +1180,7 @@ def _build_plaza_numbers_with_conn(
     revenue_today = revenue_windows["revenue_today"]
     revenue_mtd = revenue_windows["revenue_mtd"]
     revenue_ytd = revenue_windows["revenue_ytd"]
+    revenue_ly = revenue_windows["revenue_ly"]
     arpt = _arpt(revenue_period, traffic_period)
 
     # Calendar-year averages (explicitly not the selected interval).
@@ -1253,15 +1258,17 @@ def _build_plaza_numbers_with_conn(
     class_mix = []
     for r in class_rows:
         count = int(r["count"])
+        count_ly = int(class_ly.get(r["vehicle_class"], 0))
         class_mix.append(
             {
                 "vehicle_class": r["vehicle_class"],
                 "count": count,
+                "count_ly": count_ly,
                 "etc": int(r["etc"]),
                 "cash": int(r["cash"]),
                 "upi": int(r["upi"]),
                 "exempt": int(r["exempt"]),
-                "vs_ly_pct": _delta_pct(count, class_ly.get(r["vehicle_class"], 0)),
+                "vs_ly_pct": _delta_pct(count, count_ly),
             }
         )
 
@@ -1483,6 +1490,8 @@ def _build_plaza_numbers_with_conn(
             "cash_share": _pct(cash, traffic_period),
             "upi_share": _pct(upi, traffic_period),
             "vs_ly_traffic_pct": _delta_pct(traffic_period, traffic_ly),
+            "vs_ly_revenue_pct": _delta_pct(revenue_period, revenue_ly),
+            "revenue_ly": round(revenue_ly, 2),
             "day_date": day_end.isoformat(),
             "mtd_start": mtd_start.isoformat(),
             "mtd_end": mtd_end.isoformat(),

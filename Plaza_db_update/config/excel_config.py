@@ -41,6 +41,28 @@ VEHICLE_CLASS_COLUMN_ALIASES = [
     "Operator Class",
 ]
 
+# ETC file columns for Module 4 (revenue by class).
+ETC_DATETIME_COLUMN_ALIASES = [
+    "Reader Read Time",
+    "Tag Read Date Time",
+    "Date & Time",
+    "Txn Date Time",
+]
+ETC_NPCI_CLASS_COLUMN_ALIASES = [
+    "NPCI Class Desc",
+    "NPCI Class",
+    "NPCI CLass",
+    "NPCI Class Description",
+]
+ETC_SETTLEMENT_COLUMN_ALIASES = [
+    "Settlement Amount",
+    "Net Settlement Amt",
+    "Net Settlement Amount",
+    "Settlement Amt",
+]
+
+ETC_REQUIRED_FIELDS = ("etc_datetime", "etc_npci", "etc_settlement")
+
 # Excel column name -> logical field
 COLUMN_MAPPING = {
     "datetime": DATE_COLUMN_ALIASES[0],
@@ -174,6 +196,9 @@ HEADER_KEYWORDS.extend(TIME_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(MOP_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(LANE_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(VEHICLE_CLASS_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(ETC_DATETIME_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(ETC_NPCI_CLASS_COLUMN_ALIASES)
+HEADER_KEYWORDS.extend(ETC_SETTLEMENT_COLUMN_ALIASES)
 # Include mapped Excel column names in header detection.
 HEADER_KEYWORDS.extend(COLUMN_MAPPING.values())
 

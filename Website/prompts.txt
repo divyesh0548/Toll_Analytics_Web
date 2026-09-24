@@ -1,2 +1,3 @@
+Now in that overall toll analysis page, display vehilcle class distribution for revenue based on this newly created table. 
 
-Process bsassi plaza, once all exceptions are developed. Because it has overloading data.
+if data not avaialble then show empty.
