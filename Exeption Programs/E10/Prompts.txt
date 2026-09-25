@@ -1,7 +1,12 @@
-@Exeption Programs/E10/Main_E10.py In the last process file gets generated with a "Custom" column whihc stores the range of weight. 
+Now in the final ouput file "C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\output\e10_vrn_etc_merged.csv" there will be three segements of final ouput.
 
-@Exeption Programs/E10/output/e10_vrn_etc_merged.csv Based on that range get the index of vehicle from @Exeption Programs/E10/vehicle-class.py this and based on the index get rate for plaza @Exeption Programs/E4/plaza_rates.py.
+A = If value in column "Lane/Chg Standard Weight" is less then "Std Weight". Count total value of "Applicable Rate" and number of rows
 
-Only for this program consider single rates, because there is no journey type involved in this. And match ENTITY_NAME for finding rates.
+If "Lane/Chg Standard Weight" is greater or equal to "Std Weight"  then below conditions.
 
-Get the date from "read_datetime" column and if it is after April 2026, then consider "Plaza_Rates_Apr26_onwards" rates, otherwise default one.
+B = If "SWB Wt/Std. Weight" is zero
+
+C = if "SWB Wt/Std. Weight" is non zero
+
+
+For these 3 categories count the total number of rows and toal amount of "Applicable Rate".

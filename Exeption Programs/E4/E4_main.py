@@ -1,7 +1,8 @@
 """
 E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates → Loss → DB.
 
-1. Merge pass files; drop empty vehicles; drop MP + Car/Jeep/Van rows.
+1. Merge pass files. Stop if a Pass Type is not in config.json.
+   Then drop empty vehicles and MP + Car/Jeep/Van rows.
 2. If Trips taken missing: download/merge ETC for validity date range and count trips.
 3. Download/merge VRN for the same date range; map TC Class onto pass vehicles.
 4. Map TC Class → index → single journey rate (PLAZA_RATES vs Apr26 onwards by
@@ -274,6 +275,54 @@ def drop_mp_car_jeep_van_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     return df.loc[~drop_mask].reset_index(drop=True)
 
 
+def known_pass_type_keys(config: dict) -> set[str]:
+    """Pass types the program is allowed to see. Unknown values stop the run."""
+    names: list = []
+    names.extend(config.get("mp_pass_type_values") or [])
+    names.extend(config.get("lt_pass_type_values") or [])
+    rule = config.get("exclude_mp_car_jeep_van") or {}
+    if isinstance(rule, dict):
+        names.extend(rule.get("pass_type_values") or [])
+    keys = {_normalize_value_key(name) for name in names if str(name).strip()}
+    if not keys:
+        raise RuntimeError(
+            "mp_pass_type_values and lt_pass_type_values are empty in config.json"
+        )
+    return keys
+
+
+def assert_known_pass_types(df: pd.DataFrame, config: dict) -> None:
+    headers = [str(c) for c in df.columns]
+    aliases = config.get("pass_type_column_names") or []
+    if not aliases:
+        raise RuntimeError("pass_type_column_names is empty in config.json")
+    pass_col = resolve_column(headers, aliases)
+    if not pass_col:
+        raise RuntimeError(
+            "Pass Type column not found "
+            f"(pass_type_column_names={aliases!r}). Available: {list(df.columns)}"
+        )
+
+    known = known_pass_type_keys(config)
+    unknown: dict[str, str] = {}
+    for raw in df[pass_col].tolist():
+        key = _normalize_value_key(raw)
+        if key in known:
+            continue
+        label = _normalize_header_cell(raw) or "blank"
+        unknown.setdefault(key, label)
+
+    if not unknown:
+        print(f"Pass Type values are all defined in config.json ({pass_col!r}).")
+        return
+
+    listed = ", ".join(repr(label) for label in sorted(unknown.values(), key=str.casefold))
+    raise RuntimeError(
+        f"Pass Type value(s) not defined in config.json: {listed}. "
+        "Add each one to mp_pass_type_values or lt_pass_type_values. Stopping."
+    )
+
+
 def merge_pass_folder(config: dict) -> tuple[Path, pd.DataFrame]:
     folder_raw = str(PASS_INPUT_FOLDER or "").strip()
     if not folder_raw:
@@ -335,6 +384,7 @@ def merge_pass_folder(config: dict) -> tuple[Path, pd.DataFrame]:
     print("=" * 60)
     print(f"Merged rows (before filter): {len(merged)} from {len(frames)} file(s)")
 
+    assert_known_pass_types(merged, config)
     merged = drop_empty_vehicle_rows(merged, config)
     merged = drop_mp_car_jeep_van_rows(merged, config)
     print(f"Merged rows (after filters): {len(merged)}")

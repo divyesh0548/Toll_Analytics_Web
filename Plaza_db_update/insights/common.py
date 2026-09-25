@@ -16,6 +16,7 @@ from excel_common import (
     find_column_by_aliases,
     hour_bucket_label,
     is_blank,
+    is_excluded_vehicle_class,
     is_ignored_mop,
     lane_limit_error_message,
     optional_normalize_lane,
@@ -74,6 +75,8 @@ def validate_dataframe(
 
         vehicle_value = row[vehicle_col]
         if not is_blank(vehicle_value):
+            if is_excluded_vehicle_class(vehicle_value):
+                continue
             if try_normalize_vehicle_class(vehicle_value) is None:
                 raw_vc = str(vehicle_value).strip()
                 unmapped_vehicle_classes[raw_vc] = unmapped_vehicle_classes.get(raw_vc, 0) + 1
@@ -183,6 +186,7 @@ def prepare_dataframe(
     prepared["vehicle_class"] = df[vehicle_col].map(optional_normalize_vehicle_class)
     prepared["lane_no"] = df[lane_col].map(optional_normalize_lane)
     prepared["mop"] = df[mop_col].map(optional_normalize_mop)
+    prepared = prepared.loc[~df[vehicle_col].map(is_excluded_vehicle_class)].copy()
 
     prepared = prepared[prepared["event_dt"].notna()].copy()
     prepared["hour"] = prepared["event_dt"].map(hour_bucket_label)

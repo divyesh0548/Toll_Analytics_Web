@@ -15,3 +15,21 @@ This conditions are for less than.
 
 U is zero = b 
 U is not zero = C
+
+
+
+
+
+
+
+
+
+Overloading conditions
+
+If "Lane/Chg Standard Weight" is less then std weight then a
+
+If "Lane/Chg Standard Weight" is greate then std weight then 
+
+If "SWB Wt/Std. Weight" is zero then b
+
+If "SWB Wt/Std. Weight" is not zero then c.

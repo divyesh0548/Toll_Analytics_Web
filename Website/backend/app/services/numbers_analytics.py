@@ -254,26 +254,61 @@ def _sum_traffic(plaza_identifier: str, start: date, end: date, conn=None) -> in
     return int(rows[0]["total"]) if rows else 0
 
 
-def _sum_revenue(plaza_identifier: str, start: date, end: date, conn=None) -> float:
+def _sum_revenue_txns(
+    plaza_identifier: str,
+    start: date,
+    end: date,
+    conn=None,
+) -> int | None:
+    """Transaction count stored with class revenue. None when the window has no rows."""
+    if conn is not None and not _table_exists(conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE):
+        return None
     rows = _fetch_all(
         f"""
-        SELECT COALESCE(SUM(revenue), 0)::float AS total
-        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        SELECT
+            COUNT(*)::int AS row_count,
+            COALESCE(SUM(txn_count), 0)::bigint AS total
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
         WHERE plaza_identifier = %s AND date >= %s AND date <= %s
         """,
         (plaza_identifier, start, end),
         conn=conn,
     )
-    return float(rows[0]["total"]) if rows else 0.0
+    if not rows or int(rows[0]["row_count"] or 0) == 0:
+        return None
+    return int(rows[0]["total"] or 0)
+
+
+def _sum_revenue(plaza_identifier: str, start: date, end: date, conn=None) -> float | None:
+    """Sum ETC class revenue. None when the table or window has no rows."""
+    if conn is not None and not _table_exists(conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE):
+        return None
+    rows = _fetch_all(
+        f"""
+        SELECT
+            COUNT(*)::int AS row_count,
+            COALESCE(SUM(revenue), 0)::float AS total
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        """,
+        (plaza_identifier, start, end),
+        conn=conn,
+    )
+    if not rows or int(rows[0]["row_count"] or 0) == 0:
+        return None
+    return float(rows[0]["total"] or 0)
 
 
 def _sum_revenue_windows(
     plaza_identifier: str,
     windows: dict[str, tuple[date, date]],
     conn=None,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     if not windows:
         return {}
+    empty = {label: None for label in windows}
+    if conn is not None and not _table_exists(conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE):
+        return empty
 
     select_parts: list[str] = []
     params: list = []
@@ -284,21 +319,30 @@ def _sum_revenue_windows(
             f"COALESCE(SUM(CASE WHEN date >= %s AND date <= %s "
             f"THEN revenue ELSE 0 END), 0)::float AS {label}"
         )
-        params.extend([start, end])
+        select_parts.append(
+            f"COUNT(*) FILTER (WHERE date >= %s AND date <= %s)::int AS {label}_n"
+        )
+        params.extend([start, end, start, end])
         min_start = start if min_start is None else min(min_start, start)
         max_end = end if max_end is None else max(max_end, end)
 
     params.extend([plaza_identifier, min_start, max_end])
     query = f"""
         SELECT {", ".join(select_parts)}
-        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
         WHERE plaza_identifier = %s AND date >= %s AND date <= %s
     """
     rows = _fetch_all(query, params, conn=conn)
     if not rows:
-        return {label: 0.0 for label in windows}
+        return empty
     row = rows[0]
-    return {label: float(row.get(label) or 0) for label in windows}
+    out: dict[str, float | None] = {}
+    for label in windows:
+        if int(row.get(f"{label}_n") or 0) == 0:
+            out[label] = None
+        else:
+            out[label] = float(row.get(label) or 0)
+    return out
 
 
 def _build_revenue_series(
@@ -309,11 +353,17 @@ def _build_revenue_series(
     conn=None,
 ) -> tuple[list[dict], list[dict]]:
     """Daily and monthly revenue series for the selected window."""
+    if conn is not None and not _table_exists(conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE):
+        return [], []
+
     daily_rows = _fetch_all(
         f"""
-        SELECT date, COALESCE(revenue, 0)::float AS revenue
-        FROM {PLAZA_DAILY_REVENUE_TABLE}
+        SELECT date,
+               COALESCE(SUM(revenue), 0)::float AS revenue,
+               COALESCE(SUM(txn_count), 0)::bigint AS txn_count
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
         WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY date
         ORDER BY date ASC
         """,
         (plaza_identifier, win_start, win_end),
@@ -330,6 +380,7 @@ def _build_revenue_series(
                 "weekday": WEEKDAYS[d.weekday()],
                 "label": f"{WEEKDAYS[d.weekday()]} {d.day}",
                 "revenue": round(float(r["revenue"] or 0), 2),
+                "txn_count": int(r["txn_count"] or 0),
             }
         )
 
@@ -338,8 +389,9 @@ def _build_revenue_series(
         SELECT
             EXTRACT(YEAR FROM date)::int AS year,
             EXTRACT(MONTH FROM date)::int AS month,
-            COALESCE(SUM(revenue), 0)::float AS revenue
-        FROM {PLAZA_DAILY_REVENUE_TABLE}
+            COALESCE(SUM(revenue), 0)::float AS revenue,
+            COALESCE(SUM(txn_count), 0)::bigint AS txn_count
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
         WHERE plaza_identifier = %s AND date >= %s AND date <= %s
         GROUP BY 1, 2
         ORDER BY 1, 2
@@ -357,9 +409,16 @@ def _build_revenue_series(
                 "month": month,
                 "label": f"{MONTH_LABELS[month - 1]} {year}",
                 "revenue": round(float(r["revenue"] or 0), 2),
+                "txn_count": int(r["txn_count"] or 0),
             }
         )
     return revenue_daily, revenue_monthly
+
+
+def _money_or_none(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 2)
 
 
 def _arpt(revenue: float | None, traffic: int | None) -> float | None:
@@ -564,8 +623,76 @@ def _pct(part: float, whole: float) -> float | None:
     return round(100.0 * part / whole, 1)
 
 
-def _delta_pct(current: float, previous: float) -> float | None:
-    if previous <= 0:
+def _table_exists(conn, table_name: str) -> bool:
+    rows = _fetch_all(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = %s
+        LIMIT 1
+        """,
+        (table_name,),
+        conn=conn,
+    )
+    return bool(rows)
+
+
+def _class_revenue_by_window(
+    plaza_identifier: str,
+    win_start: date,
+    win_end: date,
+    ly_start: date,
+    ly_end: date,
+    *,
+    conn,
+) -> list[dict]:
+    """Hourly ETC settlement rolled up by vehicle class. Empty when table or rows are missing."""
+    if not _table_exists(conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE):
+        return []
+
+    current_rows = _fetch_all(
+        f"""
+        SELECT
+            vehicle_class,
+            COALESCE(SUM(revenue), 0)::float AS revenue
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY vehicle_class
+        """,
+        (plaza_identifier, win_start, win_end),
+        conn=conn,
+    )
+    ly_rows = _fetch_all(
+        f"""
+        SELECT
+            vehicle_class,
+            COALESCE(SUM(revenue), 0)::float AS revenue
+        FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
+        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+        GROUP BY vehicle_class
+        """,
+        (plaza_identifier, ly_start, ly_end),
+        conn=conn,
+    )
+    ly_map = {r["vehicle_class"]: float(r["revenue"] or 0) for r in ly_rows}
+    out: list[dict] = []
+    for row in current_rows:
+        revenue = float(row["revenue"] or 0)
+        revenue_ly = float(ly_map.get(row["vehicle_class"], 0))
+        out.append(
+            {
+                "vehicle_class": row["vehicle_class"],
+                "revenue": round(revenue, 2),
+                "revenue_ly": round(revenue_ly, 2),
+                "vs_ly_pct": _delta_pct(revenue, revenue_ly),
+            }
+        )
+    out.sort(key=lambda item: item["revenue"], reverse=True)
+    return out
+
+
+def _delta_pct(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous is None or previous <= 0:
         return None
     return round(100.0 * (current - previous) / previous, 1)
 
@@ -602,6 +729,7 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
             "revenue_mtd": None,
             "revenue_ytd": None,
             "arpt": None,
+            "revenue_txn_period": None,
             "revenue_avg_daily_year": None,
             "revenue_avg_monthly_year": None,
             "revenue_avg_year": None,
@@ -623,6 +751,7 @@ def _empty_payload(period: str, availability: dict | None = None) -> dict:
         "weekday_avg_profile": [],
         "revenue": {"daily": [], "monthly": []},
         "class_mix": [],
+        "class_revenue": [],
         "mop_mix": [],
         "lane_throughput": [],
         "gap": {
@@ -1181,7 +1310,10 @@ def _build_plaza_numbers_with_conn(
     revenue_mtd = revenue_windows["revenue_mtd"]
     revenue_ytd = revenue_windows["revenue_ytd"]
     revenue_ly = revenue_windows["revenue_ly"]
-    arpt = _arpt(revenue_period, traffic_period)
+    revenue_txn_period = _sum_revenue_txns(
+        plaza_identifier, win_start, win_end, conn=conn
+    )
+    arpt = _arpt(revenue_period, revenue_txn_period)
 
     # Calendar-year averages (explicitly not the selected interval).
     cal_year = max_date.year
@@ -1190,23 +1322,31 @@ def _build_plaza_numbers_with_conn(
     cal_year_revenue = _sum_revenue(
         plaza_identifier, cal_year_start, cal_year_end, conn=conn
     )
-    revenue_day_rows = _fetch_all(
-        f"""
-        SELECT COUNT(DISTINCT date)::int AS day_count,
-               COUNT(DISTINCT date_trunc('month', date))::int AS month_count
-        FROM {PLAZA_DAILY_REVENUE_TABLE}
-        WHERE plaza_identifier = %s AND date >= %s AND date <= %s
-        """,
-        (plaza_identifier, cal_year_start, cal_year_end),
-        conn=conn,
-    )
-    day_count = int(revenue_day_rows[0]["day_count"] or 0) if revenue_day_rows else 0
-    month_count = int(revenue_day_rows[0]["month_count"] or 0) if revenue_day_rows else 0
+    if not _table_exists(conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE):
+        day_count = 0
+        month_count = 0
+    else:
+        revenue_day_rows = _fetch_all(
+            f"""
+            SELECT COUNT(DISTINCT date)::int AS day_count,
+                   COUNT(DISTINCT date_trunc('month', date))::int AS month_count
+            FROM {REVENUE_DISTRIBUTION_PER_CLASS_TABLE}
+            WHERE plaza_identifier = %s AND date >= %s AND date <= %s
+            """,
+            (plaza_identifier, cal_year_start, cal_year_end),
+            conn=conn,
+        )
+        day_count = int(revenue_day_rows[0]["day_count"] or 0) if revenue_day_rows else 0
+        month_count = int(revenue_day_rows[0]["month_count"] or 0) if revenue_day_rows else 0
     revenue_avg_daily_year = (
-        round(cal_year_revenue / day_count, 2) if day_count > 0 else None
+        round(cal_year_revenue / day_count, 2)
+        if cal_year_revenue is not None and day_count > 0
+        else None
     )
     revenue_avg_monthly_year = (
-        round(cal_year_revenue / month_count, 2) if month_count > 0 else None
+        round(cal_year_revenue / month_count, 2)
+        if cal_year_revenue is not None and month_count > 0
+        else None
     )
 
     mop_rows = _fetch_all(
@@ -1271,6 +1411,15 @@ def _build_plaza_numbers_with_conn(
                 "vs_ly_pct": _delta_pct(count, count_ly),
             }
         )
+
+    class_revenue = _class_revenue_by_window(
+        plaza_identifier,
+        win_start,
+        win_end,
+        ly_start,
+        ly_end,
+        conn=conn,
+    )
 
     lane_rows = _fetch_all(
         f"""
@@ -1477,11 +1626,12 @@ def _build_plaza_numbers_with_conn(
             "traffic_today": traffic_today,
             "traffic_mtd": traffic_mtd,
             "traffic_ytd": traffic_ytd,
-            "revenue_period": round(revenue_period, 2),
-            "revenue_today": round(revenue_today, 2),
-            "revenue_mtd": round(revenue_mtd, 2),
-            "revenue_ytd": round(revenue_ytd, 2),
+            "revenue_period": _money_or_none(revenue_period),
+            "revenue_today": _money_or_none(revenue_today),
+            "revenue_mtd": _money_or_none(revenue_mtd),
+            "revenue_ytd": _money_or_none(revenue_ytd),
             "arpt": arpt,
+            "revenue_txn_period": revenue_txn_period,
             "revenue_avg_daily_year": revenue_avg_daily_year,
             "revenue_avg_monthly_year": revenue_avg_monthly_year,
             "revenue_avg_year": cal_year,
@@ -1491,7 +1641,7 @@ def _build_plaza_numbers_with_conn(
             "upi_share": _pct(upi, traffic_period),
             "vs_ly_traffic_pct": _delta_pct(traffic_period, traffic_ly),
             "vs_ly_revenue_pct": _delta_pct(revenue_period, revenue_ly),
-            "revenue_ly": round(revenue_ly, 2),
+            "revenue_ly": _money_or_none(revenue_ly),
             "day_date": day_end.isoformat(),
             "mtd_start": mtd_start.isoformat(),
             "mtd_end": mtd_end.isoformat(),
@@ -1506,6 +1656,7 @@ def _build_plaza_numbers_with_conn(
             "monthly": revenue_monthly,
         },
         "class_mix": class_mix,
+        "class_revenue": class_revenue,
         "mop_mix": mop_mix,
         "lane_throughput": lane_throughput,
         "gap": gap,

@@ -406,7 +406,7 @@ function RevenueBarChart({
   maxLabels = undefined,
 }) {
   if (!rows?.length) {
-    return <p className="text-body text-muted-foreground">No revenue in this period.</p>
+    return <p className="text-body text-muted-foreground">N/A</p>
   }
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
@@ -619,6 +619,11 @@ function LaneThroughputCard({ laneThroughput }) {
   )
 }
 
+function formatRevenueOrNa(value) {
+  if (value == null || Number.isNaN(Number(value))) return 'N/A'
+  return formatMoneyCompact(value)
+}
+
 function topShare(items, nameKey, countKey = 'count') {
   if (!items?.length) return null
   const total = items.reduce((sum, row) => sum + (Number(row[countKey]) || 0), 0)
@@ -633,18 +638,24 @@ function topShare(items, nameKey, countKey = 'count') {
 }
 
 function LayoutOverview({ data, dark }) {
-  const { kpis, daily_trend, class_mix, mop_mix, lane_throughput, revenue } = data
+  const { kpis, class_mix, mop_mix, lane_throughput, revenue } = data
   const topClass = topShare(class_mix, 'vehicle_class')
   const topMop = topShare(mop_mix, 'mop')
   const revenueDaily = revenue?.daily || []
-  const trafficDaily = (daily_trend || []).filter((row) => row?.date && row.hour == null)
+  const revenueTrafficDaily = revenueDaily
+    .filter((row) => row?.date)
+    .map((row) => ({
+      date: row.date,
+      label: row.label || row.date,
+      traffic: Number(row.txn_count) || 0,
+    }))
 
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Kpi
           label="Revenue"
-          value={formatMoneyCompact(kpis.revenue_period)}
+          value={formatRevenueOrNa(kpis.revenue_period)}
           hint={data.range_label || 'Selected interval'}
         />
         <Kpi
@@ -654,14 +665,14 @@ function LayoutOverview({ data, dark }) {
         />
         <Kpi
           label="ARPT ₹/veh"
-          value={kpis.arpt == null ? '—' : formatMoney(kpis.arpt)}
-          hint="Selected-period revenue ÷ traffic"
+          value={kpis.arpt == null ? 'N/A' : formatMoney(kpis.arpt)}
+          hint="Selected-period revenue ÷ transactions on the revenue table"
         />
         <Kpi
           label="Avg monthly revenue"
           value={
             kpis.revenue_avg_monthly_year == null
-              ? '—'
+              ? 'N/A'
               : formatMoneyCompact(kpis.revenue_avg_monthly_year)
           }
           hint={
@@ -674,7 +685,7 @@ function LayoutOverview({ data, dark }) {
           label="Avg daily revenue"
           value={
             kpis.revenue_avg_daily_year == null
-              ? '—'
+              ? 'N/A'
               : formatMoneyCompact(kpis.revenue_avg_daily_year)
           }
           hint={
@@ -695,25 +706,7 @@ function LayoutOverview({ data, dark }) {
         <CardContent>
           <RevenueTrafficChart
             revenueDaily={revenueDaily}
-            trafficDaily={
-              trafficDaily.length
-                ? trafficDaily
-                : (daily_trend || []).reduce((acc, row) => {
-                    if (!row?.date) return acc
-                    const existing = acc.find((p) => p.date === row.date)
-                    if (existing) {
-                      existing.traffic =
-                        (Number(existing.traffic) || 0) + (Number(row.traffic) || 0)
-                    } else {
-                      acc.push({
-                        date: row.date,
-                        label: row.label?.split(' ').slice(0, 2).join(' ') || row.date,
-                        traffic: Number(row.traffic) || 0,
-                      })
-                    }
-                    return acc
-                  }, [])
-            }
+            trafficDaily={revenueTrafficDaily}
             dark={dark}
           />
         </CardContent>
@@ -767,7 +760,7 @@ function LayoutRevenue({ data, dark }) {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi
           label="Period revenue"
-          value={formatMoneyCompact(kpis.revenue_period)}
+          value={formatRevenueOrNa(kpis.revenue_period)}
           hint={data.range_label}
         />
         <Kpi
@@ -777,8 +770,8 @@ function LayoutRevenue({ data, dark }) {
         />
         <Kpi
           label="ARPT ₹/veh"
-          value={kpis.arpt == null ? '—' : formatMoney(kpis.arpt)}
-          hint="Period revenue ÷ traffic"
+          value={kpis.arpt == null ? 'N/A' : formatMoney(kpis.arpt)}
+          hint="Period revenue ÷ transactions on the revenue table"
         />
         <Kpi
           label="Fastag share"

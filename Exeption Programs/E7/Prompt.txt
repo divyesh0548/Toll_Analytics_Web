@@ -1,0 +1,8 @@
+First find the column "NPCI Vehicle Class" and filter all rows for value "VC4". In next process take these columns only.
+
+There will be two column "Start Effective Date" and "End Effective Date" which hold the vlaues like "18-03-2026 00:00:00". 
+First take the total months. If that was start date and this "31-12-2028 00:00:00" was end date then total months will be 33. No matter if start date it not 1st of the month.
+
+Now multiple the month count with 360. Now subtract the value of "Issuance Fees (Rs.)" column from that result of multiplication. If result is more then zero then store it in a new column "Loss". That's it.
+
+Currently develop till this.

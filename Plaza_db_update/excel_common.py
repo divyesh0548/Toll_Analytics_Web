@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, time
 from pathlib import Path
@@ -41,6 +42,7 @@ from config.excel_config import (
 from config.mappings import (
     load_mop_ignore_aliases,
     load_mop_mappings,
+    load_vehicle_class_exclude_aliases,
     load_vehicle_class_mappings,
 )
 from config.excel_config import split_mappings, build_lookup, normalize_key
@@ -59,6 +61,11 @@ MOP_LOOKUP = build_lookup(MOP_NORMALIZATION)
 # Case-insensitive ignore set — these MOP labels are not counted and do not stop ETL.
 MOP_IGNORE_LOOKUP = {
     normalize_key(alias) for alias in load_mop_ignore_aliases() if normalize_key(alias)
+}
+VEHICLE_CLASS_EXCLUDE_LOOKUP = {
+    normalize_key(alias)
+    for alias in load_vehicle_class_exclude_aliases()
+    if normalize_key(alias)
 }
 
 
@@ -390,10 +397,25 @@ def hour_bucket_label(dt: datetime) -> str:
     return f"{dt.hour}-{dt.hour + 1}"
 
 
-def try_normalize_vehicle_class(value):
-    """Map Excel vehicle class to canonical name (case-insensitive)."""
+def is_excluded_vehicle_class(value) -> bool:
+    """True when the raw label, or its canonical class, is listed under vehicle_class.json 'exclude'."""
     key = normalize_key(value)
     if not key:
+        return False
+    if key in VEHICLE_CLASS_EXCLUDE_LOOKUP:
+        return True
+    canonical = VEHICLE_CLASS_LOOKUP.get(key)
+    if canonical and normalize_key(canonical) in VEHICLE_CLASS_EXCLUDE_LOOKUP:
+        return True
+    return False
+
+
+def try_normalize_vehicle_class(value):
+    """Map Excel vehicle class to canonical name (case-insensitive). Excluded classes return None."""
+    key = normalize_key(value)
+    if not key:
+        return None
+    if is_excluded_vehicle_class(value):
         return None
     return VEHICLE_CLASS_LOOKUP.get(key)
 
@@ -751,22 +773,32 @@ def is_header_detection_error(exc: Exception) -> bool:
 
 def is_unreadable_workbook_error(exc: Exception) -> bool:
     """True when Excel/openpyxl cannot open a corrupt or invalid workbook."""
-    message = str(exc).lower()
-    needles = (
-        "could not read stylesheet",
-        "unable to read workbook",
-        "invalid xml",
-        "not a zip file",
-        "bad zip file",
-        "file is not a zip file",
-        "workbook source files contain some invalid",
-        "there is no item named 'xl/styles",
-        "error reading existing file",
-        "content_types",
-        "does not support file format",
-        "excel file format cannot be determined",
-    )
-    return any(needle in message for needle in needles)
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, zipfile.BadZipFile):
+            return True
+        message = str(current).lower()
+        needles = (
+            "could not read stylesheet",
+            "unable to read workbook",
+            "invalid xml",
+            "not a zip file",
+            "bad zip file",
+            "bad magic number",
+            "file is not a zip file",
+            "workbook source files contain some invalid",
+            "there is no item named 'xl/styles",
+            "error reading existing file",
+            "content_types",
+            "does not support file format",
+            "excel file format cannot be determined",
+        )
+        if any(needle in message for needle in needles):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def is_skippable_excel_read_error(exc: Exception) -> bool:

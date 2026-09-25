@@ -198,24 +198,45 @@ export function AuditExceptionsPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {exceptions.map((row) => (
-                    <tr key={row.code} className="border-b border-border/70 align-top">
-                      <td className="px-2 py-2 font-medium whitespace-nowrap">{row.code}</td>
-                      <td className="px-2 py-2 max-w-[28rem]">{row.label}</td>
-                      <td className="px-2 py-2 text-right whitespace-nowrap">
-                        {formatAmount(row.total_amount)}
-                      </td>
-                      <td className="px-2 py-2 text-right whitespace-nowrap">
-                        {formatCount(row.total_count)}
-                      </td>
-                      <td className="px-2 py-2 whitespace-nowrap">
-                        {displayOrDash(row.severity)}
-                      </td>
-                      <td className="px-2 py-2 whitespace-nowrap">
-                        {displayOrDash(row.status)}
-                      </td>
-                    </tr>
-                  ))}
+                  {exceptions.flatMap((row) => {
+                    const segmentRows = row.segments || []
+                    return [row, ...segmentRows].map((line, index) => {
+                      const nested = index > 0
+                      return (
+                        <tr
+                          key={line.code}
+                          className={cn(
+                            'border-b border-border/70 align-top',
+                            nested && 'bg-muted/40',
+                          )}
+                        >
+                          <td
+                            className={cn(
+                              'px-2 py-2 font-medium whitespace-nowrap',
+                              nested && 'pl-8',
+                            )}
+                          >
+                            {line.code}
+                          </td>
+                          <td className="px-2 py-2 max-w-[28rem]">{line.label}</td>
+                          <td className="px-2 py-2 text-right whitespace-nowrap">
+                            {line.percentage != null
+                              ? `${Number(line.percentage).toFixed(2)}%`
+                              : formatAmount(line.total_amount)}
+                          </td>
+                          <td className="px-2 py-2 text-right whitespace-nowrap">
+                            {line.percentage != null ? '—' : formatCount(line.total_count)}
+                          </td>
+                          <td className="px-2 py-2 whitespace-nowrap">
+                            {displayOrDash(line.severity)}
+                          </td>
+                          <td className="px-2 py-2 whitespace-nowrap">
+                            {displayOrDash(line.status)}
+                          </td>
+                        </tr>
+                      )
+                    })
+                  })}
                 </tbody>
               </table>
             </div>

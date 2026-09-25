@@ -87,6 +87,11 @@ def build_plaza_audit_exceptions(
         .order_by(AuditExceptionType.sort_order.asc(), AuditExceptionType.code.asc())
         .all()
     )
+    parents = [row for row in types if row.parent_id is None]
+    children_by_parent: dict[int, list[AuditExceptionType]] = defaultdict(list)
+    for row in types:
+        if row.parent_id is not None:
+            children_by_parent[row.parent_id].append(row)
 
     if month is None:
         metrics = AuditExceptionMetric.query.filter_by(
@@ -94,10 +99,19 @@ def build_plaza_audit_exceptions(
             year=year,
         ).all()
         totals: dict[int, dict] = defaultdict(
-            lambda: {"total_amount": 0.0, "total_count": 0, "severity": None, "status": None}
+            lambda: {
+                "total_amount": 0.0,
+                "total_count": 0,
+                "percentage_values": [],
+                "severity": None,
+                "status": None,
+            }
         )
         for metric in metrics:
             bucket = totals[metric.exception_type_id]
+            if metric.percentage is not None:
+                bucket["percentage_values"].append(float(metric.percentage))
+                continue
             bucket["total_amount"] += float(metric.total_amount or 0)
             bucket["total_count"] += int(metric.total_count or 0)
             # Keep latest non-empty severity/status if present.
@@ -105,7 +119,16 @@ def build_plaza_audit_exceptions(
                 bucket["severity"] = metric.severity
             if metric.status and not bucket["status"]:
                 bucket["status"] = metric.status
-        by_type_id = totals
+        by_type_id = {}
+        for type_id, bucket in totals.items():
+            percentages = bucket.pop("percentage_values")
+            if percentages:
+                bucket["percentage"] = round(sum(percentages) / len(percentages), 2)
+                bucket["total_amount"] = None
+                bucket["total_count"] = None
+            else:
+                bucket["percentage"] = None
+            by_type_id[type_id] = bucket
     else:
         metrics = AuditExceptionMetric.query.filter_by(
             plaza_identifier=plaza_identifier,
@@ -114,31 +137,69 @@ def build_plaza_audit_exceptions(
         ).all()
         by_type_id = {
             m.exception_type_id: {
-                "total_amount": float(m.total_amount) if m else 0.0,
-                "total_count": int(m.total_count) if m else 0,
+                "total_amount": float(m.total_amount) if m.total_amount is not None else None,
+                "total_count": int(m.total_count) if m.total_count is not None else None,
+                "percentage": float(m.percentage) if m.percentage is not None else None,
                 "severity": m.severity,
                 "status": m.status,
             }
             for m in metrics
         }
 
-    exceptions = []
-    for exc_type in types:
-        metric = by_type_id.get(exc_type.id) or {
+    def _metric_for(type_id: int) -> dict:
+        return by_type_id.get(type_id) or {
             "total_amount": 0.0,
             "total_count": 0,
+            "percentage": None,
             "severity": None,
             "status": None,
         }
+
+    exceptions = []
+    for exc_type in parents:
+        metric = _metric_for(exc_type.id)
+        segments = []
+        for child in children_by_parent.get(exc_type.id, []):
+            child_metric = _metric_for(child.id)
+            segments.append(
+                {
+                    "code": child.code,
+                    "label": child.label,
+                    "exception_type_id": child.id,
+                    "total_amount": float(child_metric["total_amount"] or 0)
+                    if child_metric.get("percentage") is None
+                    else None,
+                    "total_count": int(child_metric["total_count"] or 0)
+                    if child_metric.get("percentage") is None
+                    else None,
+                    "percentage": child_metric.get("percentage"),
+                    "severity": child_metric.get("severity"),
+                    "status": child_metric.get("status"),
+                }
+            )
+        if segments:
+            total_amount = sum(row["total_amount"] or 0 for row in segments)
+            total_count = sum(row["total_count"] or 0 for row in segments)
+            percentage = None
+        elif metric.get("percentage") is not None:
+            total_amount = None
+            total_count = None
+            percentage = float(metric["percentage"])
+        else:
+            total_amount = float(metric["total_amount"] or 0)
+            total_count = int(metric["total_count"] or 0)
+            percentage = None
         exceptions.append(
             {
                 "code": exc_type.code,
                 "label": exc_type.label,
                 "exception_type_id": exc_type.id,
-                "total_amount": float(metric["total_amount"] or 0),
-                "total_count": int(metric["total_count"] or 0),
+                "total_amount": total_amount,
+                "total_count": total_count,
+                "percentage": percentage,
                 "severity": metric.get("severity"),
                 "status": metric.get("status"),
+                "segments": segments,
             }
         )
 
@@ -168,8 +229,12 @@ def build_plaza_audit_exceptions(
         },
         "exceptions": exceptions,
         "summary": {
-            "total_amount": sum(row["total_amount"] for row in exceptions),
-            "total_count": sum(row["total_count"] for row in exceptions),
+            "total_amount": sum(
+                row["total_amount"] for row in exceptions if row["percentage"] is None
+            ),
+            "total_count": sum(
+                row["total_count"] for row in exceptions if row["percentage"] is None
+            ),
             "exception_types": len(exceptions),
         },
     }

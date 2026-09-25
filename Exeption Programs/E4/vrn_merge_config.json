@@ -9,7 +9,9 @@
     "Lane",
     "Transaction Date",
     "CCH Transaction ID",
-    "Plaza"
+    "Plaza",
+    "TRANSACTION NO",
+    "CCH TXN NO"
   ],
   "header_scan_rows": 25,
   "min_header_matches": 3,
@@ -21,7 +23,8 @@
     ],
     "tc_class": [
       "TC Class",
-      "TcClass"
+      "TcClass",
+      "MVC"
     ]
   }
 }

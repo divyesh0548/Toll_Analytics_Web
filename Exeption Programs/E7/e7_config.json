@@ -1,0 +1,10 @@
+{
+  "npci_vehicle_class": "NPCI Vehicle Class",
+  "vehicle_class_value": "VC4",
+  "start_effective_date": "Start Effective Date",
+  "end_effective_date": "End Effective Date",
+  "issuance_fees": "Issuance Fees (Rs.)",
+  "months": "Months",
+  "loss": "Loss",
+  "monthly_rate": 360
+}

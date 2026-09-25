@@ -52,69 +52,74 @@ function inclusiveDaySpan(startIso, endIso) {
 function buildCategoryRows(data) {
   const classMix = data?.class_mix || []
   const traffic = Number(data?.kpis?.traffic_period) || 0
-  const revenue = Number(data?.kpis?.revenue_period) || 0
-  const trafficLy = classMix.reduce((sum, row) => sum + (Number(row.count_ly) || 0), 0)
-  const revenueLy = Number(data?.kpis?.revenue_ly) || 0
 
   return classMix.map((row) => {
     const count = Number(row.count) || 0
     const share = traffic > 0 ? (count / traffic) * 100 : 0
-    const categoryRevenue = traffic > 0 ? revenue * (count / traffic) : 0
-    const countLy = Number(row.count_ly) || 0
-    const categoryRevenueLy = trafficLy > 0 ? revenueLy * (countLy / trafficLy) : 0
-    const revenueYoy =
-      categoryRevenueLy > 0
-        ? ((categoryRevenue - categoryRevenueLy) / categoryRevenueLy) * 100
-        : null
-
     return {
       vehicle_class: row.vehicle_class,
       count,
       share,
       vs_ly_pct: row.vs_ly_pct,
-      revenue: categoryRevenue,
-      revenue_share: share,
-      revenue_vs_ly_pct: revenueYoy,
     }
   })
 }
 
-function monthlyTrendRows(data) {
-  const revenueMonthly = data?.revenue?.monthly || []
-  const byKey = new Map()
-  for (const row of revenueMonthly) {
-    const key = `${row.year}-${String(row.month).padStart(2, '0')}`
-    byKey.set(key, {
-      key,
-      label: row.label || key,
-      revenue: Number(row.revenue) || 0,
-      traffic: 0,
+function buildRevenueRows(data) {
+  const mix = data?.class_revenue || []
+  const total = mix.reduce((sum, row) => sum + (Number(row.revenue) || 0), 0)
+  if (!mix.length || total === 0) return []
+  return mix.map((row) => {
+    const revenue = Number(row.revenue) || 0
+    return {
+      vehicle_class: row.vehicle_class,
+      revenue,
+      revenue_share: total > 0 ? (revenue / total) * 100 : 0,
+      revenue_vs_ly_pct: row.vs_ly_pct,
+    }
+  })
+}
+
+function comparisonRows(data) {
+  const byClass = new Map()
+  for (const row of data?.class_mix || []) {
+    const name = String(row.vehicle_class || '').trim()
+    if (!name) continue
+    byClass.set(name, {
+      vehicle_class: name,
+      count: Number(row.count) || 0,
+      revenue: 0,
     })
   }
-  for (const row of data?.daily_trend || []) {
-    if (!row?.date || row.hour != null) continue
-    const key = String(row.date).slice(0, 7)
-    const existing = byKey.get(key) || {
-      key,
-      label: key,
+  for (const row of data?.class_revenue || []) {
+    const name = String(row.vehicle_class || '').trim()
+    if (!name) continue
+    const existing = byClass.get(name) || {
+      vehicle_class: name,
+      count: 0,
       revenue: 0,
-      traffic: 0,
     }
-    existing.traffic += Number(row.traffic) || 0
-    if (!existing.label || existing.label === key) {
-      const [y, m] = key.split('-')
-      const monthNames = [
-        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-      ]
-      const mi = Number(m) - 1
-      existing.label = Number.isFinite(mi) && monthNames[mi]
-        ? `${monthNames[mi]} ${y}`
-        : key
-    }
-    byKey.set(key, existing)
+    existing.revenue = Number(row.revenue) || 0
+    byClass.set(name, existing)
   }
-  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key))
+  return [...byClass.values()]
+    .filter((row) => row.count > 0 || row.revenue > 0)
+    .sort((a, b) => b.count - a.count || b.revenue - a.revenue)
+}
+
+function monthlyTrendRows(data) {
+  const revenueMonthly = data?.revenue?.monthly || []
+  return revenueMonthly
+    .map((row) => {
+      const key = `${row.year}-${String(row.month).padStart(2, '0')}`
+      return {
+        key,
+        label: row.label || key,
+        revenue: Number(row.revenue) || 0,
+        traffic: Number(row.txn_count) || 0,
+      }
+    })
+    .sort((a, b) => a.key.localeCompare(b.key))
 }
 
 function categoryColor(dark, index) {
@@ -243,6 +248,75 @@ function MonthlyTrendChart({ rows, dark }) {
   )
 }
 
+function CategoryComparisonChart({ rows, dark }) {
+  const theme = chartTheme(dark)
+  const categories = rows.map((r) => r.vehicle_class)
+  const xAxis = categoryXAxis(categories, { colors: theme.foreColor, fontSize: '11px' }, 16)
+  const countColor = dark ? '#60a5fa' : '#1d4ed8'
+  const revenueColor = dark ? '#fbbf24' : '#c2410c'
+  const options = {
+    ...baseChartOptions(dark),
+    chart: {
+      ...baseChartOptions(dark).chart,
+      type: 'bar',
+    },
+    colors: [countColor, revenueColor],
+    plotOptions: {
+      bar: { horizontal: false, columnWidth: '52%', borderRadius: 2 },
+    },
+    dataLabels: { enabled: false },
+    stroke: { show: true, width: 2, colors: ['transparent'] },
+    xaxis: {
+      categories: xAxis.categories,
+      labels: xAxis.labels,
+    },
+    yaxis: [
+      {
+        seriesName: 'Transactions',
+        title: { text: 'Transactions', style: { color: countColor } },
+        labels: {
+          style: { colors: countColor },
+          formatter: (v) => Number(v).toLocaleString('en-IN'),
+        },
+      },
+      {
+        seriesName: 'Revenue',
+        opposite: true,
+        title: { text: 'Revenue (₹)', style: { color: revenueColor } },
+        labels: {
+          style: { colors: revenueColor },
+          formatter: (v) => formatMoneyCompact(v),
+        },
+      },
+    ],
+    legend: {
+      labels: theme.legend.labels,
+    },
+    tooltip: {
+      theme: dark ? 'dark' : 'light',
+      shared: true,
+      intersect: false,
+      y: {
+        formatter: (v, opts) =>
+          opts.seriesIndex === 1
+            ? formatMoney(v)
+            : Number(v).toLocaleString('en-IN'),
+      },
+    },
+  }
+  return (
+    <Chart
+      options={options}
+      series={[
+        { name: 'Transactions', data: rows.map((r) => r.count) },
+        { name: 'Revenue', data: rows.map((r) => Math.round(r.revenue)) },
+      ]}
+      type="bar"
+      height={340}
+    />
+  )
+}
+
 function CategoryPanel({
   title,
   description,
@@ -342,7 +416,9 @@ export function OverallTollDashboard({ data, showYoy, dark }) {
 
   const kpis = data.kpis || {}
   const rows = buildCategoryRows(data)
+  const revenueRows = buildRevenueRows(data)
   const trend = monthlyTrendRows(data)
+  const comparison = comparisonRows(data)
   const daySpan = inclusiveDaySpan(data.start_date, data.end_date)
   const avgRevenuePerDay =
     daySpan > 0 && kpis.revenue_period != null
@@ -454,15 +530,31 @@ export function OverallTollDashboard({ data, showYoy, dark }) {
         />
         <CategoryPanel
           title="Revenue Collected"
-          description="Toll collected (₹) per vehicle category (from traffic share)"
+          description="Toll collected (₹) per vehicle category"
           columns={revColumns}
-          rows={rows}
+          rows={revenueRows}
           emptyText="No category revenue for this period."
           pieValueKey="revenue"
           pieValueFormatter={(v) => formatMoney(Math.round(v))}
           dark={dark}
         />
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Category Comparison</CardTitle>
+          <CardDescription>Side-by-side count and revenue per category</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {comparison.length ? (
+            <CategoryComparisonChart rows={comparison} dark={dark} />
+          ) : (
+            <p className="text-body text-muted-foreground">
+              No category comparison for this period.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

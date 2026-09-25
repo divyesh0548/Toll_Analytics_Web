@@ -106,6 +106,35 @@ AUDIT_EXCEPTION_CATALOG: list[dict] = [
 ]
 
 
+# Internal segments of E10. parent_code is resolved to parent_id on seed.
+E10_SEGMENT_CATALOG: list[dict] = [
+    {
+        "code": "E10-A",
+        "label": "Lane/Chg standard weight less than standard weight",
+        "sort_order": 1,
+        "parent_code": "E10",
+    },
+    {
+        "code": "E10-B",
+        "label": (
+            "Lane/Chg standard weight at or above standard weight "
+            "and SWB weight is zero"
+        ),
+        "sort_order": 2,
+        "parent_code": "E10",
+    },
+    {
+        "code": "E10-C",
+        "label": (
+            "Lane/Chg standard weight at or above standard weight "
+            "and SWB weight is not zero"
+        ),
+        "sort_order": 3,
+        "parent_code": "E10",
+    },
+]
+
+
 class AuditExceptionType(db.Model):
     __tablename__ = "audit_exception_types"
 
@@ -117,6 +146,13 @@ class AuditExceptionType(db.Model):
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     # When True, keep type + metrics in DB but omit from website Audit Exceptions UI.
     is_hidden = db.Column(db.Boolean, nullable=False, default=False)
+    # Set for internal segments (E10-A/B/C). Null for top-level findings such as E10.
+    parent_id = db.Column(
+        db.Integer,
+        db.ForeignKey("audit_exception_types.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -140,6 +176,7 @@ class AuditExceptionType(db.Model):
             "sort_order": self.sort_order,
             "is_active": self.is_active,
             "is_hidden": self.is_hidden,
+            "parent_id": self.parent_id,
         }
 
     def __repr__(self) -> str:
@@ -175,8 +212,10 @@ class AuditExceptionMetric(db.Model):
     )
     year = db.Column(db.SmallInteger, nullable=False)
     month = db.Column(db.SmallInteger, nullable=False)
-    total_amount = db.Column(db.Numeric(18, 2), nullable=False, default=0)
-    total_count = db.Column(db.Integer, nullable=False, default=0)
+    total_amount = db.Column(db.Numeric(18, 2), nullable=True)
+    total_count = db.Column(db.Integer, nullable=True)
+    # Set for percentage-only findings such as E11. Count and amount stay empty.
+    percentage = db.Column(db.Numeric(8, 2), nullable=True)
     severity = db.Column(db.String(20), nullable=True)
     status = db.Column(db.String(20), nullable=True)
     notes = db.Column(db.Text, nullable=True)
@@ -201,8 +240,9 @@ class AuditExceptionMetric(db.Model):
             "exception_type_id": self.exception_type_id,
             "year": self.year,
             "month": self.month,
-            "total_amount": float(self.total_amount) if self.total_amount is not None else 0,
-            "total_count": int(self.total_count or 0),
+            "total_amount": float(self.total_amount) if self.total_amount is not None else None,
+            "total_count": int(self.total_count) if self.total_count is not None else None,
+            "percentage": float(self.percentage) if self.percentage is not None else None,
             "severity": self.severity,
             "status": self.status,
             "notes": self.notes,

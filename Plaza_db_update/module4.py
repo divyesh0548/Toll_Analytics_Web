@@ -47,6 +47,8 @@ from config.excel_config import (  # noqa: E402
     ETC_REQUIRED_FIELDS,
     ETC_SETTLEMENT_COLUMN_ALIASES,
     EXCEL_EXTENSIONS,
+    HEADER_KEYWORDS,
+    normalize_key,
 )
 from config.settings import (  # noqa: E402
     PLAZA_IDENTIFIER,
@@ -60,6 +62,7 @@ from excel_common import (  # noqa: E402
     find_column_by_aliases,
     hour_bucket_label,
     is_blank,
+    is_excluded_vehicle_class,
     is_skippable_excel_read_error,
     read_excel_file,
     safe_parse_datetime,
@@ -77,6 +80,19 @@ TO_DATE = "2026-08-31"  # inclusive YYYY-MM-DD
 
 DOWNLOAD_FOLDER = ROOT_DIR / "etc_downloads"
 DOWNLOAD_TIMEOUT_SECONDS = 180
+EXCEL_CONFIG_PATH = ROOT_DIR / "config" / "excel_config.py"
+
+# (role, label, alias list, name of that list in excel_config.py)
+ETC_COLUMN_SPECS = (
+    ("datetime", "Reader Read Time", ETC_DATETIME_COLUMN_ALIASES, "ETC_DATETIME_COLUMN_ALIASES"),
+    ("npci", "NPCI Class Desc", ETC_NPCI_CLASS_COLUMN_ALIASES, "ETC_NPCI_CLASS_COLUMN_ALIASES"),
+    (
+        "settlement",
+        "Settlement Amount",
+        ETC_SETTLEMENT_COLUMN_ALIASES,
+        "ETC_SETTLEMENT_COLUMN_ALIASES",
+    ),
+)
 SKIP_EXISTING = True
 DRY_RUN = False
 
@@ -122,19 +138,32 @@ def require_env(name: str) -> str:
 
 
 def submissions_db_kwargs() -> dict:
-    """Submissions DB (ETC URLs) — same keys as E4 / VRN downloader."""
+    """Submissions DB (ETC URLs) lives in snt_form, not the analytics DB.
+
+    Website/backend/.env: Source_DB_NAME=snt_form
+    """
+    database = (
+        os.getenv("Source_DB_NAME", "").strip()
+        or os.getenv("SOURCE_DB_NAME", "").strip()
+    )
+    if not database:
+        raise RuntimeError(
+            "Missing Source_DB_NAME (snt_form) in Website/backend/.env. "
+            "DB_NAME is the analytics database and does not contain submissions."
+        )
     return {
         "host": require_env("DB_HOST"),
         "port": int(os.getenv("DB_PORT", "5432").strip() or "5432"),
         "user": require_env("DB_USER"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("DB_NAME"),
+        "database": database,
     }
 
 
 def submissions_table_name() -> str:
     return (
-        os.getenv("Table_NAME", "").strip()
+        os.getenv("exceptions_Table_NAME", "").strip()
+        or os.getenv("Table_NAME", "").strip()
         or os.getenv("TABLE_NAME", "").strip()
         or SUBMISSIONS_TABLE
     )
@@ -251,6 +280,8 @@ def validate_etc_dataframe(df: pd.DataFrame, file_name: str, datetime_format: st
 
         npci_raw = row[npci_col]
         if not is_blank(npci_raw):
+            if is_excluded_vehicle_class(npci_raw):
+                continue
             if try_normalize_vehicle_class(npci_raw) is None:
                 key = str(npci_raw).strip()
                 unmapped_classes[key] = unmapped_classes.get(key, 0) + 1
@@ -288,6 +319,7 @@ def prepare_etc_dataframe(df: pd.DataFrame, datetime_format: str) -> pd.DataFram
         lambda v: try_normalize_vehicle_class(v) if not is_blank(v) else None
     )
     prepared["amount"] = df[amt_col].map(parse_settlement_amount)
+    prepared = prepared.loc[~df[npci_col].map(is_excluded_vehicle_class)].copy()
 
     prepared = prepared[prepared["event_dt"].notna()].copy()
     prepared = prepared[prepared["vehicle_class"].notna()].copy()
@@ -420,6 +452,133 @@ def upsert_revenue_if_greater(conn, rows: list[dict]) -> tuple[int, int]:
     return inserted, updated
 
 
+class SkipEtcFile(Exception):
+    """User chose to skip a file whose columns do not match known keywords."""
+
+
+def _alias_saved(aliases: list[str], keyword: str) -> bool:
+    key = normalize_key(keyword)
+    return any(normalize_key(alias) == key for alias in aliases)
+
+
+def persist_column_alias(list_name: str, keyword: str) -> None:
+    """Append a keyword to an alias list in excel_config.py so later runs keep it."""
+    text = EXCEL_CONFIG_PATH.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf"^({re.escape(list_name)}\s*=\s*\[)(.*?)(^\])",
+        re.M | re.S,
+    )
+    match = pattern.search(text)
+    if match is None:
+        print(f"  Could not update {EXCEL_CONFIG_PATH.name}; keyword kept for this run only.")
+        return
+    body = match.group(2)
+    if f'"{keyword}"' in body or f"'{keyword}'" in body:
+        return
+    literal = '"' + keyword.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    trimmed = body.rstrip()
+    if trimmed and not trimmed.endswith(","):
+        trimmed += ","
+    updated = (
+        text[: match.start(2)]
+        + trimmed
+        + f"\n    {literal},\n"
+        + text[match.start(3) :]
+    )
+    EXCEL_CONFIG_PATH.write_text(updated, encoding="utf-8")
+    print(f"  Saved keyword {keyword!r} in {list_name}.")
+
+
+def remember_column_alias(aliases: list[str], list_name: str, keyword: str) -> None:
+    cleaned = keyword.strip()
+    if not cleaned or _alias_saved(aliases, cleaned):
+        return
+    aliases.append(cleaned)
+    if cleaned not in HEADER_KEYWORDS:
+        HEADER_KEYWORDS.append(cleaned)
+    persist_column_alias(list_name, cleaned)
+
+
+def prompt_missing_column(
+    path: Path,
+    field_label: str,
+    aliases: list[str],
+    columns: list[str],
+) -> str | None:
+    """Ask whether to add a keyword or skip. None means skip this file."""
+    print(f"\n  Column not found for {field_label} in {path.name}")
+    print(f"  Keywords tried: {', '.join(aliases)}")
+    print("  Columns in this file:")
+    for index, column in enumerate(columns, start=1):
+        print(f"    {index}. {column}")
+    if not sys.stdin.isatty():
+        print("  No terminal input available — skipping this file.")
+        return None
+
+    while True:
+        try:
+            choice = input("  Add a keyword [a] or skip this file [s]? ").strip().lower()
+        except EOFError:
+            print("  No input — skipping this file.")
+            return None
+        if choice in {"s", "skip"}:
+            return None
+        if choice not in {"a", "add"}:
+            print("  Type a to add a keyword, or s to skip this file.")
+            continue
+        try:
+            entered = input("  Column number or exact header text: ").strip()
+        except EOFError:
+            print("  No input — skipping this file.")
+            return None
+        if not entered:
+            print("  Enter a column, or choose s to skip.")
+            continue
+        if entered.isdigit():
+            number = int(entered)
+            if 1 <= number <= len(columns):
+                return columns[number - 1]
+            print(f"  Column number must be 1–{len(columns)}.")
+            continue
+        return entered
+
+
+def resolve_etc_columns(df: pd.DataFrame, path: Path) -> dict[str, str] | None:
+    """
+    Map required ETC columns.
+
+    Returns None when the file should be re-read after a new keyword
+    that is not on the current header.
+    """
+    columns = [str(column) for column in df.columns]
+    resolved: dict[str, str] = {}
+    for role, label, aliases, list_name in ETC_COLUMN_SPECS:
+        while True:
+            try:
+                resolved[role] = find_column_by_aliases(df, aliases)
+                break
+            except KeyError:
+                keyword = prompt_missing_column(path, label, aliases, columns)
+                if keyword is None:
+                    raise SkipEtcFile(
+                        f"skipped {path.name}: missing {label}"
+                    ) from None
+                remember_column_alias(aliases, list_name, keyword)
+                matched = next(
+                    (
+                        column
+                        for column in columns
+                        if normalize_key(column) == normalize_key(keyword)
+                    ),
+                    None,
+                )
+                if matched is None:
+                    print("  Keyword is not on this header. Re-reading the file.")
+                    return None
+                print(f"  Using {matched!r} for {label}.")
+    return resolved
+
+
 def process_etc_file(path: Path) -> list[dict]:
     print(f"  Reading: {path.name}")
     df = read_excel_file(path, required_fields=ETC_REQUIRED_FIELDS)
@@ -427,7 +586,16 @@ def process_etc_file(path: Path) -> list[dict]:
         print("  Empty file — skip.")
         return []
 
-    dt_col = find_column_by_aliases(df, ETC_DATETIME_COLUMN_ALIASES)
+    while True:
+        columns = resolve_etc_columns(df, path)
+        if columns is not None:
+            break
+        df = read_excel_file(path, required_fields=ETC_REQUIRED_FIELDS)
+        if df.empty:
+            print("  Empty file — skip.")
+            return []
+
+    dt_col = columns["datetime"]
     datetime_format = detect_datetime_format(df[dt_col].tolist())
     validate_etc_dataframe(df, path.name, datetime_format)
     prepared = prepare_etc_dataframe(df, datetime_format)
@@ -444,6 +612,8 @@ def run() -> None:
     download_folder.mkdir(parents=True, exist_ok=True)
 
     print("Module 4 — ETC revenue by vehicle class (hourly)")
+    src = submissions_db_kwargs()
+    print(f"Source DB: {src['database']}.{submissions_table_name()}")
     print(f"Plaza: {PLAZA_NAME} ({PLAZA_IDENTIFIER})")
     print(f"Entity: {ENTITY_NAME}")
     print(f"Date range: {start.isoformat()} → {end.isoformat()}")
@@ -478,6 +648,7 @@ def run() -> None:
         "failed": 0,
         "processed": 0,
         "read_errors": 0,
+        "column_skips": 0,
         "inserted": 0,
         "updated": 0,
     }
@@ -522,6 +693,10 @@ def run() -> None:
 
             try:
                 file_rows = process_etc_file(local_path)
+            except SkipEtcFile as exc:
+                print(f"{prefix} SKIP FILE: {exc}")
+                stats["column_skips"] += 1
+                continue
             except UnmappedValueError:
                 raise
             except Exception as exc:
@@ -563,6 +738,7 @@ def run() -> None:
     print(f"  DL failed:   {stats['failed']}")
     print(f"  Processed:   {stats['processed']}")
     print(f"  Read errors: {stats['read_errors']}")
+    print(f"  Column skips:{stats['column_skips']}")
     if not DRY_RUN:
         print(f"  Inserted:    {stats['inserted']}")
         print(f"  Updated:     {stats['updated']}")

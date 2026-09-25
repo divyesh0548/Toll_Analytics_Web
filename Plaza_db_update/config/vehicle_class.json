@@ -1,19 +1,21 @@
 {
+  "exclude": [
+  ],
   "3WHEELER": {
     "db_column": "vc_3wheeler",
     "aliases": ["3WHEELER", "3 WHEELER", "auto"]
   },
   "BUS": {
     "db_column": "vc_bus_2_axle",
-    "aliases": ["BUS-2-AXLE", "BUS-2 AXLE", "BUS-3-AXLE", "BUS-3 AXLE","BUS", "MiniBus"]
+    "aliases": ["BUS-2-AXLE", "BUS-2 AXLE", "BUS-3-AXLE", "BUS-3 AXLE","BUS", "MiniBus", "Mini-Bus", "Bus 2-axle", "Bus 3-axle"]
   },
   "CAR/JEEP": {
     "db_column": "vc_car_jeep",
-    "aliases": ["CAR\\JEEP", "CAR", "JEEP", "CarJeep"]
+    "aliases": ["CAR\\JEEP", "CAR", "JEEP", "CarJeep", "Car / Jeep / Van"]
   },
   "LCV": {
     "db_column": "vc_lcv",
-    "aliases": ["LCV"]
+    "aliases": ["LCV", "Light Commercial vehicle 2-axle", "Tata Ace and Similar mini Light Commercial Vehicle"]
   },
   "MAV": {
     "db_column": "vc_mav",
@@ -21,7 +23,7 @@
   },
   "OSV": {
     "db_column": "vc_osv",
-    "aliases": ["OSV"]
+    "aliases": ["OSV", "Earth Moving Machinery", "Heavy Construction machinery"]
   },
   "TRACTOR": {
     "db_column": "vc_tractor",
@@ -29,14 +31,18 @@
   },
   "TRUCK 4-6 AXLE": {
     "db_column": "vc_truck_4_6_axle",
-    "aliases": ["TRUCK 4-6 AXLE", "TRUCK 4 6 AXLE"]
+    "aliases": ["TRUCK 4-6 AXLE", "TRUCK 4 6 AXLE", "Truck 4 - axle", "Truck 5 - axle", "Truck 6 - axle"]
+  },
+  "TRUCK 7 AXLE":{
+    "db_column": "vc_truck_7_axle",
+    "aliases": ["TRUCK 7 AXLE", "Truck 7 - axle", "Truck Multi axle  ( 7 and above)"]
   },
   "TRUCK-2-AXLE": {
     "db_column": "vc_truck_2_axle",
-    "aliases": ["TRUCK-2-AXLE", "TRUCK-2 AXLE", "Truck"]
+    "aliases": ["TRUCK-2-AXLE", "TRUCK-2 AXLE", "Truck 2 - axle", "Truck"]
   },
   "TRUCK-3-AXLE": {
     "db_column": "vc_truck_3_axle",
-    "aliases": ["TRUCK-3-AXLE", "TRUCK-3 AXLE", "Truck3X"]
+    "aliases": ["TRUCK-3-AXLE", "TRUCK-3 AXLE", "Truck3X", "Truck 3 - axle"]
   }
 }

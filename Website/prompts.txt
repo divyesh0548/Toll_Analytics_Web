@@ -1,3 +1,0 @@
-Now in that overall toll analysis page, display vehilcle class distribution for revenue based on this newly created table. 
-
-if data not avaialble then show empty.

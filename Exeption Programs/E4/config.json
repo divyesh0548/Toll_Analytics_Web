@@ -32,7 +32,8 @@
       "Car/ Jeep / Van",
       "VC4",
       "VC 4",
-      "Car Jeep Van"
+      "Car Jeep Van",
+      "CAR\\JEEP"
     ]
   },
   "mp_pass_type_values": [
@@ -92,7 +93,8 @@
   "tc_class_index_map": {
     "1": [
       "car",
-      "carjeep"
+      "carjeep",
+      "CAR\\JEEP"
     ],
     "2": [
       "lcv",

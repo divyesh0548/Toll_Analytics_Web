@@ -8,6 +8,7 @@ E10 — Local VRN folder + checkpost Weight + ETC download/merge + overweight.
 5) Custom band, Weight Group, Std Weight, Applicable Rate (plaza single)
 6) Overweight / Overweight %; keep Overweight>0 and overload/SWB amt = 0
 7) OW Status (OW At WIM / Not Charged At SWB / Altered at WIM/SWB)
+8) Update E10 / E10-A / E10-B / E10-C monthly metrics from the merged CSV
 
 Run:
   1. Set ENTITY_NAME and VRN_INPUT_FOLDER
@@ -68,6 +69,8 @@ WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
 # --- Runtime inputs (edit these; not in config) ---
 ENTITY_NAME = "bassi"
+# Plaza UUID in the analytics DB. Required for the E10 metric update.
+PLAZA_IDENTIFIER = ""
 # Local VRN folder (Excel/CSV). Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\Combined VRNs"
 VRN_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_with_weight.csv"
@@ -1650,6 +1653,17 @@ def main() -> int:
     merged_out = save_output(merged, Path(MERGED_VRN_ETC_OUTPUT_FILE))
     print(f"Merged rows: {len(merged)} | Columns: {list(merged.columns)}")
     print(f"Merged output: {merged_out}")
+
+    print("-" * 60)
+    print("Updating E10 segment metrics…")
+    plaza_identifier = str(PLAZA_IDENTIFIER).strip()
+    if not plaza_identifier:
+        raise RuntimeError(
+            "Set PLAZA_IDENTIFIER at the top of Main_E10.py. "
+            "The merged CSV was written, but audit metrics were not updated."
+        )
+    updater = _load_module_from_path(BASE_DIR / "Update_DB_E10.py", "update_db_e10")
+    updater.update_e10_metrics(merged_out, plaza_identifier)
     return 0
 
 
