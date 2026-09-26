@@ -78,6 +78,90 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         return json.load(fh)
 
 
+_DATE_ORDERS = {"dd/mm/yyyy", "mm/dd/yyyy", "dd-mmm-yyyy"}
+_BLANK_DATE = {"", "na", "n/a", "null", "none", "nat", "nan", "-"}
+_DAY_FIRST_FORMATS = (
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M %p",
+    "%d-%m-%Y %I:%M:%S %p",
+    "%d-%m-%Y %I:%M %p",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+)
+_MONTH_FIRST_FORMATS = (
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+    "%m-%d-%Y %I:%M:%S %p",
+    "%m-%d-%Y %I:%M %p",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m-%d-%Y %H:%M:%S",
+    "%m-%d-%Y %H:%M",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+)
+# 27-Apr-2026 08:01:54 AM — month name, so day/month order is not ambiguous.
+_NAMED_MONTH_FORMATS = (
+    "%d-%b-%Y %I:%M:%S %p",
+    "%d-%b-%Y %I:%M %p",
+    "%d-%b-%Y %H:%M:%S",
+    "%d-%b-%Y",
+)
+_PLAIN_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+) + _NAMED_MONTH_FORMATS
+
+
+def date_order_for(entity_name: str, config: dict) -> str:
+    """VRN files only. dd/mm/yyyy, mm/dd/yyyy, or dd-mmm-yyyy."""
+    key = str(entity_name or "").strip().casefold()
+    for row in config.get("entities") or []:
+        name = str(row.get("entity_name") or "").strip().casefold()
+        if name != key:
+            continue
+        order = str(row.get("date_format") or "").strip().casefold()
+        if order not in _DATE_ORDERS:
+            raise RuntimeError(
+                f"Set date_format for {entity_name!r} in vrn_merge_config.json "
+                "to dd/mm/yyyy, mm/dd/yyyy, or dd-mmm-yyyy "
+                "(example 27-Apr-2026 08:01:54 AM is dd-mmm-yyyy)."
+            )
+        return order
+    raise RuntimeError(
+        f"Add {entity_name!r} to the entities list in vrn_merge_config.json "
+        "and set date_format to dd/mm/yyyy, mm/dd/yyyy, or dd-mmm-yyyy."
+    )
+
+
+def parse_vrn_date(value, date_order: str) -> datetime | None:
+    text = _normalize_header_cell(value)
+    if text.casefold() in _BLANK_DATE:
+        return None
+    if date_order == "dd-mmm-yyyy":
+        formats = _NAMED_MONTH_FORMATS + _PLAIN_FORMATS
+        dayfirst = True
+    elif date_order == "mm/dd/yyyy":
+        formats = _MONTH_FIRST_FORMATS + _PLAIN_FORMATS
+        dayfirst = False
+    else:
+        formats = _DAY_FIRST_FORMATS + _PLAIN_FORMATS
+        dayfirst = True
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    parsed = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime()
+
+
 def parse_iso_date(value: str, label: str) -> date:
     text = str(value or "").strip()
     if not text:
@@ -276,6 +360,7 @@ def extract_merge_frame(
     scan_rows: int,
     min_matches: int,
     merge_columns: dict[str, list[str]],
+    date_order: str,
 ) -> pd.DataFrame:
     print(f"Reading: {path}")
     df_raw = read_first_sheet_raw(path)
@@ -297,7 +382,16 @@ def extract_merge_frame(
             missing.append(canonical)
             out[canonical] = ""
         else:
-            out[canonical] = df[source].astype(str)
+            values = df[source].astype(str)
+            if "date" in canonical.casefold():
+                parsed = [
+                    parse_vrn_date(value, date_order) for value in values.tolist()
+                ]
+                values = [
+                    stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp is not None else ""
+                    for stamp in parsed
+                ]
+            out[canonical] = values
             print(f"  {canonical} ← {source!r}")
 
     if missing:
@@ -317,7 +411,12 @@ def list_local_files(folder: Path) -> list[Path]:
     )
 
 
-def merge_vrn_files(paths: list[Path], config: dict, output_path: Path) -> Path:
+def merge_vrn_files(
+    paths: list[Path],
+    config: dict,
+    output_path: Path,
+    date_order: str,
+) -> Path:
     keywords = config.get("header_keywords") or []
     scan_rows = int(config.get("header_scan_rows") or 25)
     min_matches = int(config.get("min_header_matches") or 2)
@@ -339,6 +438,7 @@ def merge_vrn_files(paths: list[Path], config: dict, output_path: Path) -> Path:
                     scan_rows=scan_rows,
                     min_matches=min_matches,
                     merge_columns=merge_columns,
+                    date_order=date_order,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -408,6 +508,7 @@ def run_vrn_download_merge(
     merged_output_dir: Path | None = None,
     skip_existing: bool = SKIP_EXISTING,
     download_only: bool = DOWNLOAD_ONLY,
+    delete_downloads: bool = True,
 ) -> Path | None:
     name = str(entity_name or "").strip()
     if not name:
@@ -421,6 +522,8 @@ def run_vrn_download_merge(
 
     load_env()
     config = load_config()
+    date_order = date_order_for(name, config)
+    print(f"VRN date order for {name}: {date_order}")
 
     print("Connecting to DB for VRN…")
     with psycopg2.connect(**connection_kwargs()) as conn:
@@ -452,8 +555,11 @@ def run_vrn_download_merge(
     output_dir = Path(merged_output_dir or MERGED_OUTPUT_DIR)
     if not output_dir.is_absolute():
         output_dir = BASE_DIR / output_dir
-    merged_path = merge_vrn_files(paths, config, output_dir / merged_name)
-    delete_downloaded_files(paths, out_download)
+    merged_path = merge_vrn_files(paths, config, output_dir / merged_name, date_order)
+    if delete_downloads:
+        delete_downloaded_files(paths, out_download)
+    else:
+        print(f"Keeping {len(paths)} downloaded VRN file(s) in {out_download}")
     return merged_path
 
 

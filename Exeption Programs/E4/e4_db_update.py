@@ -1,5 +1,5 @@
 """
-E4 — aggregate Loss / Trips by End-date month and upsert audit_exception_metrics.
+E4 — aggregate Loss / Trips by Start-date month and upsert audit_exception_metrics.
 
 Standalone usage (DB update only):
   1. Set DB_UPDATE_ONLY = True
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -47,6 +48,13 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 
 # Column alias lists (kept local so this module can run standalone)
+START_DATE_ALIASES = [
+    "Validity Start Date",
+    "Start Date",
+    "Start Effective Date",
+    "Pass Start Date",
+    "Valid From",
+]
 END_DATE_ALIASES = [
     "Validity End Date",
     "End Date",
@@ -105,28 +113,93 @@ def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     return None
 
 
+_PASS_DATE_ORDERS = {"dd/mm/yyyy", "mm/dd/yyyy", "dd-mmm-yyyy"}
+_BLANK_PASS_DATE = {"", "na", "n/a", "null", "none", "nat", "nan", "-"}
+_PASS_DAY_FIRST = (
+    "%d-%m-%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+)
+_PASS_MONTH_FIRST = (
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m-%d-%Y %H:%M:%S",
+    "%m-%d-%Y %H:%M",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+)
+_PASS_NAMED_MONTH = (
+    "%d-%b-%Y %I:%M:%S %p",
+    "%d-%b-%Y %I:%M %p",
+    "%d-%b-%Y %H:%M:%S",
+    "%d-%b-%Y",
+)
+_PASS_ISO = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d",
+)
+
+
+def parse_ordered_datetime_series(series: pd.Series, date_order: str) -> pd.Series:
+    """Parse pass-file dates. 18-03-2026 00:00:00 is dd/mm/yyyy, not month-first."""
+    order = str(date_order or "").strip().casefold()
+    if order == "mm/dd/yyyy":
+        formats = _PASS_MONTH_FIRST + _PASS_ISO + _PASS_NAMED_MONTH
+        dayfirst = False
+    elif order == "dd-mmm-yyyy":
+        formats = _PASS_NAMED_MONTH + _PASS_ISO
+        dayfirst = True
+    else:
+        formats = _PASS_DAY_FIRST + _PASS_ISO + _PASS_NAMED_MONTH
+        dayfirst = True
+
+    def one(value):
+        text = "" if value is None else str(value).strip()
+        if text.casefold() in _BLANK_PASS_DATE:
+            return pd.NaT
+        for fmt in formats:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        parsed = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
+        if pd.isna(parsed):
+            return pd.NaT
+        return parsed.to_pydatetime()
+
+    return pd.to_datetime(series.map(one), errors="coerce")
+
+
 def aggregate_monthly_loss_and_trips(
     pass_df: pd.DataFrame,
     *,
+    start_date_aliases: list[str] | None = None,
     end_date_aliases: list[str] | None = None,
     loss_aliases: list[str] | None = None,
     trips_aliases: list[str] | None = None,
+    date_order: str | None = None,
+    only_nonzero_trips: bool = False,
 ) -> list[dict]:
     """
-    Group by year/month of End date.
+    Group by year/month of the pass start date.
     total_amount = sum(Loss); total_count = sum(Trips taken).
+    end_date_aliases is accepted and ignored so older callers still run.
     """
     if pass_df is None or pass_df.empty:
         return []
 
     headers = [str(c) for c in pass_df.columns]
-    end_col = resolve_column(headers, end_date_aliases or END_DATE_ALIASES)
+    start_col = resolve_column(headers, start_date_aliases or START_DATE_ALIASES)
     loss_col = resolve_column(headers, loss_aliases or LOSS_ALIASES)
     trips_col = resolve_column(headers, trips_aliases or TRIPS_ALIASES)
 
     missing = []
-    if not end_col:
-        missing.append("end date")
+    if not start_col:
+        missing.append("start date")
     if not loss_col:
         missing.append("Loss")
     if not trips_col:
@@ -138,15 +211,22 @@ def aggregate_monthly_loss_and_trips(
         )
 
     work = pass_df.copy()
-    work["_end"] = pd.to_datetime(work[end_col], errors="coerce")
-    work = work.dropna(subset=["_end"])
+    if date_order:
+        work["_start"] = parse_ordered_datetime_series(work[start_col], date_order)
+    else:
+        work["_start"] = pd.to_datetime(work[start_col], errors="coerce")
+    work = work.dropna(subset=["_start"])
     if work.empty:
         return []
 
-    work["year"] = work["_end"].dt.year.astype(int)
-    work["month"] = work["_end"].dt.month.astype(int)
+    work["year"] = work["_start"].dt.year.astype(int)
+    work["month"] = work["_start"].dt.month.astype(int)
     work["_loss"] = pd.to_numeric(work[loss_col], errors="coerce").fillna(0)
     work["_trips"] = pd.to_numeric(work[trips_col], errors="coerce").fillna(0)
+    if only_nonzero_trips:
+        work = work.loc[work["_trips"] != 0].copy()
+        if work.empty:
+            return []
 
     grouped = (
         work.groupby(["year", "month"], as_index=False)
@@ -336,9 +416,12 @@ def update_db_from_dataframe(
     *,
     exception_type_id: int = EXCEPTION_TYPE_ID,
     dry_run: bool = False,
+    start_date_aliases: list[str] | None = None,
     end_date_aliases: list[str] | None = None,
     loss_aliases: list[str] | None = None,
     trips_aliases: list[str] | None = None,
+    date_order: str | None = None,
+    only_nonzero_trips: bool = False,
 ) -> dict[str, int]:
     plaza_identifier = str(plaza_identifier or "").strip()
     if not plaza_identifier:
@@ -349,9 +432,11 @@ def update_db_from_dataframe(
     table = metrics_table_name()
     rows = aggregate_monthly_loss_and_trips(
         pass_df,
-        end_date_aliases=end_date_aliases,
+        start_date_aliases=start_date_aliases or end_date_aliases,
         loss_aliases=loss_aliases,
         trips_aliases=trips_aliases,
+        date_order=date_order,
+        only_nonzero_trips=only_nonzero_trips,
     )
     print(f"Target DB: {conn_kw['database']}.{table}")
     print(f"Plaza: {plaza_identifier}")

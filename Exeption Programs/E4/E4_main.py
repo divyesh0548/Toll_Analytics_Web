@@ -5,11 +5,13 @@ E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates →
    Then drop empty vehicles and MP + Car/Jeep/Van rows.
 2. If Trips taken missing: download/merge ETC for validity date range and count trips.
 3. Download/merge VRN for the same date range; map TC Class onto pass vehicles.
+   VRN date order is the entities list in vrn_merge_config.json
+   (dd/mm/yyyy or mm/dd/yyyy). That list is not used for pass or ETC dates.
 4. Map TC Class → index → single journey rate (PLAZA_RATES vs Apr26 onwards by
    validity end date). Total Charge = Trips × Rate; Loss = Total Charge − Issuance Fee
    (default fee from config if fee column/value missing). Missing other columns/keywords
    stop execution.
-5. Sum Loss and Trips by End-date month; upsert audit_exception_metrics (E04 / id 4).
+5. Sum Loss and Trips by Start-date month; upsert audit_exception_metrics (E04 / id 4).
 
 Run:
   1. Set PASS_INPUT_FOLDER, ENTITY_NAME, PLAZA_IDENTIFIER below
@@ -29,7 +31,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from e4_db_update import update_db_from_dataframe
+from e4_db_update import (
+    aggregate_monthly_loss_and_trips,
+    parse_ordered_datetime_series,
+    update_db_from_dataframe,
+)
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -47,6 +53,9 @@ PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 4
 DB_DRY_RUN = False
 SKIP_DB_UPDATE = False
+# Result months outside this range are not written to the database.
+EXPECTED_START = "2026-01-01"
+EXPECTED_END = "2026-12-31"
 EXCEL_EXTENSIONS = [".xlsx", ".xls", ".xlsm", ".csv"]
 
 
@@ -422,10 +431,34 @@ def resolve_plaza_identifier() -> str:
     return plaza_id
 
 
-def parse_datetime_series(series: pd.Series) -> pd.Series:
-    """Parse values like '2026-04-01 00:00:00' (and common variants) to timestamps."""
+def pass_date_order(config: dict, entity_name: str) -> str:
+    """Pass files only. Example 18-03-2026 00:00:00 is dd/mm/yyyy."""
+    allowed = {"dd/mm/yyyy", "mm/dd/yyyy", "dd-mmm-yyyy"}
+    key = str(entity_name or "").strip().casefold()
+    for row in config.get("entities") or []:
+        name = str(row.get("entity_name") or "").strip().casefold()
+        if name != key:
+            continue
+        order = str(row.get("date_format") or "").strip().casefold()
+        if order not in allowed:
+            raise RuntimeError(
+                f"Set date_format for {entity_name!r} in config.json entities "
+                "to dd/mm/yyyy, mm/dd/yyyy, or dd-mmm-yyyy. "
+                "18-03-2026 00:00:00 is dd/mm/yyyy."
+            )
+        return order
+    raise RuntimeError(
+        f"Add {entity_name!r} to the entities list in config.json "
+        "and set date_format for pass files."
+    )
+
+
+def parse_datetime_series(series: pd.Series, date_order: str | None = None) -> pd.Series:
+    """Pass dates use date_order. Other files keep pandas' own parse."""
     text = series.astype(str).str.strip()
     text = text.replace({"": pd.NA, "nan": pd.NA, "NaT": pd.NA, "None": pd.NA})
+    if date_order:
+        return parse_ordered_datetime_series(text, date_order)
     parsed = pd.to_datetime(text, errors="coerce")
     return parsed
 
@@ -453,8 +486,9 @@ def validity_date_range(df: pd.DataFrame, config: dict) -> tuple[date, date]:
             + f". Available: {list(df.columns)}"
         )
 
-    start_parsed = parse_datetime_series(df[start_col])
-    end_parsed = parse_datetime_series(df[end_col])
+    order = str(config.get("pass_date_order") or "").strip()
+    start_parsed = parse_datetime_series(df[start_col], order or None)
+    end_parsed = parse_datetime_series(df[end_col], order or None)
     if start_parsed.isna().all():
         raise RuntimeError(f"No valid datetimes in start column {start_col!r}")
     if end_parsed.isna().all():
@@ -739,7 +773,9 @@ def compute_total_charge_and_loss(
     if skip_set:
         print(f"TC Class skip list: {sorted(skip_set)}")
 
-    ends = parse_datetime_series(pass_df[end_col])
+    ends = parse_datetime_series(
+        pass_df[end_col], str(config.get("pass_date_order") or "") or None
+    )
     trips = [_to_float_or_none(v) for v in pass_df[trips_col].tolist()]
     tc_values = pass_df[tc_col].tolist()
     fees = (
@@ -807,6 +843,7 @@ def run_vrn_tc_rates_loss(
         entity_name,
         start_d.isoformat(),
         end_d.isoformat(),
+        delete_downloads=False,
     )
     if vrn_path is None:
         raise RuntimeError("VRN download finished without a merged file path.")
@@ -898,8 +935,9 @@ def fill_trips_taken_from_etc(
     etc_index = build_etc_vehicle_date_index(etc_df)
     print(f"  Distinct vehicles in ETC: {len(etc_index)}")
 
-    starts = parse_datetime_series(pass_df[start_col])
-    ends = parse_datetime_series(pass_df[end_col])
+    order = str(config.get("pass_date_order") or "") or None
+    starts = parse_datetime_series(pass_df[start_col], order)
+    ends = parse_datetime_series(pass_df[end_col], order)
     vehs = pass_df[veh_col].map(normalize_vehicle_number)
 
     counts: list[int] = []
@@ -958,14 +996,76 @@ def maybe_run_etc_download(merged: pd.DataFrame, config: dict, output_path: Path
     return updated
 
 
+def months_outside_expected(rows: list[dict], start: date, end: date) -> list[str]:
+    low = (start.year, start.month)
+    high = (end.year, end.month)
+    outside: list[str] = []
+    for row in rows:
+        key = (int(row["year"]), int(row["month"]))
+        if key < low or key > high:
+            outside.append(f"{key[0]}-{key[1]:02d}")
+    return outside
+
+
 def main() -> int:
     config = load_config()
+    entity_name = resolve_entity_name()
+    config["pass_date_order"] = pass_date_order(config, entity_name)
+    print(f"Pass date order for {entity_name}: {config['pass_date_order']}")
     output_path, merged = merge_pass_folder(config)
     merged = maybe_run_etc_download(merged, config, output_path)
     merged = run_vrn_tc_rates_loss(merged, config, output_path)
 
     if SKIP_DB_UPDATE:
         print("SKIP_DB_UPDATE=True — audit_exception_metrics not updated.")
+        return 0
+
+    entity_name = resolve_entity_name()
+    start_raw = str(EXPECTED_START or "").strip()
+    end_raw = str(EXPECTED_END or "").strip()
+    monthly = aggregate_monthly_loss_and_trips(
+        merged,
+        start_date_aliases=config.get("pass_start_date_column_names") or None,
+        loss_aliases=[config.get("loss_output_column") or "Loss", "Loss"],
+        trips_aliases=config.get("trips_taken_column_names") or None,
+        date_order=str(config.get("pass_date_order") or "") or None,
+        only_nonzero_trips=True,
+    )
+    print("-" * 60)
+    print(f"Months with trips for {entity_name}: {len(monthly)}")
+    print("Months with 0 trips are not written to the database.")
+    for row in monthly:
+        print(
+            f"  {int(row['year'])}-{int(row['month']):02d}: "
+            f"trips={int(row['total_count']):,}, loss={row['total_amount']}"
+        )
+    if not monthly:
+        print("No months with trips. DB not updated.")
+        return 0
+    if not start_raw or not end_raw:
+        print(
+            "Set EXPECTED_START and EXPECTED_END (YYYY-MM-DD) at the top of "
+            "E4_main.py. DB not updated."
+        )
+        return 0
+    try:
+        expected_start = date.fromisoformat(start_raw)
+        expected_end = date.fromisoformat(end_raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "EXPECTED_START and EXPECTED_END must be YYYY-MM-DD."
+        ) from exc
+    if expected_end < expected_start:
+        raise RuntimeError(
+            f"EXPECTED_END {expected_end.isoformat()} is before "
+            f"EXPECTED_START {expected_start.isoformat()}."
+        )
+    outside = months_outside_expected(monthly, expected_start, expected_end)
+    if outside:
+        print(
+            f"Months outside {expected_start.isoformat()} → {expected_end.isoformat()}: "
+            f"{', '.join(outside)}. DB not updated."
+        )
         return 0
 
     plaza_identifier = resolve_plaza_identifier()
@@ -976,9 +1076,11 @@ def main() -> int:
         plaza_identifier,
         exception_type_id=int(EXCEPTION_TYPE_ID),
         dry_run=bool(DB_DRY_RUN),
-        end_date_aliases=config.get("pass_end_date_column_names") or None,
+        start_date_aliases=config.get("pass_start_date_column_names") or None,
         loss_aliases=[config.get("loss_output_column") or "Loss", "Loss"],
         trips_aliases=config.get("trips_taken_column_names") or None,
+        date_order=str(config.get("pass_date_order") or "") or None,
+        only_nonzero_trips=True,
     )
     return 0
 

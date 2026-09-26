@@ -3,6 +3,12 @@ Input files : MP.LT pass file, VRN file, Rate file
 1. First merge MP/LT pass file. Remove rows with these conditions Pass type = MP and NPCI Vechicle class == VC4/ Car/Jeep/Van.
 
 2. Take TC class lookup from VRN file.
+   VRN dates only: each entity_name in vrn_merge_config.json has
+   date_format dd/mm/yyyy, mm/dd/yyyy, or dd-mmm-yyyy (27-Apr-2026 08:01:54 AM).
+   Pass dates are a separate entities list in config.json.
+   18-03-2026 00:00:00 is dd/mm/yyyy.
+   EXPECTED_START and EXPECTED_END are at the top of E4_main.py (YYYY-MM-DD).
+   If a result month falls outside that range, the database is not updated.
 
 3. Fetch rates based on TC class. (only single journey)
 
@@ -10,7 +16,8 @@ Input files : MP.LT pass file, VRN file, Rate file
 
 5. Total changes  -  Issueance fees (Take 360 by default if not available)  =  Loss
 
-Total of Loss = Amount, Count = Trips taken
+Total of Loss = Amount, Count = Trips taken.
+Month and year come from the pass start date, not the end date.
 
 
 If trips taken not present.

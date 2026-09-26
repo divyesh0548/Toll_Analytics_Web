@@ -1,0 +1,29 @@
+Months to sync: 12
+  2026-04: trips(total_count)=0, loss(total_amount)=-360.00
+  2026-05: trips(total_count)=2, loss(total_amount)=-160.00
+  2026-06: trips(total_count)=5, loss(total_amount)=-150.00
+  2026-07: trips(total_count)=12, loss(total_amount)=6,000.00
+  2026-09: trips(total_count)=0, loss(total_amount)=-360.00
+  2026-10: trips(total_count)=1, loss(total_amount)=-260.00
+  2026-11: trips(total_count)=0, loss(total_amount)=-360.00
+  2026-12: trips(total_count)=164, loss(total_amount)=16,040.00
+  2027-03: trips(total_count)=0, loss(total_amount)=-360.00
+  2027-04: trips(total_count)=0, loss(total_amount)=-7,200.00
+  2027-05: trips(total_count)=0, loss(total_amount)=-9,000.00
+  2027-06: trips(total_count)=0, loss(total_amount)=-720.00
+Plaza name: Bassi
+  2026-04: INSERT count=0, amount=-360.00
+  2026-05: INSERT count=2, amount=-160.00
+  2026-06: INSERT count=5, amount=-150.00
+  2026-07: INSERT count=12, amount=6,000.00
+  2026-09: INSERT count=0, amount=-360.00
+  2026-10: INSERT count=1, amount=-260.00
+  2026-11: INSERT count=0, amount=-360.00
+  2026-12: INSERT count=164, amount=16,040.00
+  2027-03: INSERT count=0, amount=-360.00
+  2027-04: INSERT count=0, amount=-7,200.00
+  2027-05: INSERT count=0, amount=-9,000.00
+  2027-06: INSERT count=0, amount=-720.00
+DB sync done — inserted=12, updated=0, unchanged=0
+
+It updated wrong month due to dates. Please fix that.

@@ -142,5 +142,47 @@
     "6": [
       "osv"
     ]
-  }
+  },
+  "entities": [
+    {"entity_name": "aroli", "date_format": ""},
+    {"entity_name": "bahadrabad", "date_format": ""},
+    {"entity_name": "balibhasa", "date_format": ""},
+    {"entity_name": "bankapur", "date_format": ""},
+    {"entity_name": "bassi", "date_format": "dd/mm/yyyy"},
+    {"entity_name": "bhojpuree", "date_format": ""},
+    {"entity_name": "boharipar", "date_format": ""},
+    {"entity_name": "chalageri", "date_format": ""},
+    {"entity_name": "chhapar", "date_format": ""},
+    {"entity_name": "dahalapara", "date_format": ""},
+    {"entity_name": "daroda", "date_format": ""},
+    {"entity_name": "dhaneshwar", "date_format": ""},
+    {"entity_name": "dukkavanipalem", "date_format": ""},
+    {"entity_name": "faridpur", "date_format": ""},
+    {"entity_name": "gadanki", "date_format": ""},
+    {"entity_name": "galia", "date_format": ""},
+    {"entity_name": "hattargi", "date_format": ""},
+    {"entity_name": "hebbalu", "date_format": ""},
+    {"entity_name": "kelapur", "date_format": ""},
+    {"entity_name": "khawasa", "date_format": ""},
+    {"entity_name": "khemana", "date_format": ""},
+    {"entity_name": "kherwasani", "date_format": ""},
+    {"entity_name": "kognoli", "date_format": ""},
+    {"entity_name": "madai", "date_format": ""},
+    {"entity_name": "madapam", "date_format": ""},
+    {"entity_name": "mahasamudram", "date_format": ""},
+    {"entity_name": "maigalganj", "date_format": ""},
+    {"entity_name": "marripalem", "date_format": ""},
+    {"entity_name": "mohtara", "date_format": ""},
+    {"entity_name": "mudhipar", "date_format": ""},
+    {"entity_name": "nathavalasa", "date_format": ""},
+    {"entity_name": "odhaki_paipkhar", "date_format": ""},
+    {"entity_name": "patgaon", "date_format": ""},
+    {"entity_name": "pullur", "date_format": ""},
+    {"entity_name": "raibha", "date_format": ""},
+    {"entity_name": "raksha", "date_format": ""},
+    {"entity_name": "tarapongi", "date_format": ""},
+    {"entity_name": "undavariya", "date_format": ""},
+    {"entity_name": "usaka", "date_format": ""},
+    {"entity_name": "veeravalli", "date_format": ""}
+  ]
 }
