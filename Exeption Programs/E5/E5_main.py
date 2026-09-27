@@ -18,11 +18,12 @@ Run DB update only:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -36,7 +37,10 @@ USE_SELENIUM_GRID = False  # False = local Chrome via IHMCL_bot.py
 SKIP_DB_UPDATE = False  # True = scrape/compare only, no DB write
 
 BASE_DIR = Path(__file__).resolve().parent
-INPUT_EXCEL = BASE_DIR / "odhaki_paipkhar_combined_2026-06-01_to_2026-07-31.xlsx"
+INPUT_EXCEL = BASE_DIR / "bassi_combined_2026-06-01_to_2026-07-31.xlsx"
+# Plaza name in E4/plaza_rates.py. June 2026 uses the April 2026 tariff.
+ENTITY_NAME = "bassi"
+RATE_CUTOVER = date(2026, 5, 1)
 CONFIG_JSON = BASE_DIR / "e5_config.json"
 OUTPUT_DIR = BASE_DIR / "output"
 
@@ -285,6 +289,82 @@ def filter_matching_rows(
     return matched
 
 
+def _rate_books() -> tuple[dict, dict]:
+    path = BASE_DIR.parent / "E4" / "plaza_rates.py"
+    spec = importlib.util.spec_from_file_location("e4_plaza_rates", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load plaza rates from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PLAZA_RATES, module.Plaza_Rates_Apr26_onwards
+
+
+def _single_rate(
+    old_book: dict,
+    new_book: dict,
+    entity_name: str,
+    class_index: int,
+    txn_date: date,
+) -> int:
+    """Single-journey rate for the tariff in force on txn_date."""
+    book = new_book if txn_date >= RATE_CUTOVER else old_book
+    plaza = book.get(entity_name)
+    if not plaza:
+        raise KeyError(f"No single rates for entity '{entity_name}'")
+    rates = plaza["single"]
+    if class_index not in rates:
+        raise KeyError(
+            f"No single rate for {entity_name} class index {class_index}"
+        )
+    return int(rates[class_index])
+
+
+def add_potential_exception_value(
+    matched_df: pd.DataFrame,
+    entity_name: str,
+) -> pd.DataFrame:
+    """
+    Amount = correct-class single rate minus the class that was charged.
+    Files that already include potential_exception_value are left as-is.
+    """
+    if matched_df is None or matched_df.empty:
+        return matched_df
+    if "potential_exception_value" in matched_df.columns:
+        return matched_df
+
+    needed = {"date", "TC_class_index", "Correct_index"}
+    missing = needed - set(matched_df.columns)
+    if missing:
+        raise KeyError(
+            f"Cannot compute potential_exception_value; missing {sorted(missing)}"
+        )
+
+    old_book, new_book = _rate_books()
+    work = matched_df.copy()
+    txn_dates = pd.to_datetime(work["date"], errors="coerce")
+    charged = pd.to_numeric(work["TC_class_index"], errors="coerce")
+    correct = pd.to_numeric(work["Correct_index"], errors="coerce")
+    amounts: list[int] = []
+    for txn_date, charged_index, correct_index in zip(txn_dates, charged, correct):
+        if pd.isna(txn_date) or pd.isna(charged_index) or pd.isna(correct_index):
+            amounts.append(0)
+            continue
+        gap = _single_rate(
+            old_book, new_book, entity_name, int(correct_index), txn_date.date()
+        ) - _single_rate(
+            old_book, new_book, entity_name, int(charged_index), txn_date.date()
+        )
+        amounts.append(gap if gap > 0 else 0)
+
+    work["potential_exception_value"] = amounts
+    print(
+        f"potential_exception_value: {len(amounts)} row(s), "
+        f"total {sum(amounts):,} (single rate of correct class minus charged class, "
+        f"{entity_name})"
+    )
+    return work
+
+
 def save_outputs(
     scraped_df: pd.DataFrame,
     matched_df: pd.DataFrame,
@@ -334,6 +414,7 @@ def main() -> int:
     print(f"Scraped rows: {len(scraped_df)}")
 
     matched_df = filter_matching_rows(input_df, scraped_df, columns, class_aliases)
+    matched_df = add_potential_exception_value(matched_df, ENTITY_NAME)
     scraped_path, matched_path = save_outputs(scraped_df, matched_df)
 
     print("=" * 60)

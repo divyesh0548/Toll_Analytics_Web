@@ -38,6 +38,8 @@ CONFIG_PATH = BASE_DIR / "e6_config.json"
 ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 OUTPUT_DIR = BASE_DIR / "output"
+ETC_DOWNLOAD_DIR = BASE_DIR / "etc_downloads"
+VRN_DOWNLOAD_DIR = BASE_DIR / "vrn_downloads"
 
 # Import plaza rates from E4
 if str(E4_DIR) not in sys.path:
@@ -46,16 +48,16 @@ from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # --- Runtime inputs (edit these; not in config) ---
 USE_SELENIUM_GRID = True  # False = local Chrome
-ENTITY_NAME = "odhaki_paipkhar"
+ENTITY_NAME = "bassi"
 # If set, load this ETC file and skip ETC download. Leave "" to download.
-ETC_INPUT_FILE = "C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E6\input\odhaki_etc_trimmed_Apr_26.xlsx"
-FROM_DATE = "2026-07-01"  # used when ETC_INPUT_FILE is empty (download mode)
-TO_DATE = "2026-07-01"
+ETC_INPUT_FILE = ""
+FROM_DATE = "2026-06-01"  # used when ETC_INPUT_FILE is empty (download mode)
+TO_DATE = "2026-06-01"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_with_permit.xlsx"
 # DEV ONLY: skip Parivahan permit scrape; start from existing ETC_OUTPUT_FILE.
 SKIP_PERMIT_SCRAPE_FOR_DEV = False
 # plazas.plaza_identifier — required when UPDATE_DB is True
-PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
+PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 6
 # Last step: write monthly Loss totals into audit_exception_metrics
 UPDATE_DB = True
@@ -371,7 +373,10 @@ def download_merged_etc(
         entity_name,
         from_date,
         to_date,
+        download_folder=ETC_DOWNLOAD_DIR,
         merged_output_dir=OUTPUT_DIR,
+        skip_existing=True,
+        delete_downloads=False,
         config=build_etc_merge_config(e6_config),
     )
     if etc_path is None:
@@ -456,7 +461,10 @@ def enrich_etc_with_vrn_tc_class(
         entity_name,
         from_date,
         to_date,
+        download_folder=VRN_DOWNLOAD_DIR,
         merged_output_dir=OUTPUT_DIR,
+        skip_existing=True,
+        delete_downloads=False,
     )
     if vrn_path is None:
         raise RuntimeError("VRN download finished without a merged file path.")

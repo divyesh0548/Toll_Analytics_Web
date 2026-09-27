@@ -360,7 +360,7 @@ def extract_merge_frame(
     scan_rows: int,
     min_matches: int,
     merge_columns: dict[str, list[str]],
-    date_order: str,
+    date_order: str = "",
 ) -> pd.DataFrame:
     print(f"Reading: {path}")
     df_raw = read_first_sheet_raw(path)
@@ -383,7 +383,7 @@ def extract_merge_frame(
             out[canonical] = ""
         else:
             values = df[source].astype(str)
-            if "date" in canonical.casefold():
+            if date_order in _DATE_ORDERS and "date" in canonical.casefold():
                 parsed = [
                     parse_vrn_date(value, date_order) for value in values.tolist()
                 ]
@@ -415,7 +415,7 @@ def merge_vrn_files(
     paths: list[Path],
     config: dict,
     output_path: Path,
-    date_order: str,
+    date_order: str = "",
 ) -> Path:
     keywords = config.get("header_keywords") or []
     scan_rows = int(config.get("header_scan_rows") or 25)

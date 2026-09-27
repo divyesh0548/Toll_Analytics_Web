@@ -469,6 +469,7 @@ def run_etc_download_merge(
     merged_output_dir: Path | None = None,
     skip_existing: bool = SKIP_EXISTING,
     download_only: bool = DOWNLOAD_ONLY,
+    delete_downloads: bool = True,
     config: dict | None = None,
     config_path: Path | None = None,
 ) -> Path | None:
@@ -527,7 +528,10 @@ def run_etc_download_merge(
     if not output_dir.is_absolute():
         output_dir = BASE_DIR / output_dir
     merged_path = merge_etc_files(paths, merge_config, output_dir / merged_name)
-    delete_downloaded_files(paths, out_download)
+    if delete_downloads:
+        delete_downloaded_files(paths, out_download)
+    else:
+        print(f"Keeping {len(paths)} downloaded ETC file(s) in {out_download}")
     return merged_path
 
 

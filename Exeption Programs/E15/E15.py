@@ -59,7 +59,7 @@ WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
 # --- Runtime inputs (edit these; not in config) ---
 FROM_PLAZA_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\from plaza"
-TO_PLAZA_ENTITY_NAME = "khawasa"  # submissions.entity_name for To-plaza VRN
+TO_PLAZA_ENTITY_NAME = "dhaneshwar"  # submissions.entity_name for To-plaza VRN
 OUTPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\output"
 FALLBACK_FROM_PLAZA_FOLDER = BASE_DIR / "from_plaza_input"
 FALLBACK_OUTPUT_FOLDER = BASE_DIR / "output"
@@ -67,7 +67,7 @@ VRN_DOWNLOAD_FOLDER = BASE_DIR / "vrn_downloads"
 INDIVIDUAL_OUTPUT_PREFIX = "from_to"
 COMBINED_OUTPUT_FILENAME = "from_to_combined.xlsx"
 # plazas.plaza_identifier — required when UPDATE_DB is True
-PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
+PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 15
 UPDATE_DB = True
 DB_DRY_RUN = False
@@ -561,10 +561,17 @@ def run_to_plaza_vrn_download_merge(
         f"{vrn_mod.safe_part(entity_name)}_"
         f"{start.isoformat()}_{end.isoformat()}_merged_vrn.csv"
     )
+    date_order = ""
+    try:
+        date_order = vrn_mod.date_order_for(entity_name, vrn_mod.load_config())
+        print(f"VRN date order for {entity_name}: {date_order}")
+    except RuntimeError as exc:
+        print(f"{exc} Date & Time values are kept as read.")
     merged_path = vrn_mod.merge_vrn_files(
         paths,
         vrn_cfg,
         out_dir / merged_name,
+        date_order,
     )
     vrn_mod.delete_downloaded_files(paths, download_folder)
     print(f"VRN merge columns: {list((vrn_cfg.get('merge_columns') or {}).keys())}")

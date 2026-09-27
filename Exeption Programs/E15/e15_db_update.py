@@ -3,8 +3,9 @@ E15 — aggregate Applicable Rate by Date & Time month into audit_exception_metr
 
 Standalone usage (DB update only):
   1. Set DB_UPDATE_ONLY = True
-  2. Set MERGED_OUTPUT_FILE and PLAZA_IDENTIFIER below
+  2. Set MERGED_OUTPUT_FILE below
   3. python e15_db_update.py
+     Plaza id is taken from PLAZA_IDENTIFIER in E15.py.
 
 Full pipeline:
   Called from E15.py after from_to_combined is written (when UPDATE_DB=True).
@@ -37,7 +38,6 @@ MERGED_OUTPUT_FILE = (
     r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\output\from_to_combined.xlsx"
 )
 
-PLAZA_IDENTIFIER = ""
 
 # E15 — Same vehicles get exempted while user fee is collected at subsequent plaza
 EXCEPTION_TYPE_ID = 15
@@ -425,16 +425,20 @@ def update_db_from_merged_file(
 def main() -> int:
     if not DB_UPDATE_ONLY:
         print(
-            "DB_UPDATE_ONLY is False. Set it True and fill MERGED_OUTPUT_FILE / "
-            "PLAZA_IDENTIFIER to run DB update alone.\n"
+            "DB_UPDATE_ONLY is False. Set it True and fill MERGED_OUTPUT_FILE "
+            "to run DB update alone.\n"
+            "Plaza id is PLAZA_IDENTIFIER in E15.py.\n"
             "Or run: python E15.py for the full pipeline."
         )
         return 1
 
     if not str(MERGED_OUTPUT_FILE).strip():
         raise RuntimeError("Set MERGED_OUTPUT_FILE at the top of e15_db_update.py.")
+
+    from E15 import PLAZA_IDENTIFIER
+
     if not str(PLAZA_IDENTIFIER).strip():
-        raise RuntimeError("Set PLAZA_IDENTIFIER at the top of e15_db_update.py.")
+        raise RuntimeError("Set PLAZA_IDENTIFIER at the top of E15.py.")
 
     update_db_from_merged_file(
         MERGED_OUTPUT_FILE,
