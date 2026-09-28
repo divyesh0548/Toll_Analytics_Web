@@ -56,16 +56,44 @@ VEHICLE_CLASS_MAPPINGS = load_vehicle_class_mappings()
 MOP_MAPPINGS = load_mop_mappings()
 VEHICLE_CLASS_COLUMNS, VEHICLE_CLASS_NORMALIZATION = split_mappings(VEHICLE_CLASS_MAPPINGS)
 MOP_COLUMNS, MOP_NORMALIZATION = split_mappings(MOP_MAPPINGS)
-VEHICLE_CLASS_LOOKUP = build_lookup(VEHICLE_CLASS_NORMALIZATION)
 MOP_LOOKUP = build_lookup(MOP_NORMALIZATION)
 # Case-insensitive ignore set — these MOP labels are not counted and do not stop ETL.
 MOP_IGNORE_LOOKUP = {
     normalize_key(alias) for alias in load_mop_ignore_aliases() if normalize_key(alias)
 }
+
+
+def normalize_vehicle_class_key(value) -> str:
+    """Uppercase, then drop spaces and symbols so 'BUS-2 AXLE' matches 'BUS2AXLE'."""
+    text = normalize_key(value)
+    if not text:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", text)
+
+
+def build_vehicle_class_lookup(normalization: dict[str, list[str]]) -> dict[str, str]:
+    """Map each alias to its canonical class after symbols and spaces are removed."""
+    lookup: dict[str, str] = {}
+    for canonical, aliases in normalization.items():
+        for raw in (canonical, *aliases):
+            key = normalize_vehicle_class_key(raw)
+            if not key:
+                continue
+            existing = lookup.get(key)
+            if existing is not None and existing != canonical:
+                raise ValueError(
+                    "vehicle_class.json aliases collide after removing symbols and spaces: "
+                    f"{raw!r} ({canonical}) and an alias of {existing!r} both become {key!r}."
+                )
+            lookup[key] = canonical
+    return lookup
+
+
+VEHICLE_CLASS_LOOKUP = build_vehicle_class_lookup(VEHICLE_CLASS_NORMALIZATION)
 VEHICLE_CLASS_EXCLUDE_LOOKUP = {
-    normalize_key(alias)
+    normalize_vehicle_class_key(alias)
     for alias in load_vehicle_class_exclude_aliases()
-    if normalize_key(alias)
+    if normalize_vehicle_class_key(alias)
 }
 
 
@@ -399,20 +427,20 @@ def hour_bucket_label(dt: datetime) -> str:
 
 def is_excluded_vehicle_class(value) -> bool:
     """True when the raw label, or its canonical class, is listed under vehicle_class.json 'exclude'."""
-    key = normalize_key(value)
+    key = normalize_vehicle_class_key(value)
     if not key:
         return False
     if key in VEHICLE_CLASS_EXCLUDE_LOOKUP:
         return True
     canonical = VEHICLE_CLASS_LOOKUP.get(key)
-    if canonical and normalize_key(canonical) in VEHICLE_CLASS_EXCLUDE_LOOKUP:
+    if canonical and normalize_vehicle_class_key(canonical) in VEHICLE_CLASS_EXCLUDE_LOOKUP:
         return True
     return False
 
 
 def try_normalize_vehicle_class(value):
-    """Map Excel vehicle class to canonical name (case-insensitive). Excluded classes return None."""
-    key = normalize_key(value)
+    """Map Excel vehicle class to canonical name. Symbols and spaces are ignored. Excluded classes return None."""
+    key = normalize_vehicle_class_key(value)
     if not key:
         return None
     if is_excluded_vehicle_class(value):

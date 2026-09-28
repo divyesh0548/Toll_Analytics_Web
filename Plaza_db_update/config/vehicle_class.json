@@ -1,5 +1,6 @@
 {
   "exclude": [
+    "Unknown"
   ],
   "3WHEELER": {
     "db_column": "vc_3wheeler",
@@ -15,7 +16,7 @@
   },
   "LCV": {
     "db_column": "vc_lcv",
-    "aliases": ["LCV", "Light Commercial vehicle 2-axle", "Tata Ace and Similar mini Light Commercial Vehicle"]
+    "aliases": ["LCV", "Light Commercial vehicle 2-axle", "Tata Ace and Similar mini Light Commercial Vehicle", "Light Commercial vehicle 2-axle", "Tata Ace or Similar Mini LCV"]
   },
   "MAV": {
     "db_column": "vc_mav",

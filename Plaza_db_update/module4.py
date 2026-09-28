@@ -74,7 +74,7 @@ from excel_common import (  # noqa: E402
 # Runtime inputs
 # ---------------------------------------------------------------------------
 
-ENTITY_NAME = PLAZA_NAME  # submissions.entity_name (usually same as plaza folder name)
+ENTITY_NAME = "odhaki_paipkhar"  # submissions.entity_name (usually same as plaza folder name)
 FROM_DATE = "2025-11-23"  # inclusive YYYY-MM-DD
 TO_DATE = "2026-08-31"  # inclusive YYYY-MM-DD
 
@@ -260,6 +260,17 @@ def parse_settlement_amount(value) -> Decimal:
         return Decimal(text)
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def drop_incomplete_last_row(df: pd.DataFrame, required_columns: list[str]) -> pd.DataFrame:
+    """Skip a trailing totals row that does not fill every required column."""
+    if df.empty or not required_columns:
+        return df
+    last = df.iloc[-1]
+    if all(not is_blank(last[column]) for column in required_columns):
+        return df
+    print("  Last row is missing a required value — skipped.")
+    return df.iloc[:-1].reset_index(drop=True)
 
 
 def validate_etc_dataframe(df: pd.DataFrame, file_name: str, datetime_format: str) -> None:
@@ -596,6 +607,13 @@ def process_etc_file(path: Path) -> list[dict]:
             return []
 
     dt_col = columns["datetime"]
+    df = drop_incomplete_last_row(
+        df,
+        [columns["datetime"], columns["npci"], columns["settlement"]],
+    )
+    if df.empty:
+        print("  Empty file — skip.")
+        return []
     datetime_format = detect_datetime_format(df[dt_col].tolist())
     validate_etc_dataframe(df, path.name, datetime_format)
     prepared = prepare_etc_dataframe(df, datetime_format)

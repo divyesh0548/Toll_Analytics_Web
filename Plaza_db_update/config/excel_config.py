@@ -53,12 +53,14 @@ ETC_NPCI_CLASS_COLUMN_ALIASES = [
     "NPCI Class",
     "NPCI CLass",
     "NPCI Class Description",
+    "Mapper VC"
 ]
 ETC_SETTLEMENT_COLUMN_ALIASES = [
     "Settlement Amount",
     "Net Settlement Amt",
     "Net Settlement Amount",
     "Settlement Amt",
+    "Transaction Amount",
 ]
 
 ETC_REQUIRED_FIELDS = ("etc_datetime", "etc_npci", "etc_settlement")
@@ -190,6 +192,8 @@ HEADER_KEYWORDS = [
     "Vehicle No",
     "Operator Class",
     "LANE",
+    "Agency Txn Id",
+    "Fare Type"
 ]
 HEADER_KEYWORDS.extend(DATE_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(TIME_COLUMN_ALIASES)

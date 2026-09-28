@@ -1,6 +1,7 @@
 """Load vehicle class and MOP mapping configs from JSON files.
 
-Alias matching is case-insensitive (values are normalized to uppercase).
+Vehicle class aliases are compared after uppercasing and removing spaces and symbols.
+MOP aliases are compared case-insensitively, with spacing collapsed.
 """
 
 from __future__ import annotations
