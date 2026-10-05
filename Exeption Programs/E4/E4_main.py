@@ -3,7 +3,8 @@ E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates →
 
 1. Merge pass files. Stop if a Pass Type is not in config.json.
    Then drop empty vehicles and MP + Car/Jeep/Van rows.
-2. If Trips taken missing: download/merge ETC for validity date range and count trips.
+2. If Trips taken missing: download/merge ETC for the Start Effective Date
+   range (earliest → latest after merge) and count trips.
 3. Download/merge VRN for the same date range; map TC Class onto pass vehicles.
    VRN date order is the entities list in vrn_merge_config.json
    (dd/mm/yyyy or mm/dd/yyyy). That list is not used for pass or ETC dates.
@@ -12,6 +13,7 @@ E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates →
    (default fee from config if fee column/value missing). Missing other columns/keywords
    stop execution.
 5. Sum Loss and Trips by Start-date month; upsert audit_exception_metrics (E04 / id 4).
+6. Optional: upload merged_pass_files.xlsx to S3 when UPLOAD_OUTPUT_TO_S3=True.
 
 Run:
   1. Set PASS_INPUT_FOLDER, ENTITY_NAME, PLAZA_IDENTIFIER below
@@ -39,6 +41,13 @@ from e4_db_update import (
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 CONFIG_PATH = BASE_DIR / "config.json"
 ETC_DOWNLOAD_MERGE_PATH = BASE_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = BASE_DIR / "vrn-download-merge.py"
@@ -53,6 +62,8 @@ PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 4
 DB_DRY_RUN = False
 SKIP_DB_UPDATE = False
+# Upload merged_pass_files.xlsx to S3 and insert audit_exception_output_files row.
+UPLOAD_OUTPUT_TO_S3 = False
 # Result months outside this range are not written to the database.
 EXPECTED_START = "2026-01-01"
 EXPECTED_END = "2026-12-31"
@@ -464,47 +475,36 @@ def parse_datetime_series(series: pd.Series, date_order: str | None = None) -> p
 
 
 def validity_date_range(df: pd.DataFrame, config: dict) -> tuple[date, date]:
+    """Earliest and latest Start Effective Date after the pass merge (end date unused)."""
     headers = [str(c) for c in df.columns]
     start_aliases = config.get("pass_start_date_column_names") or []
-    end_aliases = config.get("pass_end_date_column_names") or []
     if not start_aliases:
         raise RuntimeError("pass_start_date_column_names is empty in config.json")
-    if not end_aliases:
-        raise RuntimeError("pass_end_date_column_names is empty in config.json")
 
     start_col = resolve_column(headers, start_aliases)
-    end_col = resolve_column(headers, end_aliases)
-    if not start_col or not end_col:
-        missing = []
-        if not start_col:
-            missing.append(f"pass_start_date_column_names={start_aliases!r}")
-        if not end_col:
-            missing.append(f"pass_end_date_column_names={end_aliases!r}")
+    if not start_col:
         raise RuntimeError(
-            "Could not resolve validity date columns: "
-            + ", ".join(missing)
-            + f". Available: {list(df.columns)}"
+            "Could not resolve Start Effective Date column "
+            f"(pass_start_date_column_names={start_aliases!r}). "
+            f"Available: {list(df.columns)}"
         )
 
     order = str(config.get("pass_date_order") or "").strip()
     start_parsed = parse_datetime_series(df[start_col], order or None)
-    end_parsed = parse_datetime_series(df[end_col], order or None)
     if start_parsed.isna().all():
         raise RuntimeError(f"No valid datetimes in start column {start_col!r}")
-    if end_parsed.isna().all():
-        raise RuntimeError(f"No valid datetimes in end column {end_col!r}")
 
     earliest = start_parsed.min()
-    latest = end_parsed.max()
+    latest = start_parsed.max()
     start_d = earliest.date() if hasattr(earliest, "date") else pd.Timestamp(earliest).date()
     end_d = latest.date() if hasattr(latest, "date") else pd.Timestamp(latest).date()
     if end_d < start_d:
         raise RuntimeError(
-            f"Invalid validity range: earliest start {start_d} is after latest end {end_d}"
+            f"Invalid start-date range: earliest {start_d} is after latest {end_d}"
         )
 
     print(
-        f"Validity range from columns {start_col!r} / {end_col!r}: "
+        f"Start Effective Date range from {start_col!r}: "
         f"{start_d.isoformat()} → {end_d.isoformat()}"
     )
     return start_d, end_d
@@ -976,7 +976,10 @@ def maybe_run_etc_download(merged: pd.DataFrame, config: dict, output_path: Path
         )
         return merged
 
-    print("Trips taken column not found — deriving ETC date range from validity dates.")
+    print(
+        "Trips taken column not found — deriving ETC date range "
+        "from Start Effective Date (earliest → latest)."
+    )
     start_d, end_d = validity_date_range(merged, config)
     entity_name = resolve_entity_name()
     print(f"Starting ETC download/merge for entity_name={entity_name!r}")
@@ -1081,6 +1084,25 @@ def main() -> int:
         trips_aliases=config.get("trips_taken_column_names") or None,
         date_order=str(config.get("pass_date_order") or "") or None,
         only_nonzero_trips=True,
+    )
+
+    if not UPLOAD_OUTPUT_TO_S3:
+        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
+        return 0
+
+    output_file = Path(output_path)
+    if not output_file.is_file():
+        raise FileNotFoundError(f"Merged output file not found for S3 upload: {output_file}")
+    month_periods = [(int(row["year"]), int(row["month"])) for row in monthly]
+    label = month_label_from_periods(month_periods)
+    print("-" * 60)
+    print(f"Uploading {output_file.name} to S3 (month_label={label!r})…")
+    upload_exception_output(
+        output_file,
+        plaza_identifier,
+        exception_type_id=int(EXCEPTION_TYPE_ID),
+        month_label=label,
+        dry_run=bool(DB_DRY_RUN),
     )
     return 0
 

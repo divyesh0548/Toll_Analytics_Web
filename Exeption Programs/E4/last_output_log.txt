@@ -1,0 +1,29 @@
+Merged rows: 1591218 from 660 file(s)
+Skipped / failed files: 5
+Wrote: C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\output\bassi_2026-01-04_2026-11-04_merged_vrn.csv
+Keeping 665 downloaded VRN file(s) in C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\vrn_downloads
+VRN merge complete: C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\output\bassi_2026-01-04_2026-11-04_merged_vrn.csv
+Loading merged VRN: C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\output\bassi_2026-01-04_2026-11-04_merged_vrn.csv
+  Distinct vehicles with TC Class in VRN: 342013
+TC Class attached via VRN on 'Chassis/ Vehicle No' → 'TC Class': 80/88 rows matched
+TC Class skip list: ['auto']
+Issuance fee column not found — using default 360.0
+Rates applied for entity 'bassi' (cutover 2026-05-01): 80/88 rows → 'Total Charge' / 'Loss'
+Wrote: C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\output\merged_pass_files.xlsx
+------------------------------------------------------------
+Months with trips for bassi: 2
+Months with 0 trips are not written to the database.
+  2026-04: trips=171, loss=25500.0
+  2026-07: trips=13, loss=6170.0
+------------------------------------------------------------
+Updating audit_exception_metrics (exception_type_id=4)…
+Target DB: toll_analytics.audit_exception_metrics
+Plaza: 94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6
+exception_type_id: 4
+Months to sync: 2
+  2026-04: trips(total_count)=171, loss(total_amount)=25,500.00
+  2026-07: trips(total_count)=13, loss(total_amount)=6,170.00
+Plaza name: Bassi
+  2026-04: KEEP stored count=171, amount=25,500.00 (new count=171, amount=25,500.00)
+  2026-07: KEEP stored count=13, amount=6,170.00 (new count=13, amount=6,170.00)
+DB sync done — inserted=0, updated=0, unchanged=2

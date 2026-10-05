@@ -253,3 +253,64 @@ class AuditExceptionMetric(db.Model):
             f"<AuditExceptionMetric plaza={self.plaza_identifier} "
             f"type={self.exception_type_id} {self.year}-{self.month:02d}>"
         )
+
+
+class AuditExceptionOutputFile(db.Model):
+    """One S3 object per exception-program output upload (history kept)."""
+
+    __tablename__ = "audit_exception_output_files"
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    plaza_identifier = db.Column(
+        db.String(36),
+        db.ForeignKey("plazas.plaza_identifier", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    exception_type_id = db.Column(
+        db.Integer,
+        db.ForeignKey("audit_exception_types.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    # e.g. Jan-2026 or Jan-Mar-2026
+    month_label = db.Column(db.String(64), nullable=False)
+    file_name = db.Column(db.String(512), nullable=False)
+    s3_key = db.Column(db.String(1024), nullable=False)
+    file_url = db.Column(db.String(2048), nullable=False)
+    original_file_name = db.Column(db.String(512), nullable=True)
+    file_size_bytes = db.Column(db.BigInteger, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        onupdate=_utc_now,
+    )
+
+    exception_type = db.relationship(
+        "AuditExceptionType",
+        foreign_keys=[exception_type_id],
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "plaza_identifier": self.plaza_identifier,
+            "exception_type_id": self.exception_type_id,
+            "month_label": self.month_label,
+            "file_name": self.file_name,
+            "s3_key": self.s3_key,
+            "file_url": self.file_url,
+            "original_file_name": self.original_file_name,
+            "file_size_bytes": (
+                int(self.file_size_bytes) if self.file_size_bytes is not None else None
+            ),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<AuditExceptionOutputFile plaza={self.plaza_identifier} "
+            f"type={self.exception_type_id} {self.month_label} {self.file_name}>"
+        )

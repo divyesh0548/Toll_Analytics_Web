@@ -1,7 +1,8 @@
 """
 E6 — Download ETC for a plaza/date range; export vehicle numbers by month.
 
-1) Download/merge ETC via E4 etc-download-merge (vehicle_reg_no + read_datetime only)
+1) Download ETC into this folder's etc_downloads (files are kept), then merge
+   vehicle_reg_no + read_datetime only
 2) Split rows by calendar month of Tag Read / Date & Time
 3) Write one file per month with only the vehicle number column:
      {plaza}_{YYYY-MM-DD}_{YYYY-MM-DD}_vehicle_number.csv
@@ -26,10 +27,11 @@ import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent
 E4_DIR = BASE_DIR.parent / "E4"
 ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
+ETC_DOWNLOAD_DIR = BASE_DIR / "etc_downloads"
 OUTPUT_DIR = BASE_DIR / "output" / "vehicle_numbers_for_permit"
 
 # --- Runtime inputs (edit these) ---
-ENTITY_NAME = "odhaki_paipkhar"
+ENTITY_NAME = "bassi"
 FROM_DATE = "2026-07-01"  # inclusive YYYY-MM-DD
 TO_DATE = "2026-07-31"  # inclusive YYYY-MM-DD
 # If True, keep only distinct non-empty vehicle numbers within each month file.
@@ -57,12 +59,14 @@ ETC_MERGE_CONFIG = {
             "Veh Reg No.",
             "Vehicle Reg No",
             "Vehicle Number",
+            "Vehicle Reg. No.",
             "Vehicle No",
             "Reg No",
             "Licence Plate No",
         ],
         "read_datetime": [
             "Tag Read Date Time",
+            "Reader Read Time",
             "Date & Time",
             "Date and Time",
             "Txn Date Time",
@@ -203,7 +207,9 @@ def main() -> int:
         entity_name,
         from_date,
         to_date,
+        download_folder=ETC_DOWNLOAD_DIR,
         merged_output_dir=OUTPUT_DIR,
+        delete_downloads=False,
         config=ETC_MERGE_CONFIG,
     )
     if etc_path is None:

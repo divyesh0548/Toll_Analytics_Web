@@ -1,20 +1,21 @@
 """
-E6 — ETC (path or download) + VRN → Permit scrape → TC Class → rates/Loss → DB.
+E6 — ETC (path or download) + permit file(s) + VRN → TC Class → rates/Loss → DB.
 
 1) Provide ETC_INPUT_FILE path OR download/merge ETC for entity_name + date range
-2) Identify duplicate VRNs; scrape unique vehicles only (Selenium Grid or local)
-3) Join permit columns onto every ETC row by vehicle reg no (all rows kept)
-4) Download/merge VRN:
+2) Join permit columns from PERMIT_FOLDER (multiple Excel/CSV files) by vehicle number.
+   This program does not scrape permits.
+3) Download/merge VRN (downloaded files are kept for reuse on the next run):
    - if ETC path given → date range from Tag Read Date Time in that file
    - if ETC downloaded → same FROM_DATE / TO_DATE
-5) Normalize Journey Type → rates → Loss; write enriched ETC
-6) Optionally upsert audit_exception_metrics (exception id 6)
+4) Normalize Journey Type → rates → Loss; write enriched ETC
+5) Optionally upsert audit_exception_metrics (exception id 6)
 
 Run:
   1. Set ENTITY_NAME; either ETC_INPUT_FILE or FROM_DATE/TO_DATE
-  2. python E6_main.py
+  2. Set PERMIT_FOLDER to a folder that contains the permit Excel/CSV files
+  3. python E6_main.py
      or: python E6_main.py odhaki_paipkhar 2026-01-01 2026-04-30 <plaza_uuid>
-  3. DEV: SKIP_PERMIT_SCRAPE_FOR_DEV=True reuses ETC_OUTPUT_FILE (skip scrape only)
+  4. DEV: SKIP_PERMIT_JOIN_FOR_DEV=True reuses ETC_OUTPUT_FILE (permit folder not read)
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ import pandas as pd
 
 from e6_db_update import update_db_from_dataframe
 from vehicle_number_utils import normalize_vehicle_number
-from web_scrap_for_permit import PERMIT_FIELDS, scrape_vehicle_details_for_permit
 
 BASE_DIR = Path(__file__).resolve().parent
 E4_DIR = BASE_DIR.parent / "E4"
@@ -41,21 +41,29 @@ OUTPUT_DIR = BASE_DIR / "output"
 ETC_DOWNLOAD_DIR = BASE_DIR / "etc_downloads"
 VRN_DOWNLOAD_DIR = BASE_DIR / "vrn_downloads"
 
+PERMIT_FIELDS = ["Permit Type", "Permit/Authorization No", "Permit Validity"]
+PERMIT_FILE_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
+
 # Import plaza rates from E4
 if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # --- Runtime inputs (edit these; not in config) ---
-USE_SELENIUM_GRID = True  # False = local Chrome
 ENTITY_NAME = "bassi"
 # If set, load this ETC file and skip ETC download. Leave "" to download.
 ETC_INPUT_FILE = ""
-FROM_DATE = "2026-06-01"  # used when ETC_INPUT_FILE is empty (download mode)
-TO_DATE = "2026-06-01"
+FROM_DATE = "2026-07-01"  # used when ETC_INPUT_FILE is empty (download mode)
+TO_DATE = "2026-07-31"
+# Required: folder of already-scraped permit Excel/CSV files.
+# Each file needs a vehicle column plus Permit Type, Permit/Authorization No,
+# Permit Validity. All files in the folder are combined, then joined by VRN.
+PERMIT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E6\bassi-permit"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_with_permit.xlsx"
-# DEV ONLY: skip Parivahan permit scrape; start from existing ETC_OUTPUT_FILE.
-SKIP_PERMIT_SCRAPE_FOR_DEV = False
+# Unique vehicle + permit columns kept after a run, for checking the join.
+PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
+# DEV ONLY: skip the permit join; start from existing ETC_OUTPUT_FILE.
+SKIP_PERMIT_JOIN_FOR_DEV = False
 # plazas.plaza_identifier — required when UPDATE_DB is True
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 6
@@ -453,7 +461,7 @@ def enrich_etc_with_vrn_tc_class(
 ) -> pd.DataFrame:
     print(
         f"Starting VRN download/merge for entity_name={entity_name!r} "
-        f"({from_date} → {to_date})"
+        f"({from_date} → {to_date}); downloads kept in {VRN_DOWNLOAD_DIR}"
     )
 
     vrn_mod = load_vrn_download_merge_module()
@@ -469,6 +477,7 @@ def enrich_etc_with_vrn_tc_class(
     if vrn_path is None:
         raise RuntimeError("VRN download finished without a merged file path.")
     print(f"VRN merge complete: {vrn_path}")
+    print(f"VRN downloads kept for reuse: {VRN_DOWNLOAD_DIR}")
 
     vrn_lookup = build_vrn_tc_class_lookup(Path(vrn_path))
     return attach_tc_class_from_vrn(etc_df, vehicle_col, vrn_lookup, columns_cfg)
@@ -478,7 +487,8 @@ def normalize_value_key(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     text = str(value).strip().lower()
-    text = re.sub(r"[\s_\-]+", " ", text)
+    # Treat /, \, _, - like spaces so CAR\JEEP / car/jeep match car jeep.
+    text = re.sub(r"[\s_\-/\\]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if text in {"", "nan", "none", "nat"}:
         return ""
@@ -603,13 +613,19 @@ def normalize_journey_types(etc_df: pd.DataFrame, config: dict) -> pd.DataFrame:
     journey_lookup = build_name_to_category_lookup(config.get("journey_type_map") or {})
     if not journey_lookup:
         raise RuntimeError("journey_type_map is empty in e6_config.json")
+    exclude_set = build_tc_class_skip_set(config.get("journey_type_exclude") or [])
 
     normalized: list[str] = []
     unknown: set[str] = set()
+    excluded = 0
     for raw in etc_df[journey_col].tolist():
         key = normalize_value_key(raw)
         if not key:
             normalized.append("")
+            continue
+        if key in exclude_set:
+            normalized.append("")
+            excluded += 1
             continue
         cat = journey_lookup.get(key)
         if cat is None:
@@ -629,7 +645,10 @@ def normalize_journey_types(etc_df: pd.DataFrame, config: dict) -> pd.DataFrame:
     counts = (
         pd.Series(normalized).replace("", pd.NA).dropna().value_counts().to_dict()
     )
-    print(f"Journey Type normalized on {journey_col!r} → {out_col!r}: {counts}")
+    print(
+        f"Journey Type normalized on {journey_col!r} → {out_col!r}: {counts}"
+        + (f", excluded={excluded}" if excluded else "")
+    )
     return result
 
 
@@ -752,27 +771,100 @@ def apply_rates_and_loss(
     return result
 
 
-def unique_vehicle_frame(etc_df: pd.DataFrame, vehicle_col: str) -> pd.DataFrame:
-    """
-    Return one row per distinct non-empty vehicle for scraping only.
-    Original ETC rows (including duplicates) are left untouched and receive
-    permit fields later via merge_permit_into_etc.
-    """
-    normalized = etc_df[vehicle_col].map(normalize_vehicle_number)
-    non_empty = normalized.replace("", pd.NA).dropna()
-    unique = non_empty.drop_duplicates().reset_index(drop=True)
+def resolve_permit_paths() -> list[Path]:
+    """Return all permit Excel/CSV files from PERMIT_FOLDER."""
+    raw = str(PERMIT_FOLDER or "").strip()
+    if not raw:
+        raise RuntimeError(
+            "Set PERMIT_FOLDER at the top of E6_main.py to a folder of "
+            "permit Excel/CSV files. Scraping is not used."
+        )
+    path = Path(raw)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    if path.is_file():
+        raise RuntimeError(
+            f"PERMIT_FOLDER must be a folder, not a file: {path}\n"
+            "Put the permit file(s) in a folder and point PERMIT_FOLDER at it."
+        )
+    if not path.is_dir():
+        raise FileNotFoundError(f"Permit folder not found: {path}")
 
-    total_rows = len(etc_df)
-    with_vehicle = int(len(non_empty))
-    unique_count = int(len(unique))
-    duplicate_extra = with_vehicle - unique_count
-    print(
-        f"Vehicle dedupe for scrape on {vehicle_col!r}: "
-        f"ETC rows={total_rows:,}, with VRN={with_vehicle:,}, "
-        f"unique to scrape={unique_count:,}, "
-        f"duplicate row extras skipped={duplicate_extra:,}"
+    files = sorted(
+        p
+        for p in path.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in PERMIT_FILE_EXTENSIONS
+        and not p.name.startswith("~$")
     )
-    return pd.DataFrame({vehicle_col: unique})
+    if not files:
+        raise FileNotFoundError(
+            f"No permit Excel/CSV files found in folder: {path}"
+        )
+    print(f"Permit folder: {path} ({len(files)} file(s))")
+    return files
+
+
+def load_permit_file(path: Path, config: dict) -> pd.DataFrame:
+    """Read one permit file. Falls back to header-row detection."""
+    columns_cfg = config.get("columns") or {}
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    else:
+        df = pd.read_excel(path, sheet_name=0, dtype=str)
+    df.columns = [_normalize_header_cell(column) for column in df.columns]
+    try:
+        resolve_vehicle_column(df, columns_cfg)
+        return df
+    except KeyError:
+        pass
+
+    keywords = list(config.get("header_keywords") or [])
+    keywords.extend(columns_cfg.get("etc_vehicle_aliases") or [])
+    keywords.append(str(columns_cfg.get("permit_type") or PERMIT_FIELDS[0]))
+    keywords.append(str(columns_cfg.get("permit_no") or PERMIT_FIELDS[1]))
+    df_raw = read_etc_raw(path)
+    header_idx = detect_header_row(
+        df_raw,
+        keywords,
+        scan_rows=int(config.get("header_scan_rows") or 25),
+        min_matches=int(config.get("min_header_matches") or 2),
+    )
+    _headers, body = dataframe_from_header(df_raw, header_idx)
+    print(f"Permit header at row {header_idx + 1} in {path.name} ({len(body):,} data rows)")
+    return body
+
+
+def load_permit_frames(config: dict) -> pd.DataFrame:
+    paths = resolve_permit_paths()
+    frames: list[pd.DataFrame] = []
+    for path in paths:
+        frame = load_permit_file(path, config)
+        print(f"Permit file: {path} ({len(frame):,} rows)")
+        frames.append(frame)
+    if len(frames) == 1:
+        return frames[0]
+    combined = pd.concat(frames, ignore_index=True)
+    print(f"Combined permit rows from {len(paths)} file(s): {len(combined):,}")
+    return combined
+
+
+def attach_permit_data(
+    etc_df: pd.DataFrame,
+    vehicle_col: str,
+    columns_cfg: dict,
+    config: dict,
+) -> pd.DataFrame:
+    """Join permits from all files in PERMIT_FOLDER onto ETC by vehicle number."""
+    scraped = load_permit_frames(config)
+    enriched = merge_permit_into_etc(etc_df, scraped, vehicle_col, columns_cfg)
+    print(
+        f"Permit fields applied to full ETC: "
+        f"{len(enriched):,} rows retained (no rows removed)."
+    )
+    save_fetched_permit(enriched, vehicle_col, columns_cfg)
+    return enriched
 
 
 def merge_permit_into_etc(
@@ -801,9 +893,11 @@ def merge_permit_into_etc(
         return out.drop(columns=["_join_key"])
 
     right = scraped_df.copy()
-    # Scraper may have renamed/normalized the vehicle column in place.
-    scrape_veh = vehicle_col if vehicle_col in right.columns else None
-    if scrape_veh is None:
+    right.columns = [_normalize_header_cell(column) for column in right.columns]
+    try:
+        scrape_veh = resolve_vehicle_column(right, columns_cfg)
+    except KeyError:
+        scrape_veh = None
         for col in right.columns:
             key = str(col).casefold()
             if "veh" in key and "reg" in key:
@@ -811,7 +905,8 @@ def merge_permit_into_etc(
                 break
     if scrape_veh is None:
         raise KeyError(
-            f"Scraped frame missing vehicle column. Available: {list(right.columns)}"
+            "Permit file is missing a vehicle column. "
+            f"Available: {list(right.columns)}"
         )
 
     # Map scraper's fixed field names onto configured output column names.
@@ -844,6 +939,39 @@ def merge_permit_into_etc(
     return merged
 
 
+def save_fetched_permit(
+    enriched: pd.DataFrame,
+    vehicle_col: str,
+    columns_cfg: dict,
+) -> Path | None:
+    """Write one row per vehicle with the permit columns that were joined."""
+    permit_cols = [
+        columns_cfg.get("permit_type") or PERMIT_FIELDS[0],
+        columns_cfg.get("permit_no") or PERMIT_FIELDS[1],
+        columns_cfg.get("permit_validity") or PERMIT_FIELDS[2],
+    ]
+    missing = [col for col in [vehicle_col, *permit_cols] if col not in enriched.columns]
+    if missing:
+        print(f"Permit Excel not written — missing columns: {missing}")
+        return None
+
+    work = enriched[[vehicle_col, *permit_cols]].copy()
+    work["_key"] = work[vehicle_col].map(normalize_vehicle_number)
+    work = (
+        work.loc[work["_key"].ne("")]
+        .drop_duplicates(subset=["_key"], keep="first")
+        .drop(columns=["_key"])
+        .reset_index(drop=True)
+    )
+    if work.empty:
+        print("Permit Excel not written — no vehicle rows.")
+        return None
+
+    path = save_etc(work, Path(PERMIT_OUTPUT_FILE))
+    print(f"Wrote permit data: {path} ({len(work):,} vehicle(s))")
+    return path
+
+
 def save_etc(df: pd.DataFrame, path: Path) -> Path:
     path = Path(path)
     if not path.is_absolute():
@@ -855,15 +983,15 @@ def save_etc(df: pd.DataFrame, path: Path) -> Path:
 
 def main() -> int:
     print("=" * 60)
-    print("E6 — ETC (path/download) + Permit scrape + VRN + rates/Loss")
-    print(f"USE_SELENIUM_GRID = {USE_SELENIUM_GRID}")
-    print(f"SKIP_PERMIT_SCRAPE_FOR_DEV = {SKIP_PERMIT_SCRAPE_FOR_DEV}")
+    print("E6 — ETC (path/download) + permit file(s) + VRN + rates/Loss")
+    print(f"SKIP_PERMIT_JOIN_FOR_DEV = {SKIP_PERMIT_JOIN_FOR_DEV}")
     print(f"ETC_INPUT_FILE = {ETC_INPUT_FILE!r}")
+    print(f"PERMIT_FOLDER = {PERMIT_FOLDER!r}")
+    print(f"VRN_DOWNLOAD_DIR = {VRN_DOWNLOAD_DIR}")
     print("=" * 60)
 
     config = load_config()
     columns_cfg = config.get("columns") or {}
-    scrape_cfg = config.get("scrape") or {}
     entity_name = resolve_entity_name()
     etc_input_path = resolve_etc_input_file()
     print(f"entity_name: {entity_name}")
@@ -872,15 +1000,15 @@ def main() -> int:
     from_date = ""
     to_date = ""
 
-    if SKIP_PERMIT_SCRAPE_FOR_DEV:
+    if SKIP_PERMIT_JOIN_FOR_DEV:
         start_path = Path(ETC_OUTPUT_FILE)
         if not start_path.is_file():
             raise FileNotFoundError(
-                "SKIP_PERMIT_SCRAPE_FOR_DEV=True but ETC_OUTPUT_FILE not found: "
+                "SKIP_PERMIT_JOIN_FOR_DEV=True but ETC_OUTPUT_FILE not found: "
                 f"{start_path}"
             )
         print(
-            "DEV: skipping ETC download + permit scrape — loading existing file:\n"
+            "DEV: skipping ETC download and the permit file — loading existing file:\n"
             f"  {start_path}"
         )
         enriched, _header_idx, headers = load_etc(start_path, config)
@@ -896,37 +1024,7 @@ def main() -> int:
         print(f"Vehicle column: {vehicle_col}")
         from_date, to_date = tag_read_date_range(etc_df, columns_cfg)
 
-        unique_df = unique_vehicle_frame(etc_df, vehicle_col)
-        if unique_df.empty:
-            print(
-                "No vehicle numbers found — writing ETC unchanged "
-                "with empty permit columns."
-            )
-            enriched = merge_permit_into_etc(
-                etc_df, pd.DataFrame(), vehicle_col, columns_cfg
-            )
-        else:
-            print(
-                f"Scraping {len(unique_df):,} unique VRNs "
-                f"(will map results back onto all {len(etc_df):,} ETC rows)."
-            )
-            remote_url = (
-                scrape_cfg.get("selenium_remote_url") if USE_SELENIUM_GRID else None
-            )
-            scraped = scrape_vehicle_details_for_permit(
-                unique_df,
-                remote_url=remote_url,
-                use_selenium_grid=USE_SELENIUM_GRID,
-                scrape_cfg=scrape_cfg,
-                vehicle_column=vehicle_col,
-            )
-            enriched = merge_permit_into_etc(
-                etc_df, scraped, vehicle_col, columns_cfg
-            )
-            print(
-                f"Permit fields applied to full ETC: "
-                f"{len(enriched):,} rows retained (no rows removed)."
-            )
+        enriched = attach_permit_data(etc_df, vehicle_col, columns_cfg, config)
         save_etc(enriched, Path(ETC_OUTPUT_FILE))
     else:
         from_date, to_date = resolve_date_range(required=True)
@@ -936,38 +1034,7 @@ def main() -> int:
         vehicle_col = resolve_vehicle_column(etc_df, columns_cfg)
         print(f"Vehicle column: {vehicle_col}")
 
-        unique_df = unique_vehicle_frame(etc_df, vehicle_col)
-
-        if unique_df.empty:
-            print(
-                "No vehicle numbers found — writing ETC unchanged "
-                "with empty permit columns."
-            )
-            enriched = merge_permit_into_etc(
-                etc_df, pd.DataFrame(), vehicle_col, columns_cfg
-            )
-        else:
-            print(
-                f"Scraping {len(unique_df):,} unique VRNs "
-                f"(will map results back onto all {len(etc_df):,} ETC rows)."
-            )
-            remote_url = (
-                scrape_cfg.get("selenium_remote_url") if USE_SELENIUM_GRID else None
-            )
-            scraped = scrape_vehicle_details_for_permit(
-                unique_df,
-                remote_url=remote_url,
-                use_selenium_grid=USE_SELENIUM_GRID,
-                scrape_cfg=scrape_cfg,
-                vehicle_column=vehicle_col,
-            )
-            enriched = merge_permit_into_etc(
-                etc_df, scraped, vehicle_col, columns_cfg
-            )
-            print(
-                f"Permit fields applied to full ETC: "
-                f"{len(enriched):,} rows retained (no rows removed)."
-            )
+        enriched = attach_permit_data(etc_df, vehicle_col, columns_cfg, config)
         save_etc(enriched, Path(ETC_OUTPUT_FILE))
 
     print(f"VRN download date range: {from_date} → {to_date}")
@@ -988,6 +1055,9 @@ def main() -> int:
     out_path = save_etc(enriched, Path(ETC_OUTPUT_FILE))
     print(f"Wrote enriched ETC: {out_path}")
     print(f"Rows: {len(enriched)} | Columns: {list(enriched.columns)}")
+    if not SKIP_PERMIT_JOIN_FOR_DEV and Path(PERMIT_OUTPUT_FILE).is_file():
+        print(f"Permit data kept: {Path(PERMIT_OUTPUT_FILE)}")
+    print(f"VRN downloads folder (kept): {VRN_DOWNLOAD_DIR}")
 
     if not UPDATE_DB:
         print("UPDATE_DB=False — audit_exception_metrics not updated.")

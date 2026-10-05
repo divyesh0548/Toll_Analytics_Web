@@ -16,7 +16,7 @@
   },
   "LCV": {
     "db_column": "vc_lcv",
-    "aliases": ["LCV", "Light Commercial vehicle 2-axle", "Tata Ace and Similar mini Light Commercial Vehicle", "Light Commercial vehicle 2-axle", "Tata Ace or Similar Mini LCV"]
+    "aliases": ["LCV", "Light Commercial vehicle 2-axle", "Tata Ace and Similar mini Light Commercial Vehicle", "Light Commercial vehicle 2-axle", "Tata Ace or Similar Mini LCV", "Light Commercial vehicle 3-axle"]
   },
   "MAV": {
     "db_column": "vc_mav",

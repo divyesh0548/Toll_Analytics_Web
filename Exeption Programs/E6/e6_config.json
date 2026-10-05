@@ -153,7 +153,8 @@
       "annual pass",
       "annual-pass",
       "first journey",
-      "1st journey"
+      "1st journey",
+      "Local Cont."
     ],
     "return": [
       "return",
@@ -170,15 +171,36 @@
       "l",
       "lj",
       "monthly pass",
-      "local pass"
+      "local pass",
+      "Local Single"
     ]
   },
+  "journey_type_exclude": [
+    "DISCOUNTMP",
+    "BLKLISTTAG",
+    "EXEMPTED",
+    "IHMCL_Exemption",
+    "DUPLICATE",
+    "Local Non Commercial"
+  ],
   "tc_class_skip_list": [
-    "auto"
+    "auto",
+    "3wheeler",
+    "3 wheeler",
+    "three wheeler",
+    "tractor"
   ],
   "tc_class_index_map": {
-    "1": ["car", "carjeep"],
-    "2": ["lcv", "minibus", "lcv/mini bus"],
+    "1": [
+      "car",
+      "carjeep",
+      "car jeep",
+      "car/jeep",
+      "car\\jeep",
+      "car / jeep / van",
+      "car/jeep/van"
+    ],
+    "2": ["lcv", "minibus", "lcv/mini bus", "lcv mini bus"],
     "3": [
       "truck",
       "truck/bus",
@@ -221,7 +243,7 @@
   },
   "scrape": {
     "selenium_remote_url": "http://localhost:4444/wd/hub",
-    "max_nodes": 8,
+    "max_nodes": 6,
     "headless": false,
     "auto_manage_nodes": true
   }
