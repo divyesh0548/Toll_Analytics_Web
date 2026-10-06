@@ -1,19 +1,25 @@
 {
   "header_keywords": [
     "Agency Txn Id",
+    "Agency Tran Id",
     "Settlement Amount",
+    "Settled Amount (Rs.)",
     "Net Settlement Amt",
     "Plaza ID",
     "Violation Amts",
     "VEH REG NO",
     "CCH TXN NO",
     "Veh Reg No.",
+    "Licence Plate No.",
+    "Licence Plate No",
     "TC Class",
     "Settlement Type",
     "Journey Type",
+    "TRIPTYPEDISCRIPTION",
     "MOP",
     "Date & Time",
     "Tag Read Date Time",
+    "Transaction Date",
     "MVC_TLC_CLASS",
     "VEH CLASS",
     "TRANSACTION NO",
@@ -33,16 +39,22 @@
   "etc_merge": {
     "header_keywords": [
       "Agency Txn Id",
+      "Agency Tran Id",
       "Settlement Amount",
+      "Settled Amount (Rs.)",
       "Net Settlement Amt",
       "Plaza ID",
       "VEH REG NO",
       "Veh Reg No.",
       "Veh Reg No",
+      "Licence Plate No.",
+      "Licence Plate No",
       "Journey Type",
       "Fare Type",
+      "TRIPTYPEDISCRIPTION",
       "Date & Time",
       "Tag Read Date Time",
+      "Transaction Date",
       "Txn Status"
     ],
     "header_scan_rows": 25,
@@ -56,7 +68,8 @@
         "Vehicle No",
         "Vehicle Reg. No.",
         "Reg No",
-        "Licence Plate No"
+        "Licence Plate No",
+        "Licence Plate No."
       ],
       "read_datetime": [
         "Tag Read Date Time",
@@ -65,14 +78,18 @@
         "Reader Read Time",
         "Date & Time",
         "Txn Date Time",
-        "Transaction Date Time"
+        "Transaction Date Time",
+        "Transaction Date"
       ],
       "journey_type": [
         "Journey Type",
         "JourneyType",
         "Journey",
         "Fare Type",
-        "TripType"
+        "TripType",
+        "TRIPTYPEDISCRIPTION",
+        "Trip Type Description",
+        "Trip Type"
       ],
       "net_settlement_amt": [
         "Net Settlement Amt",
@@ -80,6 +97,8 @@
         "Net Settlement",
         "Settlement Amount",
         "Settled Amount",
+        "Settled Amount (Rs.)",
+        "Accepted Amount (Rs.)",
         "Net Settled Amount"
       ]
     }
@@ -94,7 +113,8 @@
       "Vehicle Number",
       "Vehicle No",
       "Reg No",
-      "Licence Plate No"
+      "Licence Plate No",
+      "Licence Plate No."
     ],
     "tag_read_datetime": "read_datetime",
     "tag_read_datetime_aliases": [
@@ -104,7 +124,8 @@
       "TagRead Date Time",
       "Date & Time",
       "Txn Date Time",
-      "Transaction Date Time"
+      "Transaction Date Time",
+      "Transaction Date"
     ],
     "journey_type": "journey_type",
     "journey_type_aliases": [
@@ -113,7 +134,10 @@
       "JourneyType",
       "Journey",
       "Fare Type",
-      "TripType"
+      "TripType",
+      "TRIPTYPEDISCRIPTION",
+      "Trip Type Description",
+      "Trip Type"
     ],
     "net_settlement": "net_settlement_amt",
     "net_settlement_aliases": [
@@ -123,6 +147,8 @@
       "Net Settlement",
       "Settlement Amount",
       "Settled Amount",
+      "Settled Amount (Rs.)",
+      "Accepted Amount (Rs.)",
       "Net Settled Amount"
     ],
     "tc_class": "TC Class",
@@ -137,10 +163,7 @@
     "tc_class_output": "TC Class",
     "journey_type_normalized_output": "journey_type",
     "applicable_rate_output": "Applicable Rate",
-    "loss_output": "Loss",
-    "permit_type": "Permit Type",
-    "permit_no": "Permit/Authorization No",
-    "permit_validity": "Permit Validity"
+    "loss_output": "Loss"
   },
   "rate_cutover_date": "2026-05-01",
   "journey_type_map": {
@@ -152,9 +175,17 @@
       "annualpass",
       "annual pass",
       "annual-pass",
+      "annual pass trip",
+      "annual pass trip commercial",
+      "annual pass trip personal",
       "first journey",
       "1st journey",
-      "Local Cont."
+      "Local Cont.",
+      "Single Journey Gandhidham_Association",
+      "Single Journey LOCALSPECIALPASS",
+      "Single Journey LocalCommercialMonthly",
+      "Single Journey Mundra_Association",
+      "Single Journey Personal"
     ],
     "return": [
       "return",
@@ -163,7 +194,12 @@
       "r",
       "rj",
       "round trip",
-      "roundtrip"
+      "roundtrip",
+      "Return Journey Gandhidham_Association",
+      "Return Journey LOCALSPECIALPASS",
+      "Return Journey LocalCommercialMonthly",
+      "Return Journey Mundra_Association",
+      "Return Journey Personal"
     ],
     "local": [
       "local",
@@ -172,7 +208,16 @@
       "lj",
       "monthly pass",
       "local pass",
-      "Local Single"
+      "Local Single",
+      "local single journey commercial",
+      "local monthly pass gandhidham association",
+      "local monthly pass mundra association",
+      "regular monthly pass gandhidham association",
+      "Local Monthly Pass LOCALSPECIALPASS",
+      "Local Monthly Pass Personal",
+      "Regular Monthly Pass LOCALSPECIALPASS",
+      "Regular Monthly Pass Mundra_Association",
+      "Regular Monthly Pass Personal"
     ]
   },
   "journey_type_exclude": [
@@ -181,14 +226,22 @@
     "EXEMPTED",
     "IHMCL_Exemption",
     "DUPLICATE",
-    "Local Non Commercial"
+    "Local Non Commercial",
+    "Local Exemption",
+    "local exemption",
+    "Global Exemption",
+    "Rejected Trip",
+    "Rejected Trip Commercial"
   ],
   "tc_class_skip_list": [
     "auto",
     "3wheeler",
     "3 wheeler",
     "three wheeler",
-    "tractor"
+    "tractor",
+    "non tollable",
+    "noclass",
+    "no class"
   ],
   "tc_class_index_map": {
     "1": [
@@ -224,6 +277,7 @@
       "mav",
       "hcm/mav",
       "mav (4 to 6 axle)",
+      "mav(4 to 6 axle)",
       "mav 4 ax",
       "mav 4 axle",
       "mav 4 axle -2t",
@@ -240,6 +294,55 @@
       "truck 4-6 axle"
     ],
     "6": ["osv"]
+  },
+  "vrn_merge": {
+    "header_keywords": [
+      "Veh Reg No",
+      "Veh Reg No.",
+      "VEH REG NO",
+      "VEH. REG. NO",
+      "Vehicle No",
+      "DATE",
+      "TIME",
+      "DATE TIME",
+      "Date & Time",
+      "Transaction DateTime",
+      "TC Class",
+      "TC CLASS",
+      "MVC",
+      "Vehicle Class"
+    ],
+    "header_scan_rows": 25,
+    "min_header_matches": 2,
+    "merge_columns": {
+      "vehicle_reg_no": [
+        "VEH REG NO",
+        "Veh Reg No.",
+        "Veh Reg No",
+        "VEH. REG. NO",
+        "Vehicle Reg No",
+        "Vehicle No"
+      ],
+      "tc_class": [
+        "MVC",
+        "TC Class",
+        "TC CLASS",
+        "TcClass",
+        "Vehicle Class"
+      ],
+      "read_datetime": [
+        "DATE TIME",
+        "Date Time",
+        "Date and Time",
+        "Date & Time",
+        "Txn Date Time",
+        "Txn Date & Time",
+        "Transaction Date Time",
+        "Transaction DateTime"
+      ],
+      "date_part": ["DATE", "Date"],
+      "time_part": ["TIME", "Time"]
+    }
   },
   "scrape": {
     "selenium_remote_url": "http://localhost:4444/wd/hub",

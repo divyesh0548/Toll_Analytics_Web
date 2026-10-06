@@ -36,7 +36,7 @@ from psycopg2.extras import RealDictCursor
 DB_UPDATE_ONLY = False
 
 MERGED_OUTPUT_FILE = (
-    r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E6\output\etc_with_permit.xlsx"
+    r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E6\output\etc_enriched.xlsx"
 )
 
 PLAZA_IDENTIFIER = ""

@@ -1,8 +1,0 @@
-SWB Wt/Std. Weight = "SWB WEIGHT"
-Lane Weight = "LANE WEIGHT"
-Lane/Chg Standard Weight = "LANE STD WEIGHT"
-LANE OVERLOAD AMT = "LANE OVERLOAD AMT"
-SWB AMT = "SWB AMT"
-
-
-These columns should be in VRN file.

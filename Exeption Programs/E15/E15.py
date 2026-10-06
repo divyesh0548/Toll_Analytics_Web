@@ -1,10 +1,11 @@
 """
 E15 — From-To plaza merge + Applicable Rate + DB metrics.
 
-1) Read From-plaza exempt Excel files; take min/max Date & Time
-2) Download/merge To-plaza VRN from submissions for TO_PLAZA_ENTITY_NAME
-3) Merge on vehicle + SIDE; keep MATCH=Yes and PAYMENT METHOD != EXEMPT
-4) Applicable Rate from TC Class + Journey Type via plaza_rates
+1) Read From-plaza exempt Excel files
+2) Merge To-plaza VRN from local VRN_INPUT_FOLDER (no download)
+3) Merge on vehicle + SIDE; save pre-MATCH file (Yes+No), then keep MATCH=Yes
+   and PAYMENT METHOD != EXEMPT
+4) Applicable Rate from TC Class + Journey Type via plaza_rates, uses to plaza rates
 5) Optionally upsert audit_exception_metrics (exception id 15) by Date & Time month
 
 Keywords / maps: E15_config.json
@@ -22,15 +23,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import psycopg2
-from dotenv import load_dotenv
 
 from e15_db_update import update_db_from_dataframe
 
 BASE_DIR = Path(__file__).resolve().parent
 E4_DIR = BASE_DIR.parent / "E4"
 E10_DIR = BASE_DIR.parent / "E10"
-WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 CONFIG_PATH = BASE_DIR / "E15_config.json"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 VEHICLE_CLASS_PATH = E10_DIR / "vehicle-class.py"
@@ -59,17 +57,19 @@ WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
 # --- Runtime inputs (edit these; not in config) ---
 FROM_PLAZA_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\from plaza"
-TO_PLAZA_ENTITY_NAME = "dhaneshwar"  # submissions.entity_name for To-plaza VRN
+TO_PLAZA_ENTITY_NAME = "mohtara"  # used for rate lookup + merged VRN filename
 OUTPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\output"
 FALLBACK_FROM_PLAZA_FOLDER = BASE_DIR / "from_plaza_input"
 FALLBACK_OUTPUT_FOLDER = BASE_DIR / "output"
-VRN_DOWNLOAD_FOLDER = BASE_DIR / "vrn_downloads"
+# Local To-plaza VRN Excel/CSV folder (searched recursively). VRN is not downloaded.
+VRN_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\to plaza VRNs"
 INDIVIDUAL_OUTPUT_PREFIX = "from_to"
+PRE_MATCH_OUTPUT_PREFIX = "from_to_pre_match"
 COMBINED_OUTPUT_FILENAME = "from_to_combined.xlsx"
 # plazas.plaza_identifier — required when UPDATE_DB is True
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 15
-UPDATE_DB = True
+UPDATE_DB = False
 DB_DRY_RUN = False
 
 _CONFIG: dict | None = None
@@ -84,29 +84,6 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     with path.open(encoding="utf-8") as fh:
         _CONFIG = json.load(fh)
     return _CONFIG
-
-
-def load_env() -> None:
-    """Load Website/backend/.env and map names used by E4 VRN download."""
-    if not WEBSITE_ENV.is_file():
-        raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
-    load_dotenv(WEBSITE_ENV, override=True)
-    source_db = os.getenv("Source_DB_NAME", "").strip()
-    if source_db:
-        os.environ["DB_NAME"] = source_db
-    table = (
-        os.getenv("exceptions_Table_NAME", "").strip()
-        or os.getenv("Table_NAME", "").strip()
-        or "submissions"
-    )
-    os.environ["Table_NAME"] = table
-
-
-def require_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {WEBSITE_ENV})")
-    return value
 
 
 def _norm_header_token(value) -> str:
@@ -387,55 +364,85 @@ def extract_month_year(filename, config: dict | None = None):
 
 
 # =========================================================
-# SIDE LOGIC
+# SIDE LOGIC (dynamic: first half of lanes = Side A, rest = Side B)
 # =========================================================
 
 
-def map_side_from_plaza(lane_no, config: dict | None = None):
-    config = config or load_config()
-    lane_no = str(lane_no).strip().upper()
-    side_a = {
-        str(x).strip().upper()
-        for x in (config.get("from_plaza_side_a_lanes") or [])
-    }
-    side_b = {
-        str(x).strip().upper()
-        for x in (config.get("from_plaza_side_b_lanes") or [])
-    }
-    if lane_no in side_a:
-        return "Side A"
-    if lane_no in side_b:
-        return "Side B"
-    return "Unknown"
+def _lane_number(lane_no) -> int | None:
+    """Extract numeric lane id from values like L1, L10, 7, Lane 3."""
+    if lane_no is None or (isinstance(lane_no, float) and pd.isna(lane_no)):
+        return None
+    text = str(lane_no).strip().upper()
+    if not text or text in {"NAN", "NONE", "NAT", ""}:
+        return None
+    match = re.search(r"(\d+)", text)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
-def map_side_to_plaza(lane_no, config: dict | None = None):
-    config = config or load_config()
-    lane_no = str(lane_no).strip().upper()
-    side_a = {
-        str(x).strip().upper()
-        for x in (config.get("to_plaza_side_a_lanes") or [])
-    }
-    side_b = {
-        str(x).strip().upper()
-        for x in (config.get("to_plaza_side_b_lanes") or [])
-    }
-    if lane_no in side_a:
-        return "Side A"
-    if lane_no in side_b:
-        return "Side B"
-    return "Unknown"
+def build_dynamic_side_lookup(lane_values) -> tuple[dict[int, str], int, int]:
+    """
+    Infer Side A / Side B from lanes present in the file.
+
+    Total lanes = max numeric lane id (e.g. L1..L12 → 12).
+    First half (1 .. N//2) → Side A; remaining (N//2+1 .. N) → Side B.
+    Examples: 10 lanes → 5/5, 12 → 6/6, 14 → 7/7, 16 → 8/8.
+    """
+    nums: list[int] = []
+    for value in lane_values:
+        n = _lane_number(value)
+        if n is not None and n > 0:
+            nums.append(n)
+    if not nums:
+        return {}, 0, 0
+
+    max_lane = max(nums)
+    half = max_lane // 2
+    if half <= 0:
+        # Single-lane (or N=1): treat as Side A
+        return {max_lane: "Side A"}, max_lane, 0
+
+    lookup: dict[int, str] = {}
+    for n in range(1, max_lane + 1):
+        lookup[n] = "Side A" if n <= half else "Side B"
+    return lookup, max_lane, half
+
+
+def map_lane_to_side(lane_no, side_lookup: dict[int, str]) -> str:
+    n = _lane_number(lane_no)
+    if n is None:
+        return "Unknown"
+    return side_lookup.get(n, "Unknown")
+
+
+def assign_side_column(
+    series: pd.Series,
+    label: str,
+) -> pd.Series:
+    """Map a lane series to Side A / Side B using dynamic half-split."""
+    lookup, max_lane, half = build_dynamic_side_lookup(series.dropna().tolist())
+    if not lookup:
+        print(f"Warning: no numeric lanes found for {label}; SIDE=Unknown.")
+        return pd.Series(["Unknown"] * len(series), index=series.index)
+
+    print(
+        f"{label} SIDE split: max_lane={max_lane}, "
+        f"Side A = L1–L{half} ({half}), "
+        f"Side B = L{half + 1}–L{max_lane} ({max_lane - half})"
+    )
+    return series.map(lambda x: map_lane_to_side(x, lookup))
 
 
 # =========================================================
-# VRN DOWNLOAD (To plaza)
+# LOCAL VRN (To plaza) — no download
 # =========================================================
 
 
 def _load_vrn_module():
     path = VRN_DOWNLOAD_MERGE_PATH
     if not path.is_file():
-        raise FileNotFoundError(f"VRN download script not found: {path}")
+        raise FileNotFoundError(f"VRN merge script not found: {path}")
     spec = importlib.util.spec_from_file_location("e4_vrn_download_merge", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load module from {path}")
@@ -444,136 +451,50 @@ def _load_vrn_module():
     return module
 
 
-def exempt_datetime_range(
-    from_files: list[str],
-    from_dir: str,
-    config: dict,
-) -> tuple[str, str]:
-    """Min/max calendar dates from From-plaza exempt Date & Time columns."""
-    from_aliases = config.get("from_plaza_column_aliases") or {}
-    dt_aliases = list(from_aliases.get("Date & Time") or []) + [
-        "Date & Time",
-        "DATE & TIME",
-    ]
-    all_ts: list[pd.Timestamp] = []
-
-    for name in from_files:
-        path = os.path.join(from_dir, name)
-        print(f"Scanning dates in From-plaza file: {name}")
-        df = read_excel_smart(path, config)
-        df.columns = [str(c).strip() for c in df.columns]
-
-        # Apply same rename as merge so Date & Time resolves
-        rename = {}
-        alias_lookup: dict[str, str] = {}
-        for canonical, names in from_aliases.items():
-            for alias in names or []:
-                alias_lookup[str(alias).strip().upper()] = canonical
-        for col in df.columns:
-            key = str(col).strip().upper()
-            if key in alias_lookup:
-                rename[col] = alias_lookup[key]
-        df = df.rename(columns=rename)
-
-        dt_col = None
-        for alias in dt_aliases + ["Date & Time"]:
-            hit = resolve_column_name(df, [alias])
-            if hit:
-                dt_col = hit
-                break
-        if not dt_col:
-            print(f"  Warning: no Date & Time column in {name}; skipping.")
-            continue
-
-        parsed = robust_parse_datetime(df[dt_col], config)
-        valid = parsed.dropna()
-        if valid.empty:
-            print(f"  Warning: no valid datetimes in {name}; skipping.")
-            continue
-        all_ts.extend(valid.tolist())
-        print(
-            f"  {name}: {valid.min()} → {valid.max()} "
-            f"({len(valid)} valid timestamps)"
+def resolve_vrn_input_folder() -> Path:
+    folder = Path(str(VRN_INPUT_FOLDER or "").strip())
+    if not folder.is_dir():
+        raise FileNotFoundError(
+            f"VRN_INPUT_FOLDER not found or not a directory: {folder}\n"
+            "Place To-plaza VRN Excel/CSV files there (VRN is not downloaded)."
         )
-
-    if not all_ts:
-        raise RuntimeError(
-            "Could not determine date range from From-plaza exempt files. "
-            "Check Date & Time columns."
-        )
-
-    series = pd.to_datetime(pd.Series(all_ts))
-    start = series.min().date().isoformat()
-    end = series.max().date().isoformat()
-    print(f"Exempt date range for VRN download: {start} → {end}")
-    return start, end
+    return folder
 
 
-def run_to_plaza_vrn_download_merge(
-    entity_name: str,
-    from_date: str,
-    to_date: str,
-    config: dict,
-) -> Path:
-    """Download + merge VRN using E15_config vrn_merge (required columns only)."""
+def load_to_plaza_vrn_from_folder(entity_name: str, config: dict) -> Path:
+    """Merge local To-plaza VRN Excel/CSV from VRN_INPUT_FOLDER (no DB download)."""
     vrn_cfg = config.get("vrn_merge") or {}
     if not vrn_cfg.get("merge_columns"):
         raise RuntimeError("E15_config.json vrn_merge.merge_columns is empty.")
 
-    load_env()
+    folder = resolve_vrn_input_folder()
     vrn_mod = _load_vrn_module()
-    vrn_mod.load_env = load_env
-    start, end = vrn_mod.validate_interval(from_date, to_date)
-
-    download_folder = Path(VRN_DOWNLOAD_FOLDER)
-    download_folder.mkdir(parents=True, exist_ok=True)
-    out_dir = Path(FALLBACK_OUTPUT_FOLDER)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    print(
-        f"VRN source DB: {require_env('DB_NAME')} "
-        f"table={os.getenv('Table_NAME', 'submissions')}"
-    )
-    print(f"To-plaza entity_name: {entity_name}")
-    print("Connecting to DB for VRN download…")
-    with psycopg2.connect(**vrn_mod.connection_kwargs()) as conn:
-        local_paths, _stats = vrn_mod.download_vrn_files(
-            conn,
-            entity_name=entity_name,
-            start=start,
-            end=end,
-            output_folder=download_folder,
-            skip_existing=True,
-        )
-
-    paths = local_paths or vrn_mod.list_local_files(
-        download_folder / vrn_mod.safe_part(entity_name)
-    )
-    if not paths:
-        paths = vrn_mod.list_local_files(download_folder)
+    paths = vrn_mod.list_local_files(folder)
     if not paths:
         raise FileNotFoundError(
-            f"No VRN files downloaded for entity={entity_name!r} "
-            f"range {start.isoformat()} → {end.isoformat()}"
+            f"No VRN Excel/CSV files found under: {folder}\n"
+            "Place To-plaza VRN files in VRN_INPUT_FOLDER (no download)."
         )
 
-    merged_name = (
-        f"{vrn_mod.safe_part(entity_name)}_"
-        f"{start.isoformat()}_{end.isoformat()}_merged_vrn.csv"
-    )
+    out_dir = Path(str(OUTPUT_FOLDER or "").strip() or FALLBACK_OUTPUT_FOLDER)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    merged_name = f"{vrn_mod.safe_part(entity_name)}_local_merged_vrn.csv"
+
     date_order = ""
     try:
         date_order = vrn_mod.date_order_for(entity_name, vrn_mod.load_config())
         print(f"VRN date order for {entity_name}: {date_order}")
     except RuntimeError as exc:
         print(f"{exc} Date & Time values are kept as read.")
+
+    print(f"Local VRN folder: {folder}")
+    print(f"Found {len(paths)} VRN file(s)")
     merged_path = vrn_mod.merge_vrn_files(
         paths,
         vrn_cfg,
         out_dir / merged_name,
         date_order,
     )
-    vrn_mod.delete_downloaded_files(paths, download_folder)
     print(f"VRN merge columns: {list((vrn_cfg.get('merge_columns') or {}).keys())}")
     print(f"Merged To-plaza VRN: {merged_path}")
     return Path(merged_path)
@@ -584,7 +505,12 @@ def run_to_plaza_vrn_download_merge(
 # =========================================================
 
 
-def process_and_merge(from_path, to_path, config: dict | None = None):
+def process_and_merge(
+    from_path,
+    to_path,
+    config: dict | None = None,
+    pre_match_output_path: str | Path | None = None,
+):
     config = config or load_config()
     to_aliases = config.get("to_plaza_column_aliases") or {}
     from_aliases = config.get("from_plaza_column_aliases") or {}
@@ -642,19 +568,15 @@ def process_and_merge(from_path, to_path, config: dict | None = None):
         print("Error: 'Veh Reg No.' column not found in From-plaza file.")
         return None
 
-    # Map sides
+    # Map sides dynamically from each plaza's max lane (first half A, rest B)
     if "Lane No" in from_df.columns:
-        from_df["SIDE"] = from_df["Lane No"].apply(
-            lambda x: map_side_from_plaza(x, config)
-        )
+        from_df["SIDE"] = assign_side_column(from_df["Lane No"], "From-plaza")
     else:
         from_df["SIDE"] = "Unknown"
 
     to_lane_col = resolve_column_name(to_df, to_aliases.get("lane") or [])
     if to_lane_col:
-        to_df["SIDE"] = to_df[to_lane_col].apply(
-            lambda x: map_side_to_plaza(x, config)
-        )
+        to_df["SIDE"] = assign_side_column(to_df[to_lane_col], "To-plaza")
     else:
         to_df["SIDE"] = "Unknown"
 
@@ -739,6 +661,22 @@ def process_and_merge(from_path, to_path, config: dict | None = None):
     merged["MATCH"] = merged["TIME_DIFF_HOURS"].apply(
         lambda x: "Yes" if (pd.notna(x) and x <= match_max_hours) else "No"
     )
+
+    # Persist Yes+No before MATCH / EXEMPT filters
+    if pre_match_output_path:
+        pre_path = Path(pre_match_output_path)
+        pre_path.parent.mkdir(parents=True, exist_ok=True)
+        match_counts = (
+            merged["MATCH"].astype(str).str.strip().str.upper().value_counts()
+            if "MATCH" in merged.columns
+            else {}
+        )
+        merged.to_excel(pre_path, index=False)
+        print(
+            f"Saved pre-MATCH filter file ({len(merged)} rows, "
+            f"Yes={int(match_counts.get('YES', 0))}, "
+            f"No={int(match_counts.get('NO', 0))}): {pre_path}"
+        )
 
     if "MATCH" in merged.columns:
         match_clean = merged["MATCH"].astype(str).str.strip().str.upper()
@@ -1094,12 +1032,13 @@ def apply_applicable_rates(
 
 def main():
     print("=" * 60)
-    print("E15 — From-plaza exempt + To-plaza VRN download/merge")
+    print("E15 — From-plaza exempt + local To-plaza VRN merge")
     print("=" * 60)
 
     config = load_config()
     entity_name = resolve_entity_name()
     print(f"TO_PLAZA_ENTITY_NAME: {entity_name}")
+    print(f"VRN_INPUT_FOLDER: {VRN_INPUT_FOLDER}")
     plaza_identifier = ""
     if UPDATE_DB:
         plaza_identifier = resolve_plaza_identifier()
@@ -1114,6 +1053,7 @@ def main():
     fallback_from = str(FALLBACK_FROM_PLAZA_FOLDER)
     fallback_out = str(FALLBACK_OUTPUT_FOLDER)
     individual_prefix = str(INDIVIDUAL_OUTPUT_PREFIX or "from_to")
+    pre_match_prefix = str(PRE_MATCH_OUTPUT_PREFIX or "from_to_pre_match")
     combined_filename = str(COMBINED_OUTPUT_FILENAME or "from_to_combined.xlsx")
 
     if os.path.exists(from_folder):
@@ -1142,13 +1082,8 @@ def main():
     print(f" -> '{from_dir}': found {len(from_files)} files: {from_files}")
 
     print("-" * 60)
-    from_date, to_date = exempt_datetime_range(from_files, from_dir, config)
-
-    print("-" * 60)
-    print("Downloading / merging To-plaza VRN…")
-    vrn_path = run_to_plaza_vrn_download_merge(
-        entity_name, from_date, to_date, config
-    )
+    print("Loading / merging local To-plaza VRN…")
+    vrn_path = load_to_plaza_vrn_from_folder(entity_name, config)
 
     all_merged_dfs = []
     success_count = 0
@@ -1157,17 +1092,30 @@ def main():
         from_path = os.path.join(from_dir, name)
         my = extract_month_year(name, config)
         try:
-            merged_df = process_and_merge(from_path, vrn_path, config)
+            if my and isinstance(my, tuple):
+                month_label = f"{my[0]} {my[1]}"
+                ind_filename = f"{individual_prefix}_{my[0]}_{my[1]}.xlsx"
+                pre_match_filename = (
+                    f"{pre_match_prefix}_{my[0]}_{my[1]}.xlsx"
+                )
+            else:
+                month_label = Path(name).stem
+                ind_filename = f"{individual_prefix}_{Path(name).stem}.xlsx"
+                pre_match_filename = (
+                    f"{pre_match_prefix}_{Path(name).stem}.xlsx"
+                )
+
+            pre_match_path = os.path.join(output_dir, pre_match_filename)
+            merged_df = process_and_merge(
+                from_path,
+                vrn_path,
+                config,
+                pre_match_output_path=pre_match_path,
+            )
             if merged_df is not None and not merged_df.empty:
                 merged_df = apply_applicable_rates(
                     merged_df, config, entity_name
                 )
-                if my and isinstance(my, tuple):
-                    month_label = f"{my[0]} {my[1]}"
-                    ind_filename = f"{individual_prefix}_{my[0]}_{my[1]}.xlsx"
-                else:
-                    month_label = Path(name).stem
-                    ind_filename = f"{individual_prefix}_{Path(name).stem}.xlsx"
 
                 merged_df.insert(0, "Source Month", month_label)
                 ind_out_path = os.path.join(output_dir, ind_filename)

@@ -1,17 +1,17 @@
 """
-E10 — Local VRN folder + checkpost Weight + ETC download/merge + overweight.
+E10 — Local VRN folder + checkpost Weight + local ETC merge + overweight.
 
 1) Load/merge VRN from VRN_INPUT_FOLDER (DATE+TIME combined when split)
-2) Derive FROM_DATE / TO_DATE from VRN datetime for ETC download
-3) Drop excluded TC Class; attach checkpost Weight; drop invalid weight
-4) Download/merge ETC; join on vehicle + date/hour (or date if date-only)
+2) Drop excluded TC Class; attach checkpost Weight; drop invalid weight
+3) Load/merge ETC from ETC_INPUT_FOLDER (same date range as VRN; no download)
+4) Join on vehicle + date/hour (or date if date-only)
 5) Custom band, Weight Group, Std Weight, Applicable Rate (plaza single)
-6) Overweight / Overweight %; keep Overweight>0 and overload/SWB amt = 0
+6) Overweight / Overweight %; keep Overweight > 0 (blank SWB treated as 0)
 7) OW Status (OW At WIM / Not Charged At SWB / Altered at WIM/SWB)
 8) Update E10 / E10-A / E10-B / E10-C monthly metrics from the merged CSV
 
 Run:
-  1. Set ENTITY_NAME and VRN_INPUT_FOLDER
+  1. Set ENTITY_NAME, VRN_INPUT_FOLDER, and ETC_INPUT_FOLDER
   2. python Main_E10.py
 """
 
@@ -41,7 +41,6 @@ ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VEHICLE_CLASS_PATH = BASE_DIR / "vehicle-class.py"
 PLAZA_RATES_PATH = E4_DIR / "plaza_rates.py"
 OUTPUT_DIR = BASE_DIR / "output"
-ETC_DOWNLOAD_FOLDER = BASE_DIR / "etc_downloads"
 
 
 def _load_module_from_path(path: Path, module_name: str):
@@ -73,6 +72,8 @@ ENTITY_NAME = "bassi"
 PLAZA_IDENTIFIER = ""
 # Local VRN folder (Excel/CSV). Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\Combined VRNs"
+# Local ETC folder (Excel/CSV) for the same date range as VRN. Required — ETC is not downloaded.
+ETC_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\Combined ETCs"
 VRN_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_with_weight.csv"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "e10_merged_etc.csv"
 MERGED_VRN_ETC_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_etc_merged.csv"
@@ -205,6 +206,17 @@ def resolve_vrn_input_folder() -> Path:
     if not folder.is_dir():
         raise FileNotFoundError(
             f"VRN_INPUT_FOLDER not found or not a directory: {folder}"
+        )
+    return folder
+
+
+def resolve_etc_input_folder() -> Path:
+    folder = Path(str(ETC_INPUT_FOLDER or "").strip())
+    if not folder.is_dir():
+        raise FileNotFoundError(
+            f"ETC_INPUT_FOLDER not found or not a directory: {folder}\n"
+            "Put same-date-range ETC Excel/CSV files in that folder "
+            "(ETC is not downloaded)."
         )
     return folder
 
@@ -387,18 +399,37 @@ def drop_invalid_weight_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     return out
 
 
+# ISO date first (ETC merge often writes YYYY-MM-DD). dayfirst=True alone
+# can swap month/day for days 1–12 (e.g. 2026-08-01 → 8 Jan).
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?"
+)
+
+
+def _parse_join_datetime(value) -> pd.Timestamp | None:
+    """Parse ETC (ISO) or VRN (DD/MM/YYYY) timestamps for join keys."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip()
+    if not text or text.casefold() in {"nan", "none", "nat"}:
+        return None
+    if _ISO_DATETIME_RE.match(text):
+        ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
+    else:
+        ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return pd.Timestamp(ts)
+
+
 def to_date_hour_key(value) -> str:
     """
     "25-11-2025 08:00:17" → "25/11/2025|8 AM"
-    Uses day-first parsing to match DD-MM-YYYY / DD/MM/YYYY VRN timestamps.
+    "2026-08-01 00:11:27" → "01/08/2026|12 AM"
+    ISO ETC stamps use year-first; VRN DD/MM uses day-first.
     """
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    text = str(value).strip()
-    if not text or text.casefold() in {"nan", "none", "nat"}:
-        return ""
-    ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
-    if pd.isna(ts):
+    ts = _parse_join_datetime(value)
+    if ts is None:
         return ""
     date_part = f"{int(ts.day):02d}/{int(ts.month):02d}/{int(ts.year)}"
     hour24 = int(ts.hour)
@@ -410,14 +441,9 @@ def to_date_hour_key(value) -> str:
 
 
 def to_date_key(value) -> str:
-    """Normalize to DD/MM/YYYY (day-first). Empty if unparseable."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    text = str(value).strip()
-    if not text or text.casefold() in {"nan", "none", "nat"}:
-        return ""
-    ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
-    if pd.isna(ts):
+    """Normalize to DD/MM/YYYY. Empty if unparseable."""
+    ts = _parse_join_datetime(value)
+    if ts is None:
         return ""
     return f"{int(ts.day):02d}/{int(ts.month):02d}/{int(ts.year)}"
 
@@ -601,67 +627,32 @@ def date_range_from_vrn_df(vrn_df: pd.DataFrame, config: dict) -> tuple[str, str
     return start.isoformat(), end.isoformat()
 
 
-def run_etc_download_merge(
-    entity_name: str,
-    from_date: str,
-    to_date: str,
-    config: dict,
-) -> Path:
+def load_etc_from_folder(folder: Path, entity_name: str, config: dict) -> Path:
     """
-    Download ETC from submissions (Source_DB) and merge using e10 etc_merge config.
-    Keeps merge_columns from config (Net Settlement Amount, NPCI Class, + join keys).
+    Merge local ETC Excel/CSV files from ETC_INPUT_FOLDER (no DB download).
+    Uses e10_config etc_merge columns (Net Settlement Amount, NPCI Class, join keys).
     """
     etc_cfg = config.get("etc_merge") or {}
     if not etc_cfg.get("merge_columns"):
         raise RuntimeError("e10_config.json etc_merge.merge_columns is empty.")
 
-    load_env()
     etc_mod = load_etc_download_merge_module()
-    etc_mod.load_env = load_env
-    start, end = etc_mod.validate_interval(from_date, to_date)
-
-    download_folder = ETC_DOWNLOAD_FOLDER
-    download_folder.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(
-        f"ETC source DB: {require_env('DB_NAME')} "
-        f"table={os.getenv('Table_NAME', 'submissions')}"
-    )
-    print("Connecting to DB for ETC download…")
-    with psycopg2.connect(**etc_mod.connection_kwargs()) as conn:
-        local_paths, _stats = etc_mod.download_etc_files(
-            conn,
-            entity_name=entity_name,
-            start=start,
-            end=end,
-            output_folder=download_folder,
-            skip_existing=True,
-        )
-
-    paths = local_paths or etc_mod.list_local_etc_files(
-        download_folder / etc_mod.safe_part(entity_name)
-    )
-    if not paths:
-        paths = etc_mod.list_local_etc_files(download_folder)
+    paths = etc_mod.list_local_etc_files(folder)
     if not paths:
         raise FileNotFoundError(
-            f"No ETC files downloaded for entity={entity_name!r} "
-            f"range {start.isoformat()} → {end.isoformat()}"
+            f"No ETC Excel/CSV files found under: {folder}"
         )
 
-    merged_name = (
-        f"{etc_mod.safe_part(entity_name)}_"
-        f"{start.isoformat()}_{end.isoformat()}_merged_etc.csv"
-    )
+    print(f"Local ETC folder: {folder}")
+    print(f"Found {len(paths)} ETC file(s)")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    merged_name = f"{etc_mod.safe_part(entity_name)}_local_merged_etc.csv"
     merged_path = etc_mod.merge_etc_files(
         paths,
         etc_cfg,
         OUTPUT_DIR / merged_name,
     )
-    etc_mod.delete_downloaded_files(paths, download_folder)
 
-    # Also write the stable E10 output name
     final_path = Path(ETC_OUTPUT_FILE)
     if not final_path.is_absolute():
         final_path = BASE_DIR / final_path
@@ -680,9 +671,9 @@ def merge_vrn_with_etc(
     config: dict,
 ) -> pd.DataFrame:
     """
-    Left-join ETC onto VRN on normalized vehicle + date key.
-    When VRN DATE is date-only (e.g. 01/07/2026), join on calendar date.
-    Otherwise join on date/hour key.
+    Left-join ETC onto VRN on normalized vehicle + date/hour
+    (VRN DATE + TIME combined into one datetime when split).
+    Falls back to calendar date only when VRN has no usable time.
     Brings net_settlement_amt and npci_class from ETC.
     """
     headers = [str(c) for c in vrn_df.columns]
@@ -709,7 +700,11 @@ def merge_vrn_with_etc(
     )
     etc_dt_col = resolve_column(
         etc_headers,
-        ["read_datetime", *(config.get("datetime_column_aliases") or [])],
+        [
+            "read_datetime",
+            "Reader Read Time",
+            *(config.get("datetime_column_aliases") or []),
+        ],
     )
     if not etc_veh_col or not etc_dt_col:
         raise RuntimeError(
@@ -731,7 +726,15 @@ def merge_vrn_with_etc(
             f"Available: {list(etc_df.columns)}"
         )
 
-    date_only = _series_looks_date_only(vrn_df[vrn_dt_col])
+    # Prefer vehicle + date + hour whenever VRN has time
+    # (DATE+TIME coalesced, or a full datetime column).
+    has_split_date_time = bool(
+        resolve_column(headers, ["date_part", "DATE", "Date"])
+        and resolve_column(headers, ["time_part", "TIME", "Time"])
+    )
+    date_only = (not has_split_date_time) and _series_looks_date_only(
+        vrn_df[vrn_dt_col]
+    )
     left = vrn_df.copy()
     left["_join_veh"] = left[vrn_veh_col].map(normalize_vehicle_number)
 
@@ -783,15 +786,25 @@ def merge_vrn_with_etc(
             on=["_join_veh", "date_hour_key"],
             how="left",
         ).drop(columns=["_join_veh"])
-        join_desc = f"vehicle + date/hour ({vrn_dt_col!r})"
+        join_desc = (
+            f"vehicle + date + hour ({vrn_dt_col!r}"
+            + (" from DATE+TIME" if has_split_date_time else "")
+            + ")"
+        )
 
     matched = int(
         merged["Net Settlement Amount"].fillna("").astype(str).str.strip().ne("").sum()
     )
+    etc_with_time = int(
+        right[etc_dt_col]
+        .map(lambda v: bool(re.search(r"\d{1,2}:\d{2}", str(v or ""))))
+        .sum()
+    )
     print(
         f"VRN↔ETC join on {join_desc} "
         f"↔ {etc_veh_col!r} / {etc_dt_col!r}: "
-        f"{matched}/{len(merged)} rows matched"
+        f"{matched}/{len(merged)} rows matched "
+        f"(ETC rows with time={etc_with_time}/{len(right)})"
     )
     return merged
 
@@ -871,8 +884,11 @@ def _norm_weight_join_key(value) -> str:
     return str(num)
 
 
-def _clean_weight_group_join_key(value) -> str:
-    """PQ: remove 'Kgs' then spaces from Weight Group before sheet join."""
+def _clean_weight_group_label(value) -> str:
+    """
+    PQ E10.txt Replaced Value / Replaced Value1:
+    strip 'Kgs' then spaces from Weight Group (kept in the column).
+    """
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     text = str(value).strip()
@@ -880,7 +896,13 @@ def _clean_weight_group_join_key(value) -> str:
         return ""
     text = re.sub(r"(?i)kgs", "", text)
     text = re.sub(r"\s+", "", text)
-    return text.casefold()
+    return text
+
+
+def _clean_weight_group_join_key(value) -> str:
+    """PQ: cleaned Weight Group label, lowercased for sheet join."""
+    text = _clean_weight_group_label(value)
+    return text.casefold() if text else ""
 
 
 def _weight_group_join_key_aliases(key: str) -> list[str]:
@@ -952,18 +974,18 @@ def weight_to_weight_group(
         try:
             if rule_type == "eq":
                 if weight == float(rule["weight"]):
-                    return label
+                    return _clean_weight_group_label(label)
             elif rule_type == "lt":
                 if weight < float(rule["weight"]):
-                    return label
+                    return _clean_weight_group_label(label)
             elif rule_type == "gt":
                 if weight > float(rule["weight"]):
-                    return label
+                    return _clean_weight_group_label(label)
             elif rule_type == "between":
                 gt = float(rule["gt"])
                 lt = float(rule["lt"])
                 if weight > gt and weight < lt:
-                    return label
+                    return _clean_weight_group_label(label)
         except (KeyError, TypeError, ValueError):
             continue
 
@@ -1412,27 +1434,15 @@ def apply_applicable_rates_from_custom(
     return result
 
 
-def _amount_is_zero(value) -> bool:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return True
-    text = str(value).strip().replace(",", "")
-    if text == "" or text.casefold() in {"nan", "none", "nat"}:
-        return True
-    try:
-        return abs(float(text)) < 1e-9
-    except ValueError:
-        return False
-
-
 def apply_overweight_and_filters(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
-    E10.txt after Std Weight (April / Custom<=7500 filters intentionally skipped):
-      - SWB Wt/Std. Weight null → 0; drop empty SWB
+    After Std Weight:
+      - SWB Wt/Std. Weight blank/null → 0 (rows kept; use Lane Weight for OW)
       - Overweight = SWB - Std if SWB > 0 else Lane Weight - Std
       - Overweight % = Overweight / Std * 100
       - Keep Overweight > 0
-      - Keep LANE OVERLOAD AMT = 0 and SWB AMT = 0
       - OW Status from Lane/Chg Standard Weight vs Std Weight + SWB
+    (LANE OVERLOAD AMT / SWB AMT fee filter not applied — matches Aug expected.)
     """
     if df is None or df.empty:
         return df
@@ -1484,13 +1494,14 @@ def apply_overweight_and_filters(df: pd.DataFrame, config: dict) -> pd.DataFrame
         )
 
     work = df.copy()
-    # PQ: null SWB → 0
+    # Blank / null SWB → 0 (keep the row; overweight then uses Lane Weight).
     swb_num = work[swb_col].map(_parse_weight_number)
-    work[swb_col] = swb_num.map(lambda v: 0.0 if v is None else float(v))
-    before = len(work)
-    # PQ: keep SWB not null / not "" (after fill, all numeric remain)
-    work = work.loc[work[swb_col].notna()].copy()
-    print(f"SWB Wt/Std. Weight null→0; kept {len(work)}/{before} rows")
+    work[swb_col] = [0.0 if v is None else float(v) for v in swb_num]
+    blank_to_zero = sum(1 for v in swb_num if v is None)
+    print(
+        f"SWB Wt/Std. Weight blank/null→0 on {blank_to_zero:,}/{len(work):,} rows "
+        f"(all {len(work):,} rows kept)"
+    )
 
     lane_num = work[lane_w_col].map(_parse_weight_number)
     std_num = work[std_col].map(_parse_weight_number)
@@ -1500,12 +1511,12 @@ def apply_overweight_and_filters(df: pd.DataFrame, config: dict) -> pd.DataFrame
     for swb, lane_w, std in zip(
         work[swb_col].tolist(), lane_num.tolist(), std_num.tolist()
     ):
-        swb_v = float(swb) if swb is not None and not pd.isna(swb) else None
+        swb_v = float(swb) if swb is not None and not pd.isna(swb) else 0.0
         if std is None or std == 0:
             overweight.append(None)
             overweight_pct.append(None)
             continue
-        if swb_v is not None and swb_v > 0:
+        if swb_v > 0:
             ow = swb_v - float(std)
         else:
             if lane_w is None:
@@ -1525,15 +1536,6 @@ def apply_overweight_and_filters(df: pd.DataFrame, config: dict) -> pd.DataFrame
     )
     work = work.loc[ow_ok].copy()
     print(f"Filtered Overweight > 0: kept {len(work)}/{before}")
-
-    before = len(work)
-    overload_zero = work[overload_col].map(_amount_is_zero)
-    swb_amt_zero = work[swb_amt_col].map(_amount_is_zero)
-    work = work.loc[overload_zero & swb_amt_zero].copy()
-    print(
-        f"Filtered LANE OVERLOAD AMT=0 and SWB AMT=0: "
-        f"kept {len(work)}/{before}"
-    )
 
     status: list[str] = []
     for lane_std_raw, std_raw, swb_raw in zip(
@@ -1584,8 +1586,10 @@ def main() -> int:
     config = load_config()
     entity_name = resolve_entity_name()
     vrn_folder = resolve_vrn_input_folder()
+    etc_folder = resolve_etc_input_folder()
     print(f"entity_name: {entity_name}")
     print(f"VRN_INPUT_FOLDER: {vrn_folder}")
+    print(f"ETC_INPUT_FOLDER: {etc_folder}")
 
     print("-" * 60)
     print("Loading / merging local VRN…")
@@ -1598,8 +1602,12 @@ def main() -> int:
     print(f"Merged VRN rows: {len(vrn_df)}")
     print(f"Merged VRN columns: {list(vrn_df.columns)}")
 
-    from_date, to_date = date_range_from_vrn_df(vrn_df, config)
-    print(f"ETC download date range: {from_date} → {to_date}")
+    try:
+        from_date, to_date = date_range_from_vrn_df(vrn_df, config)
+        print(f"VRN date range (for reference): {from_date} → {to_date}")
+        print("Put matching-period ETC files in ETC_INPUT_FOLDER.")
+    except RuntimeError as exc:
+        print(f"WARNING: could not derive VRN date range: {exc}")
 
     print("-" * 60)
     filtered = drop_excluded_tc_class_rows(vrn_df, config)
@@ -1613,8 +1621,8 @@ def main() -> int:
     print(f"VRN output: {vrn_out}")
 
     print("-" * 60)
-    print("Downloading / merging ETC…")
-    etc_out = run_etc_download_merge(entity_name, from_date, to_date, config)
+    print("Loading / merging local ETC…")
+    etc_out = load_etc_from_folder(etc_folder, entity_name, config)
     etc_df = pd.read_csv(etc_out, dtype=str, keep_default_na=False)
     print(f"ETC rows: {len(etc_df)} | Columns: {list(etc_df.columns)}")
     print(f"ETC output: {etc_out}")

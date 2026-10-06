@@ -31,11 +31,6 @@ function formatCount(value) {
   return Number(value).toLocaleString('en-IN')
 }
 
-function displayOrDash(value) {
-  if (value == null || String(value).trim() === '') return '—'
-  return String(value)
-}
-
 export function defaultAuditPeriod() {
   const now = new Date()
   return {
@@ -178,7 +173,7 @@ export function AuditExceptionsPanel({
             {data?.selection?.label || 'Selected period'}
           </CardTitle>
           <CardDescription>
-            Amount and count are plaza-specific. Severity and status are placeholders for now.
+            Amount and count are plaza-specific for the selected period.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -186,15 +181,13 @@ export function AuditExceptionsPanel({
             <p className="text-body text-muted-foreground">Loading audit exceptions…</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[48rem] border-collapse text-left text-small">
+              <table className="w-full min-w-[36rem] border-collapse text-left text-small">
                 <thead>
                   <tr className="border-b border-border text-muted-foreground">
                     <th className="px-2 py-2 font-medium">Code</th>
                     <th className="px-2 py-2 font-medium">Exception</th>
                     <th className="px-2 py-2 font-medium text-right">Amount</th>
                     <th className="px-2 py-2 font-medium text-right">Count</th>
-                    <th className="px-2 py-2 font-medium">Severity</th>
-                    <th className="px-2 py-2 font-medium">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -226,12 +219,6 @@ export function AuditExceptionsPanel({
                           </td>
                           <td className="px-2 py-2 text-right whitespace-nowrap">
                             {line.percentage != null ? '—' : formatCount(line.total_count)}
-                          </td>
-                          <td className="px-2 py-2 whitespace-nowrap">
-                            {displayOrDash(line.severity)}
-                          </td>
-                          <td className="px-2 py-2 whitespace-nowrap">
-                            {displayOrDash(line.status)}
                           </td>
                         </tr>
                       )

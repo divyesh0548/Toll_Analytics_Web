@@ -1,1 +1,10 @@
 Exceptions E06 and E07 are not present in Bassi plaza for this quarter.
+
+E4 = Done
+E5 = Done
+E6 = Pending to check - Output given to me seems to be wrong. It has too less vehicles.
+E7 = Original output is pending
+E9 = No need to check
+E10 = Pending to check
+E11 = No need to check
+E15 = Done

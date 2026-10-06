@@ -1,21 +1,15 @@
 """
-E6 — ETC (path or download) + permit file(s) + VRN → TC Class → rates/Loss → DB.
+E6 — Local ETC folder + local VRN folder → TC Class → rates/Loss → DB.
 
-1) Provide ETC_INPUT_FILE path OR download/merge ETC for entity_name + date range
-2) Join permit columns from PERMIT_FOLDER (multiple Excel/CSV files) by vehicle number.
-   This program does not scrape permits.
-3) Download/merge VRN (downloaded files are kept for reuse on the next run):
-   - if ETC path given → date range from Tag Read Date Time in that file
-   - if ETC downloaded → same FROM_DATE / TO_DATE
-4) Normalize Journey Type → rates → Loss; write enriched ETC
-5) Optionally upsert audit_exception_metrics (exception id 6)
+1) Merge ETC Excel/CSV from ETC_INPUT_FOLDER (no download)
+2) Merge VRN Excel/CSV from VRN_INPUT_FOLDER (no download); attach TC Class
+3) Normalize Journey Type → rates → Loss; write enriched ETC
+4) Optionally upsert audit_exception_metrics (exception id 6)
 
 Run:
-  1. Set ENTITY_NAME; either ETC_INPUT_FILE or FROM_DATE/TO_DATE
-  2. Set PERMIT_FOLDER to a folder that contains the permit Excel/CSV files
-  3. python E6_main.py
-     or: python E6_main.py odhaki_paipkhar 2026-01-01 2026-04-30 <plaza_uuid>
-  4. DEV: SKIP_PERMIT_JOIN_FOR_DEV=True reuses ETC_OUTPUT_FILE (permit folder not read)
+  1. Set ENTITY_NAME, ETC_INPUT_FOLDER, VRN_INPUT_FOLDER
+  2. python E6_main.py
+     or: python E6_main.py bassi <plaza_uuid>
 """
 
 from __future__ import annotations
@@ -38,11 +32,6 @@ CONFIG_PATH = BASE_DIR / "e6_config.json"
 ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 OUTPUT_DIR = BASE_DIR / "output"
-ETC_DOWNLOAD_DIR = BASE_DIR / "etc_downloads"
-VRN_DOWNLOAD_DIR = BASE_DIR / "vrn_downloads"
-
-PERMIT_FIELDS = ["Permit Type", "Permit/Authorization No", "Permit Validity"]
-PERMIT_FILE_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
 
 # Import plaza rates from E4
 if str(E4_DIR) not in sys.path:
@@ -50,25 +39,17 @@ if str(E4_DIR) not in sys.path:
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # --- Runtime inputs (edit these; not in config) ---
-ENTITY_NAME = "bassi"
-# If set, load this ETC file and skip ETC download. Leave "" to download.
-ETC_INPUT_FILE = ""
-FROM_DATE = "2026-07-01"  # used when ETC_INPUT_FILE is empty (download mode)
-TO_DATE = "2026-07-31"
-# Required: folder of already-scraped permit Excel/CSV files.
-# Each file needs a vehicle column plus Permit Type, Permit/Authorization No,
-# Permit Validity. All files in the folder are combined, then joined by VRN.
-PERMIT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E6\bassi-permit"
-ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_with_permit.xlsx"
-# Unique vehicle + permit columns kept after a run, for checking the join.
-PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
-# DEV ONLY: skip the permit join; start from existing ETC_OUTPUT_FILE.
-SKIP_PERMIT_JOIN_FOR_DEV = False
+ENTITY_NAME = "mokha"
+# Local ETC Excel/CSV folder for the period. Required — ETC is not downloaded.
+ETC_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/etc_input"
+# Local VRN Excel/CSV folder for the same period. Required — VRN is not downloaded.
+VRN_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/vrn_input"
+ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_enriched.xlsx"
 # plazas.plaza_identifier — required when UPDATE_DB is True
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 6
 # Last step: write monthly Loss totals into audit_exception_metrics
-UPDATE_DB = True
+UPDATE_DB = False
 DB_DRY_RUN = False
 
 
@@ -235,124 +216,35 @@ def resolve_entity_name() -> str:
     return name
 
 
-def resolve_date_range(*, required: bool = True) -> tuple[str, str]:
-    from_date = FROM_DATE
-    to_date = TO_DATE
-    if len(sys.argv) >= 3 and str(sys.argv[2]).strip():
-        from_date = str(sys.argv[2]).strip()
-    if len(sys.argv) >= 4 and str(sys.argv[3]).strip():
-        to_date = str(sys.argv[3]).strip()
-    from_date = str(from_date or "").strip()
-    to_date = str(to_date or "").strip()
-    if required:
-        if not from_date:
-            from_date = input("Enter FROM_DATE (YYYY-MM-DD): ").strip()
-        if not to_date:
-            to_date = input("Enter TO_DATE (YYYY-MM-DD): ").strip()
-        if not from_date or not to_date:
-            raise RuntimeError("FROM_DATE and TO_DATE are required (YYYY-MM-DD).")
-    return from_date, to_date
-
-
-def resolve_etc_input_file() -> Path | None:
-    """Return ETC path when provided; None means download mode."""
-    text = str(ETC_INPUT_FILE or "").strip()
-    if not text:
-        return None
-    path = Path(text)
-    if not path.is_absolute():
-        path = BASE_DIR / path
-    if not path.is_file():
-        raise FileNotFoundError(f"ETC_INPUT_FILE not found: {path}")
-    return path
-
-
-def tag_read_date_range(etc_df: pd.DataFrame, columns_cfg: dict) -> tuple[str, str]:
-    """Oldest → newest calendar dates from Tag Read Date Time / read_datetime."""
-    col = resolve_column(
-        etc_df,
-        str(columns_cfg.get("tag_read_datetime") or ""),
-        list(columns_cfg.get("tag_read_datetime_aliases") or []),
-    )
-    if not col:
-        raise RuntimeError(
-            "Tag Read Date Time column not found to derive VRN date range. "
-            f"Available: {list(etc_df.columns)}"
-        )
-
-    parsed = pd.to_datetime(etc_df[col], errors="coerce", format="mixed")
-    if parsed.isna().all():
-        raise RuntimeError(f"No valid datetimes in column {col!r}")
-
-    earliest = parsed.min()
-    latest = parsed.max()
-    start_d = earliest.date() if hasattr(earliest, "date") else pd.Timestamp(earliest).date()
-    end_d = latest.date() if hasattr(latest, "date") else pd.Timestamp(latest).date()
-    if end_d < start_d:
-        raise RuntimeError(
-            f"Invalid Tag Read Date Time range: {start_d} is after {end_d}"
-        )
-    print(
-        f"VRN date range from {col!r}: "
-        f"{start_d.isoformat()} → {end_d.isoformat()}"
-    )
-    return start_d.isoformat(), end_d.isoformat()
-
-
-def load_etc_from_path(path: Path, config: dict) -> pd.DataFrame:
-    """Load a provided ETC workbook/CSV (header detection via e6_config)."""
-    print(f"Loading ETC from path (download skipped):\n  {path}")
-    df, header_idx, headers = load_etc(path, config)
-    print(
-        f"ETC header_idx={header_idx}, columns={len(headers)}, rows={len(df)}"
-    )
-    return df
-
 
 def resolve_plaza_identifier() -> str:
-    if len(sys.argv) >= 5 and str(sys.argv[4]).strip():
-        return str(sys.argv[4]).strip()
-    plaza_id = str(PLAZA_IDENTIFIER or "").strip()
-    if plaza_id:
-        return plaza_id
-    plaza_id = input("Enter plaza_identifier (plazas.plaza_identifier UUID): ").strip()
-    if not plaza_id:
-        raise RuntimeError("plaza_identifier is required for audit_exception_metrics.")
-    return plaza_id
+    if len(sys.argv) >= 3 and str(sys.argv[2]).strip():
+        return str(sys.argv[2]).strip()
+    value = str(PLAZA_IDENTIFIER or "").strip()
+    if value:
+        return value
+    value = input("Enter plaza_identifier (plazas.plaza_identifier): ").strip()
+    if not value:
+        raise RuntimeError("PLAZA_IDENTIFIER is required when UPDATE_DB is True.")
+    return value
 
 
 def build_etc_merge_config(e6_config: dict) -> dict:
-    """ETC download merge config: only the columns required for E6."""
+    """ETC merge config: only the columns required for E6."""
     explicit = e6_config.get("etc_merge")
     if isinstance(explicit, dict) and explicit.get("merge_columns"):
         return explicit
 
     columns_cfg = e6_config.get("columns") or {}
-
-    def _aliases(preferred_key: str, aliases_key: str) -> list[str]:
-        out: list[str] = []
-        preferred = str(columns_cfg.get(preferred_key) or "").strip()
-        if preferred:
-            out.append(preferred)
-        for name in columns_cfg.get(aliases_key) or []:
-            text = str(name).strip()
-            if text and text not in out:
-                out.append(text)
-        return out
-
     return {
-        "header_keywords": e6_config.get("header_keywords") or [],
+        "header_keywords": list(e6_config.get("header_keywords") or []),
         "header_scan_rows": int(e6_config.get("header_scan_rows") or 25),
         "min_header_matches": int(e6_config.get("min_header_matches") or 3),
         "merge_columns": {
-            "vehicle_reg_no": _aliases("etc_vehicle", "etc_vehicle_aliases"),
-            "read_datetime": _aliases(
-                "tag_read_datetime", "tag_read_datetime_aliases"
-            ),
-            "journey_type": _aliases("journey_type", "journey_type_aliases"),
-            "net_settlement_amt": _aliases(
-                "net_settlement", "net_settlement_aliases"
-            ),
+            "vehicle_reg_no": list(columns_cfg.get("etc_vehicle_aliases") or []),
+            "read_datetime": list(columns_cfg.get("tag_read_datetime_aliases") or []),
+            "journey_type": list(columns_cfg.get("journey_type_aliases") or []),
+            "net_settlement_amt": list(columns_cfg.get("net_settlement_aliases") or []),
         },
     }
 
@@ -360,7 +252,7 @@ def build_etc_merge_config(e6_config: dict) -> dict:
 def load_etc_download_merge_module():
     path = ETC_DOWNLOAD_MERGE_PATH
     if not path.is_file():
-        raise FileNotFoundError(f"ETC download script not found: {path}")
+        raise FileNotFoundError(f"ETC merge script not found: {path}")
     spec = importlib.util.spec_from_file_location("e4_etc_download_merge", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load module from {path}")
@@ -369,28 +261,49 @@ def load_etc_download_merge_module():
     return module
 
 
-def download_merged_etc(
-    entity_name: str,
-    from_date: str,
-    to_date: str,
-    e6_config: dict,
-) -> pd.DataFrame:
-    print(f"Starting ETC download/merge for entity_name={entity_name!r}")
+def resolve_etc_input_folder() -> Path:
+    folder = Path(str(ETC_INPUT_FOLDER or "").strip())
+    if not folder.is_absolute():
+        folder = BASE_DIR / folder
+    if not folder.is_dir():
+        raise FileNotFoundError(
+            f"ETC_INPUT_FOLDER not found or not a directory: {folder}\n"
+            "Place ETC Excel/CSV files there (ETC is not downloaded)."
+        )
+    return folder
+
+
+def resolve_vrn_input_folder() -> Path:
+    folder = Path(str(VRN_INPUT_FOLDER or "").strip())
+    if not folder.is_absolute():
+        folder = BASE_DIR / folder
+    if not folder.is_dir():
+        raise FileNotFoundError(
+            f"VRN_INPUT_FOLDER not found or not a directory: {folder}\n"
+            "Place VRN Excel/CSV files there (VRN is not downloaded)."
+        )
+    return folder
+
+
+def load_etc_from_folder(entity_name: str, config: dict) -> pd.DataFrame:
+    """Merge local ETC Excel/CSV from ETC_INPUT_FOLDER (no DB download)."""
+    folder = resolve_etc_input_folder()
+    etc_cfg = build_etc_merge_config(config)
+    if not etc_cfg.get("merge_columns"):
+        raise RuntimeError("e6_config.json etc_merge.merge_columns is empty.")
+
     etc_mod = load_etc_download_merge_module()
-    etc_path = etc_mod.run_etc_download_merge(
-        entity_name,
-        from_date,
-        to_date,
-        download_folder=ETC_DOWNLOAD_DIR,
-        merged_output_dir=OUTPUT_DIR,
-        skip_existing=True,
-        delete_downloads=False,
-        config=build_etc_merge_config(e6_config),
-    )
-    if etc_path is None:
-        raise RuntimeError("ETC download finished without a merged file path.")
-    print(f"ETC merge complete: {etc_path}")
-    df = pd.read_csv(etc_path, dtype=str, keep_default_na=False)
+    paths = etc_mod.list_local_etc_files(folder)
+    if not paths:
+        raise FileNotFoundError(f"No ETC Excel/CSV files found under: {folder}")
+
+    print(f"Local ETC folder: {folder}")
+    print(f"Found {len(paths)} ETC file(s)")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    merged_name = f"{etc_mod.safe_part(entity_name)}_local_merged_etc.csv"
+    merged_path = etc_mod.merge_etc_files(paths, etc_cfg, OUTPUT_DIR / merged_name)
+    df = pd.read_csv(merged_path, dtype=str, keep_default_na=False)
+    print(f"ETC merge columns: {list((etc_cfg.get('merge_columns') or {}).keys())}")
     print(f"Merged ETC rows: {len(df)} | columns: {list(df.columns)}")
     return df
 
@@ -456,28 +369,38 @@ def enrich_etc_with_vrn_tc_class(
     vehicle_col: str,
     columns_cfg: dict,
     entity_name: str,
-    from_date: str,
-    to_date: str,
+    config: dict,
 ) -> pd.DataFrame:
-    print(
-        f"Starting VRN download/merge for entity_name={entity_name!r} "
-        f"({from_date} → {to_date}); downloads kept in {VRN_DOWNLOAD_DIR}"
-    )
+    """Merge local VRN from VRN_INPUT_FOLDER and attach TC Class (no download)."""
+    folder = resolve_vrn_input_folder()
+    vrn_cfg = config.get("vrn_merge") or {}
+    if not vrn_cfg.get("merge_columns"):
+        raise RuntimeError("e6_config.json vrn_merge.merge_columns is empty.")
 
     vrn_mod = load_vrn_download_merge_module()
-    vrn_path = vrn_mod.run_vrn_download_merge(
-        entity_name,
-        from_date,
-        to_date,
-        download_folder=VRN_DOWNLOAD_DIR,
-        merged_output_dir=OUTPUT_DIR,
-        skip_existing=True,
-        delete_downloads=False,
+    paths = vrn_mod.list_local_files(folder)
+    if not paths:
+        raise FileNotFoundError(f"No VRN Excel/CSV files found under: {folder}")
+
+    print(f"Local VRN folder: {folder}")
+    print(f"Found {len(paths)} VRN file(s)")
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    merged_name = f"{vrn_mod.safe_part(entity_name)}_local_merged_vrn.csv"
+    date_order = ""
+    try:
+        date_order = vrn_mod.date_order_for(entity_name, vrn_mod.load_config())
+        print(f"VRN date order for {entity_name}: {date_order}")
+    except RuntimeError as exc:
+        print(f"{exc} Date & Time values are kept as read.")
+
+    vrn_path = vrn_mod.merge_vrn_files(
+        paths,
+        vrn_cfg,
+        OUTPUT_DIR / merged_name,
+        date_order,
     )
-    if vrn_path is None:
-        raise RuntimeError("VRN download finished without a merged file path.")
-    print(f"VRN merge complete: {vrn_path}")
-    print(f"VRN downloads kept for reuse: {VRN_DOWNLOAD_DIR}")
+    print(f"VRN merge columns: {list((vrn_cfg.get('merge_columns') or {}).keys())}")
+    print(f"Merged VRN: {vrn_path}")
 
     vrn_lookup = build_vrn_tc_class_lookup(Path(vrn_path))
     return attach_tc_class_from_vrn(etc_df, vehicle_col, vrn_lookup, columns_cfg)
@@ -771,207 +694,6 @@ def apply_rates_and_loss(
     return result
 
 
-def resolve_permit_paths() -> list[Path]:
-    """Return all permit Excel/CSV files from PERMIT_FOLDER."""
-    raw = str(PERMIT_FOLDER or "").strip()
-    if not raw:
-        raise RuntimeError(
-            "Set PERMIT_FOLDER at the top of E6_main.py to a folder of "
-            "permit Excel/CSV files. Scraping is not used."
-        )
-    path = Path(raw)
-    if not path.is_absolute():
-        path = BASE_DIR / path
-    if path.is_file():
-        raise RuntimeError(
-            f"PERMIT_FOLDER must be a folder, not a file: {path}\n"
-            "Put the permit file(s) in a folder and point PERMIT_FOLDER at it."
-        )
-    if not path.is_dir():
-        raise FileNotFoundError(f"Permit folder not found: {path}")
-
-    files = sorted(
-        p
-        for p in path.iterdir()
-        if p.is_file()
-        and p.suffix.lower() in PERMIT_FILE_EXTENSIONS
-        and not p.name.startswith("~$")
-    )
-    if not files:
-        raise FileNotFoundError(
-            f"No permit Excel/CSV files found in folder: {path}"
-        )
-    print(f"Permit folder: {path} ({len(files)} file(s))")
-    return files
-
-
-def load_permit_file(path: Path, config: dict) -> pd.DataFrame:
-    """Read one permit file. Falls back to header-row detection."""
-    columns_cfg = config.get("columns") or {}
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        df = pd.read_csv(path, dtype=str, keep_default_na=False)
-    else:
-        df = pd.read_excel(path, sheet_name=0, dtype=str)
-    df.columns = [_normalize_header_cell(column) for column in df.columns]
-    try:
-        resolve_vehicle_column(df, columns_cfg)
-        return df
-    except KeyError:
-        pass
-
-    keywords = list(config.get("header_keywords") or [])
-    keywords.extend(columns_cfg.get("etc_vehicle_aliases") or [])
-    keywords.append(str(columns_cfg.get("permit_type") or PERMIT_FIELDS[0]))
-    keywords.append(str(columns_cfg.get("permit_no") or PERMIT_FIELDS[1]))
-    df_raw = read_etc_raw(path)
-    header_idx = detect_header_row(
-        df_raw,
-        keywords,
-        scan_rows=int(config.get("header_scan_rows") or 25),
-        min_matches=int(config.get("min_header_matches") or 2),
-    )
-    _headers, body = dataframe_from_header(df_raw, header_idx)
-    print(f"Permit header at row {header_idx + 1} in {path.name} ({len(body):,} data rows)")
-    return body
-
-
-def load_permit_frames(config: dict) -> pd.DataFrame:
-    paths = resolve_permit_paths()
-    frames: list[pd.DataFrame] = []
-    for path in paths:
-        frame = load_permit_file(path, config)
-        print(f"Permit file: {path} ({len(frame):,} rows)")
-        frames.append(frame)
-    if len(frames) == 1:
-        return frames[0]
-    combined = pd.concat(frames, ignore_index=True)
-    print(f"Combined permit rows from {len(paths)} file(s): {len(combined):,}")
-    return combined
-
-
-def attach_permit_data(
-    etc_df: pd.DataFrame,
-    vehicle_col: str,
-    columns_cfg: dict,
-    config: dict,
-) -> pd.DataFrame:
-    """Join permits from all files in PERMIT_FOLDER onto ETC by vehicle number."""
-    scraped = load_permit_frames(config)
-    enriched = merge_permit_into_etc(etc_df, scraped, vehicle_col, columns_cfg)
-    print(
-        f"Permit fields applied to full ETC: "
-        f"{len(enriched):,} rows retained (no rows removed)."
-    )
-    save_fetched_permit(enriched, vehicle_col, columns_cfg)
-    return enriched
-
-
-def merge_permit_into_etc(
-    etc_df: pd.DataFrame,
-    scraped_df: pd.DataFrame,
-    vehicle_col: str,
-    columns_cfg: dict,
-) -> pd.DataFrame:
-    """
-    Left-join scrape results onto full ETC by normalized VRN.
-    Duplicate ETC rows for the same VRN all receive the same permit fields —
-    no ETC rows are removed.
-    """
-    permit_type = columns_cfg.get("permit_type") or PERMIT_FIELDS[0]
-    permit_no = columns_cfg.get("permit_no") or PERMIT_FIELDS[1]
-    permit_validity = columns_cfg.get("permit_validity") or PERMIT_FIELDS[2]
-    permit_cols = [permit_type, permit_no, permit_validity]
-
-    out = etc_df.copy()
-    out["_join_key"] = out[vehicle_col].map(normalize_vehicle_number)
-
-    if scraped_df is None or scraped_df.empty:
-        for col in permit_cols:
-            if col not in out.columns:
-                out[col] = ""
-        return out.drop(columns=["_join_key"])
-
-    right = scraped_df.copy()
-    right.columns = [_normalize_header_cell(column) for column in right.columns]
-    try:
-        scrape_veh = resolve_vehicle_column(right, columns_cfg)
-    except KeyError:
-        scrape_veh = None
-        for col in right.columns:
-            key = str(col).casefold()
-            if "veh" in key and "reg" in key:
-                scrape_veh = col
-                break
-    if scrape_veh is None:
-        raise KeyError(
-            "Permit file is missing a vehicle column. "
-            f"Available: {list(right.columns)}"
-        )
-
-    # Map scraper's fixed field names onto configured output column names.
-    rename_map = {}
-    for src, dst in zip(PERMIT_FIELDS, permit_cols):
-        if src in right.columns:
-            rename_map[src] = dst
-        elif dst in right.columns:
-            rename_map[dst] = dst
-    right = right.rename(columns=rename_map)
-    for col in permit_cols:
-        if col not in right.columns:
-            right[col] = ""
-
-    right["_join_key"] = right[scrape_veh].map(normalize_vehicle_number)
-    right = (
-        right[right["_join_key"].ne("")]
-        .drop_duplicates(subset=["_join_key"], keep="first")
-        [["_join_key", *permit_cols]]
-    )
-
-    # Drop any pre-existing permit columns so merge replaces cleanly.
-    drop_existing = [c for c in permit_cols if c in out.columns]
-    if drop_existing:
-        out = out.drop(columns=drop_existing)
-
-    merged = out.merge(right, on="_join_key", how="left").drop(columns=["_join_key"])
-    for col in permit_cols:
-        merged[col] = merged[col].fillna("")
-    return merged
-
-
-def save_fetched_permit(
-    enriched: pd.DataFrame,
-    vehicle_col: str,
-    columns_cfg: dict,
-) -> Path | None:
-    """Write one row per vehicle with the permit columns that were joined."""
-    permit_cols = [
-        columns_cfg.get("permit_type") or PERMIT_FIELDS[0],
-        columns_cfg.get("permit_no") or PERMIT_FIELDS[1],
-        columns_cfg.get("permit_validity") or PERMIT_FIELDS[2],
-    ]
-    missing = [col for col in [vehicle_col, *permit_cols] if col not in enriched.columns]
-    if missing:
-        print(f"Permit Excel not written — missing columns: {missing}")
-        return None
-
-    work = enriched[[vehicle_col, *permit_cols]].copy()
-    work["_key"] = work[vehicle_col].map(normalize_vehicle_number)
-    work = (
-        work.loc[work["_key"].ne("")]
-        .drop_duplicates(subset=["_key"], keep="first")
-        .drop(columns=["_key"])
-        .reset_index(drop=True)
-    )
-    if work.empty:
-        print("Permit Excel not written — no vehicle rows.")
-        return None
-
-    path = save_etc(work, Path(PERMIT_OUTPUT_FILE))
-    print(f"Wrote permit data: {path} ({len(work):,} vehicle(s))")
-    return path
-
-
 def save_etc(df: pd.DataFrame, path: Path) -> Path:
     path = Path(path)
     if not path.is_absolute():
@@ -983,69 +705,30 @@ def save_etc(df: pd.DataFrame, path: Path) -> Path:
 
 def main() -> int:
     print("=" * 60)
-    print("E6 — ETC (path/download) + permit file(s) + VRN + rates/Loss")
-    print(f"SKIP_PERMIT_JOIN_FOR_DEV = {SKIP_PERMIT_JOIN_FOR_DEV}")
-    print(f"ETC_INPUT_FILE = {ETC_INPUT_FILE!r}")
-    print(f"PERMIT_FOLDER = {PERMIT_FOLDER!r}")
-    print(f"VRN_DOWNLOAD_DIR = {VRN_DOWNLOAD_DIR}")
+    print("E6 — local ETC + local VRN + rates/Loss")
+    print(f"ETC_INPUT_FOLDER = {ETC_INPUT_FOLDER!r}")
+    print(f"VRN_INPUT_FOLDER = {VRN_INPUT_FOLDER!r}")
     print("=" * 60)
 
     config = load_config()
     columns_cfg = config.get("columns") or {}
     entity_name = resolve_entity_name()
-    etc_input_path = resolve_etc_input_file()
     print(f"entity_name: {entity_name}")
 
-    # VRN date range: from file Tag Read dates when path given; else FROM/TO.
-    from_date = ""
-    to_date = ""
-
-    if SKIP_PERMIT_JOIN_FOR_DEV:
-        start_path = Path(ETC_OUTPUT_FILE)
-        if not start_path.is_file():
-            raise FileNotFoundError(
-                "SKIP_PERMIT_JOIN_FOR_DEV=True but ETC_OUTPUT_FILE not found: "
-                f"{start_path}"
-            )
-        print(
-            "DEV: skipping ETC download and the permit file — loading existing file:\n"
-            f"  {start_path}"
-        )
-        enriched, _header_idx, headers = load_etc(start_path, config)
-        vehicle_col = resolve_vehicle_column(enriched, columns_cfg)
-        print(f"ETC headers: {headers}")
-        print(f"ETC rows: {len(enriched)}")
-        print(f"Vehicle column: {vehicle_col}")
-        from_date, to_date = tag_read_date_range(enriched, columns_cfg)
-    elif etc_input_path is not None:
-        print("-" * 60)
-        etc_df = load_etc_from_path(etc_input_path, config)
-        vehicle_col = resolve_vehicle_column(etc_df, columns_cfg)
-        print(f"Vehicle column: {vehicle_col}")
-        from_date, to_date = tag_read_date_range(etc_df, columns_cfg)
-
-        enriched = attach_permit_data(etc_df, vehicle_col, columns_cfg, config)
-        save_etc(enriched, Path(ETC_OUTPUT_FILE))
-    else:
-        from_date, to_date = resolve_date_range(required=True)
-        print(f"date range (ETC download): {from_date} → {to_date}")
-        print("-" * 60)
-        etc_df = download_merged_etc(entity_name, from_date, to_date, config)
-        vehicle_col = resolve_vehicle_column(etc_df, columns_cfg)
-        print(f"Vehicle column: {vehicle_col}")
-
-        enriched = attach_permit_data(etc_df, vehicle_col, columns_cfg, config)
-        save_etc(enriched, Path(ETC_OUTPUT_FILE))
-
-    print(f"VRN download date range: {from_date} → {to_date}")
     print("-" * 60)
+    print("Loading / merging local ETC…")
+    etc_df = load_etc_from_folder(entity_name, config)
+    vehicle_col = resolve_vehicle_column(etc_df, columns_cfg)
+    print(f"Vehicle column: {vehicle_col}")
+
+    print("-" * 60)
+    print("Loading / merging local VRN and attaching TC Class…")
     enriched = enrich_etc_with_vrn_tc_class(
-        enriched,
+        etc_df,
         vehicle_col,
         columns_cfg,
         entity_name,
-        from_date,
-        to_date,
+        config,
     )
 
     print("-" * 60)
@@ -1055,9 +738,6 @@ def main() -> int:
     out_path = save_etc(enriched, Path(ETC_OUTPUT_FILE))
     print(f"Wrote enriched ETC: {out_path}")
     print(f"Rows: {len(enriched)} | Columns: {list(enriched.columns)}")
-    if not SKIP_PERMIT_JOIN_FOR_DEV and Path(PERMIT_OUTPUT_FILE).is_file():
-        print(f"Permit data kept: {Path(PERMIT_OUTPUT_FILE)}")
-    print(f"VRN downloads folder (kept): {VRN_DOWNLOAD_DIR}")
 
     if not UPDATE_DB:
         print("UPDATE_DB=False — audit_exception_metrics not updated.")

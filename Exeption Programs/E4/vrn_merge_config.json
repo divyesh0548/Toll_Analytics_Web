@@ -55,6 +55,7 @@
     {"entity_name": "madapam", "date_format": ""},
     {"entity_name": "mahasamudram", "date_format": ""},
     {"entity_name": "maigalganj", "date_format": ""},
+    {"entity_name": "mokha", "date_format": "dd-mmm-yyyy"},
     {"entity_name": "marripalem", "date_format": ""},
     {"entity_name": "mohtara", "date_format": ""},
     {"entity_name": "mudhipar", "date_format": ""},

@@ -34,10 +34,6 @@
     "DEC"
   ],
   "default_year": "2026",
-  "from_plaza_side_a_lanes": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"],
-  "from_plaza_side_b_lanes": ["L9", "L10", "L11", "L12", "L13", "L14", "L15", "L16"],
-  "to_plaza_side_a_lanes": ["L1", "L2", "L3", "L4", "L5", "L6", "L7"],
-  "to_plaza_side_b_lanes": ["L8", "L9", "L10", "L11", "L12", "L13", "L14"],
   "from_plaza_column_aliases": {
     "Veh Reg No.": [
       "VEH REG NO.",
