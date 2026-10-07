@@ -32,7 +32,8 @@
     "Txn ID",
     "Violation Amt",
     "Fare Amount",
-    "Txn Status"
+    "Txn Status",
+    "Reason"
   ],
   "header_scan_rows": 25,
   "min_header_matches": 3,
@@ -55,7 +56,11 @@
       "Date & Time",
       "Tag Read Date Time",
       "Transaction Date",
-      "Txn Status"
+      "Txn Status",
+      "Reason",
+      "Vehicle Class",
+      "AVC Vehicle Class",
+      "Mapper Vehicle Class"
     ],
     "header_scan_rows": 25,
     "min_header_matches": 3,
@@ -100,8 +105,22 @@
         "Settled Amount (Rs.)",
         "Accepted Amount (Rs.)",
         "Net Settled Amount"
+      ],
+      "reason": [
+        "Reason"
+      ],
+      "vehicle_class": [
+        "Vehicle Class",
+        "AVC Vehicle Class",
+        "Mapper Vehicle Class",
+        "NPCI Class Desc",
+        "NPCI Class"
       ]
-    }
+    },
+    "reason_keep_values": [
+      "Discount Local Price"
+    ],
+    "etc_class_remove_indexes": ["1"]
   },
   "columns": {
     "etc_vehicle": "vehicle_reg_no",
@@ -151,6 +170,14 @@
       "Accepted Amount (Rs.)",
       "Net Settled Amount"
     ],
+    "etc_vehicle_class": "vehicle_class",
+    "etc_vehicle_class_aliases": [
+      "vehicle_class",
+      "Vehicle Class",
+      "AVC Vehicle Class",
+      "Mapper Vehicle Class",
+      "NPCI Class Desc"
+    ],
     "tc_class": "TC Class",
     "tc_class_aliases": [
       "TC Class",
@@ -163,7 +190,13 @@
     "tc_class_output": "TC Class",
     "journey_type_normalized_output": "journey_type",
     "applicable_rate_output": "Applicable Rate",
-    "loss_output": "Loss"
+    "loss_output": "Loss",
+    "permit_type": "Permit Type",
+    "permit_no": "Permit/Authorization No",
+    "permit_validity": "Permit Validity",
+    "permit_type_keep_values": [
+      "NATIONAL PERMIT"
+    ]
   },
   "rate_cutover_date": "2026-05-01",
   "journey_type_map": {
@@ -238,6 +271,7 @@
     "3wheeler",
     "3 wheeler",
     "three wheeler",
+    "three wheeler freight",
     "tractor",
     "non tollable",
     "noclass",
@@ -253,7 +287,15 @@
       "car / jeep / van",
       "car/jeep/van"
     ],
-    "2": ["lcv", "minibus", "lcv/mini bus", "lcv mini bus"],
+    "2": [
+      "lcv",
+      "minibus",
+      "lcv/mini bus",
+      "lcv mini bus",
+      "light commercial vehicle 2 axle",
+      "light commercial vehicle 3 axle",
+      "tata ace and similar mini light commercial vehicle"
+    ],
     "3": [
       "truck",
       "truck/bus",
@@ -261,6 +303,7 @@
       "bus",
       "bus 2 axle",
       "bus-2 axle",
+      "bus 2-axle",
       "truck 2 axle",
       "truck-2 axle"
     ],
@@ -291,9 +334,17 @@
       "mav 6 ax",
       "mav 6 axle",
       "mav 6 axle - 6t1",
-      "truck 4-6 axle"
+      "truck 4-6 axle",
+      "truck 4 axle",
+      "truck 5 axle",
+      "truck 6 axle"
     ],
-    "6": ["osv"]
+    "6": [
+      "osv",
+      "truck multi axle ( 7 and above)",
+      "truck multi axle (7 and above)",
+      "earth moving machinery"
+    ]
   },
   "vrn_merge": {
     "header_keywords": [
@@ -302,15 +353,22 @@
       "VEH REG NO",
       "VEH. REG. NO",
       "Vehicle No",
+      "Licence Plate No.",
+      "Licence Plate No",
       "DATE",
       "TIME",
       "DATE TIME",
       "Date & Time",
       "Transaction DateTime",
+      "Transaction Date",
       "TC Class",
       "TC CLASS",
       "MVC",
-      "Vehicle Class"
+      "Vehicle Class",
+      "AVC Vehicle Class",
+      "Mapper Vehicle Class",
+      "Agency Tran Id",
+      "S.No"
     ],
     "header_scan_rows": 25,
     "min_header_matches": 2,
@@ -321,14 +379,16 @@
         "Veh Reg No",
         "VEH. REG. NO",
         "Vehicle Reg No",
-        "Vehicle No"
+        "Vehicle No",
+        "Licence Plate No.",
+        "Licence Plate No"
       ],
       "tc_class": [
         "MVC",
         "TC Class",
         "TC CLASS",
         "TcClass",
-        "Vehicle Class"
+        "Mapper Vehicle Class"
       ],
       "read_datetime": [
         "DATE TIME",
@@ -338,7 +398,8 @@
         "Txn Date Time",
         "Txn Date & Time",
         "Transaction Date Time",
-        "Transaction DateTime"
+        "Transaction DateTime",
+        "Transaction Date"
       ],
       "date_part": ["DATE", "Date"],
       "time_part": ["TIME", "Time"]

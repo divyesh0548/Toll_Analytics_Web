@@ -61,9 +61,9 @@ ENTITY_NAME = "bassi"
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 4
 DB_DRY_RUN = False
-SKIP_DB_UPDATE = False
+Metrics_DB_Update = True
 # Upload merged_pass_files.xlsx to S3 and insert audit_exception_output_files row.
-UPLOAD_OUTPUT_TO_S3 = False
+UPLOAD_OUTPUT_TO_S3 = True
 # Result months outside this range are not written to the database.
 EXPECTED_START = "2026-01-01"
 EXPECTED_END = "2026-12-31"
@@ -1019,8 +1019,8 @@ def main() -> int:
     merged = maybe_run_etc_download(merged, config, output_path)
     merged = run_vrn_tc_rates_loss(merged, config, output_path)
 
-    if SKIP_DB_UPDATE:
-        print("SKIP_DB_UPDATE=True — audit_exception_metrics not updated.")
+    if not Metrics_DB_Update:
+        print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
         return 0
 
     entity_name = resolve_entity_name()

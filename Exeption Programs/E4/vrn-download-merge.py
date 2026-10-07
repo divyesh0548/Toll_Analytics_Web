@@ -326,7 +326,26 @@ def detect_header_row(
 def read_first_sheet_raw(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return pd.read_csv(path, header=None, dtype=str, keep_default_na=False)
+        # Skip malformed rows (extra commas in unquoted text) instead of failing
+        # the whole file — e.g. "Expected 26 fields in line N, saw 27".
+        try:
+            return pd.read_csv(
+                path,
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                on_bad_lines="warn",
+            )
+        except TypeError:
+            # Older pandas
+            return pd.read_csv(
+                path,
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                error_bad_lines=False,
+                warn_bad_lines=True,
+            )
     return pd.read_excel(path, sheet_name=0, header=None, dtype=str)
 
 
@@ -353,6 +372,110 @@ def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     return None
 
 
+def _format_date_values(values: pd.Series, canonical: str, date_order: str) -> list[str]:
+    texts = values.astype(str).tolist()
+    if date_order not in _DATE_ORDERS or "date" not in canonical.casefold():
+        return texts
+    parsed = [parse_vrn_date(value, date_order) for value in texts]
+    return [
+        stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp is not None else ""
+        for stamp in parsed
+    ]
+
+
+def _resolve_datetime_columns(
+    df: pd.DataFrame,
+    headers: list[str],
+    merge_columns: dict[str, list[str]],
+    date_order: str,
+) -> tuple[dict[str, list[str] | pd.Series], list[str]]:
+    """
+    Prefer a single date-time column (read_datetime).
+    If absent, fall back to separate DATE + TIME and combine into read_datetime.
+    """
+    result: dict[str, list[str] | pd.Series] = {}
+    missing: list[str] = []
+
+    wants_dt = "read_datetime" in merge_columns
+    wants_date = "date_part" in merge_columns
+    wants_time = "time_part" in merge_columns
+    if not (wants_dt or wants_date or wants_time):
+        return result, missing
+
+    dt_aliases = list(merge_columns.get("read_datetime") or [])
+    date_aliases = list(merge_columns.get("date_part") or [])
+    time_aliases = list(merge_columns.get("time_part") or [])
+
+    dt_source = resolve_column(headers, [str(a) for a in dt_aliases]) if dt_aliases else None
+    date_source = (
+        resolve_column(headers, [str(a) for a in date_aliases]) if date_aliases else None
+    )
+    time_source = (
+        resolve_column(headers, [str(a) for a in time_aliases]) if time_aliases else None
+    )
+
+    if dt_source is not None:
+        values = _format_date_values(df[dt_source], "read_datetime", date_order)
+        if wants_dt:
+            result["read_datetime"] = values
+            print(f"  read_datetime <- {dt_source!r}")
+        # Split columns stay blank when a combined datetime column is used.
+        if wants_date:
+            result["date_part"] = [""] * len(df)
+        if wants_time:
+            result["time_part"] = [""] * len(df)
+        return result, missing
+
+    if date_source is not None and time_source is not None:
+        date_vals = df[date_source].astype(str)
+        time_vals = df[time_source].astype(str)
+        if wants_date:
+            result["date_part"] = date_vals
+            print(f"  date_part <- {date_source!r}")
+        if wants_time:
+            result["time_part"] = time_vals
+            print(f"  time_part <- {time_source!r}")
+        if wants_dt:
+            combined = (
+                date_vals.astype(str).str.strip()
+                + " "
+                + time_vals.astype(str).str.strip()
+            ).str.strip()
+            result["read_datetime"] = _format_date_values(
+                combined, "read_datetime", date_order
+            )
+            print(
+                f"  read_datetime <- {date_source!r} + {time_source!r} "
+                "(fallback from separate DATE/TIME)"
+            )
+        return result, missing
+
+    # Neither combined datetime nor a full DATE+TIME pair.
+    if wants_dt:
+        missing.append("read_datetime")
+        result["read_datetime"] = [""] * len(df)
+    if wants_date:
+        if date_source is None:
+            missing.append("date_part")
+            result["date_part"] = [""] * len(df)
+        else:
+            result["date_part"] = df[date_source].astype(str)
+            print(f"  date_part <- {date_source!r}")
+    if wants_time:
+        if time_source is None:
+            missing.append("time_part")
+            result["time_part"] = [""] * len(df)
+        else:
+            result["time_part"] = df[time_source].astype(str)
+            print(f"  time_part <- {time_source!r}")
+    if wants_dt and (date_source is None or time_source is None):
+        print(
+            "  WARNING: no combined date-time column; "
+            "DATE+TIME fallback incomplete — read_datetime left blank"
+        )
+    return result, missing
+
+
 def extract_merge_frame(
     path: Path,
     *,
@@ -375,24 +498,27 @@ def extract_merge_frame(
 
     out = pd.DataFrame(index=df.index)
     missing: list[str] = []
+    datetime_keys = {"read_datetime", "date_part", "time_part"}
+
     for canonical, aliases in merge_columns.items():
+        if str(canonical).strip().casefold() in datetime_keys:
+            continue
         alias_list = aliases if isinstance(aliases, list) else [aliases]
         source = resolve_column(headers, [str(a) for a in alias_list])
         if source is None:
             missing.append(canonical)
             out[canonical] = ""
         else:
-            values = df[source].astype(str)
-            if date_order in _DATE_ORDERS and "date" in canonical.casefold():
-                parsed = [
-                    parse_vrn_date(value, date_order) for value in values.tolist()
-                ]
-                values = [
-                    stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp is not None else ""
-                    for stamp in parsed
-                ]
+            values = _format_date_values(df[source], str(canonical), date_order)
             out[canonical] = values
-            print(f"  {canonical} ← {source!r}")
+            print(f"  {canonical} <- {source!r}")
+
+    dt_values, dt_missing = _resolve_datetime_columns(
+        df, headers, merge_columns, date_order
+    )
+    for key, values in dt_values.items():
+        out[key] = values
+    missing.extend(dt_missing)
 
     if missing:
         print(f"  WARNING missing columns (left blank): {', '.join(missing)}")

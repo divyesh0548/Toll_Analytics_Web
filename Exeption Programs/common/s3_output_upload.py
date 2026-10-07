@@ -23,6 +23,11 @@ File name example:
 
 Each call INSERTs a new row into audit_exception_output_files (history kept).
 Credentials and DB come from Website/backend/.env.
+
+plazas / audit_exception_types / audit_exception_output_files live in
+toll_analytics (Website DB_NAME). Exception mains may have already loaded
+E4/.env with a different DB_NAME (submissions), so this module always
+re-loads Website/backend/.env with override=True before connecting.
 """
 
 from __future__ import annotations
@@ -57,7 +62,8 @@ OUTPUT_TABLE = "audit_exception_output_files"
 def load_env() -> None:
     if not ENV_FILE.is_file():
         raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    load_dotenv(ENV_FILE, override=False)
+    # override=True so E4/other .env DB_NAME (submissions) does not stick.
+    load_dotenv(ENV_FILE, override=True)
 
 
 def require_env(name: str) -> str:
@@ -67,13 +73,24 @@ def require_env(name: str) -> str:
     return value
 
 
+def toll_analytics_db_name() -> str:
+    """
+    Database that holds plazas (and output-file history).
+    Prefer ANALYTICS_DB_NAME, else Website DB_NAME (toll_analytics).
+    """
+    return (
+        os.getenv("ANALYTICS_DB_NAME", "").strip()
+        or require_env("DB_NAME")
+    )
+
+
 def connection_kwargs() -> dict:
     return {
         "host": require_env("DB_HOST"),
         "port": int(os.getenv("DB_PORT") or "5432"),
         "user": require_env("DB_USER"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("DB_NAME"),
+        "database": toll_analytics_db_name(),
     }
 
 
@@ -260,8 +277,13 @@ def upload_exception_output(
     load_env()
     bucket = require_env("AWS_S3_BUCKET_NAME")
     region = require_env("AWS_REGION")
+    conn_kw = connection_kwargs()
+    print(
+        f"S3 DB lookup → {conn_kw['database']}.plazas "
+        f"(plaza_identifier={plaza_identifier!r})"
+    )
 
-    conn = psycopg2.connect(**connection_kwargs())
+    conn = psycopg2.connect(**conn_kw)
     try:
         plaza = fetch_plaza(conn, plaza_identifier)
         type_id, code = resolve_exception_type_id(

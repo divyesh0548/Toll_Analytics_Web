@@ -284,7 +284,25 @@ def detect_header_row(
 def read_first_sheet_raw(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return pd.read_csv(path, header=None, dtype=str, keep_default_na=False)
+        # Skip malformed rows (extra commas in unquoted text) instead of
+        # failing the whole file.
+        try:
+            return pd.read_csv(
+                path,
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                on_bad_lines="warn",
+            )
+        except TypeError:
+            return pd.read_csv(
+                path,
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                error_bad_lines=False,
+                warn_bad_lines=True,
+            )
     return pd.read_excel(path, sheet_name=0, header=None, dtype=str)
 
 
@@ -349,7 +367,7 @@ def extract_merge_frame(
             out[canonical] = ""
         else:
             out[canonical] = df[source].astype(str)
-            print(f"  {canonical} ← {source!r}")
+            print(f"  {canonical} <- {source!r}")
 
     if missing:
         print(f"  WARNING missing columns (left blank): {', '.join(missing)}")

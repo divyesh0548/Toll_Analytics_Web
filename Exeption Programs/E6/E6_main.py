@@ -1,15 +1,19 @@
 """
-E6 — Local ETC folder + local VRN folder → TC Class → rates/Loss → DB.
+E6 — Local ETC + permit folder + local VRN → single rates/Loss → DB.
 
 1) Merge ETC Excel/CSV from ETC_INPUT_FOLDER (no download)
-2) Merge VRN Excel/CSV from VRN_INPUT_FOLDER (no download); attach TC Class
-3) Normalize Journey Type → rates → Loss; write enriched ETC
-4) Optionally upsert audit_exception_metrics (exception id 6)
+2) Remove ETC rows whose Vehicle Class is Car/Jeep (index 1) or tc_class_skip_list
+3) Keep only Reason = "Discount Local Price"
+4) Join permit columns from PERMIT_FOLDER by vehicle number
+5) Keep only rows whose Permit Type is "NATIONAL PERMIT"
+6) Merge VRN from VRN_INPUT_FOLDER; attach TC Class
+7) Applicable Rate = always single-journey rate for TC Class index; Loss = Rate − settlement
+8) Optionally upsert audit_exception_metrics (exception id 6)
 
 Run:
-  1. Set ENTITY_NAME, ETC_INPUT_FOLDER, VRN_INPUT_FOLDER
+  1. Set ENTITY_NAME, ETC_INPUT_FOLDER, VRN_INPUT_FOLDER, PERMIT_FOLDER
   2. python E6_main.py
-     or: python E6_main.py bassi <plaza_uuid>
+     or: python E6_main.py mokha <plaza_uuid>
 """
 
 from __future__ import annotations
@@ -33,6 +37,9 @@ ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 OUTPUT_DIR = BASE_DIR / "output"
 
+PERMIT_FIELDS = ["Permit Type", "Permit/Authorization No", "Permit Validity"]
+PERMIT_FILE_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
+
 # Import plaza rates from E4
 if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
@@ -44,13 +51,18 @@ ENTITY_NAME = "mokha"
 ETC_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/etc_input"
 # Local VRN Excel/CSV folder for the same period. Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/vrn_input"
+# Folder of already-scraped permit Excel/CSV files (joined by vehicle number).
+PERMIT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/Permit Input"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_enriched.xlsx"
+PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
 # plazas.plaza_identifier — required when UPDATE_DB is True
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 6
 # Last step: write monthly Loss totals into audit_exception_metrics
 UPDATE_DB = False
 DB_DRY_RUN = False
+# Always use single-journey plaza rates (ignore journey type for Loss).
+RATE_JOURNEY_KEY = "single"
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -285,6 +297,120 @@ def resolve_vrn_input_folder() -> Path:
     return folder
 
 
+def build_excluded_class_keys(config: dict) -> set[str]:
+    """
+    Classes removed from ETC before rating:
+    - all aliases under etc_merge.etc_class_remove_indexes (default index 1 = Car/Jeep)
+    - entire tc_class_skip_list
+    """
+    excluded: set[str] = set()
+    index_map = config.get("tc_class_index_map") or {}
+    etc_cfg = config.get("etc_merge") or {}
+    remove_indexes = etc_cfg.get("etc_class_remove_indexes")
+    if remove_indexes is None:
+        remove_indexes = ["1"]
+    for idx in remove_indexes:
+        for name in index_map.get(str(idx), []) or []:
+            key = normalize_value_key(name)
+            if key:
+                excluded.add(key)
+    for name in config.get("tc_class_skip_list") or []:
+        key = normalize_value_key(name)
+        if key:
+            excluded.add(key)
+    return excluded
+
+
+def class_matches_excluded(class_key: str, excluded: set[str]) -> bool:
+    if not class_key:
+        return False
+    if class_key in excluded:
+        return True
+    # Allow "three wheeler" to match "three wheeler freight", etc.
+    for ex in excluded:
+        if len(ex) < 3:
+            continue
+        if class_key == ex or class_key.startswith(ex + " ") or f" {ex} " in f" {class_key} ":
+            return True
+    return False
+
+
+def filter_etc_by_vehicle_class(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Remove Car/Jeep (index 1) and tc_class_skip_list rows using ETC Vehicle Class."""
+    columns_cfg = config.get("columns") or {}
+    class_col = resolve_column(
+        df,
+        str(columns_cfg.get("etc_vehicle_class") or "vehicle_class"),
+        list(columns_cfg.get("etc_vehicle_class_aliases") or [])
+        + ["vehicle_class", "Vehicle Class"],
+    )
+    if not class_col:
+        raise RuntimeError(
+            "ETC class filter requires Vehicle Class after merge. "
+            "Add vehicle_class under etc_merge.merge_columns. "
+            f"Available: {list(df.columns)}"
+        )
+
+    excluded = build_excluded_class_keys(config)
+    before = len(df)
+    keys = df[class_col].map(normalize_value_key)
+    drop_mask = keys.map(lambda k: class_matches_excluded(k, excluded))
+    filtered = df.loc[~drop_mask].reset_index(drop=True)
+    print(
+        f"ETC class filter on {class_col!r}: removed {int(drop_mask.sum()):,} "
+        f"Car/Jeep + skip-list rows; kept {len(filtered):,}/{before:,}"
+    )
+    if filtered.empty:
+        raise RuntimeError("ETC class filter removed every row.")
+    return filtered
+
+
+def filter_etc_by_reason(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Keep only ETC rows whose Reason is in etc_merge.reason_keep_values
+    (default: Discount Local Price).
+    """
+    etc_cfg = config.get("etc_merge") or {}
+    keep_values = etc_cfg.get("reason_keep_values")
+    if keep_values is None:
+        keep_values = ["Discount Local Price"]
+    keep_set = {
+        str(v).strip().casefold()
+        for v in keep_values
+        if str(v).strip()
+    }
+    if not keep_set:
+        print("ETC Reason filter: reason_keep_values empty — keeping all rows.")
+        return df
+
+    reason_col = None
+    for candidate in ("reason", "Reason", "REASON"):
+        if candidate in df.columns:
+            reason_col = candidate
+            break
+    if reason_col is None:
+        raise RuntimeError(
+            "ETC Reason filter requires a 'reason' / 'Reason' column after merge. "
+            "Add it under etc_merge.merge_columns in e6_config.json. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    before = len(df)
+    mask = df[reason_col].astype(str).str.strip().str.casefold().isin(keep_set)
+    filtered = df.loc[mask].reset_index(drop=True)
+    print(
+        f"ETC Reason filter ({reason_col!r} in "
+        f"{sorted({str(v).strip() for v in keep_values if str(v).strip()})}): "
+        f"kept {len(filtered):,}/{before:,} rows"
+    )
+    if filtered.empty:
+        raise RuntimeError(
+            "ETC Reason filter removed every row. "
+            f"Check Reason values vs reason_keep_values={list(keep_values)!r}."
+        )
+    return filtered
+
+
 def load_etc_from_folder(entity_name: str, config: dict) -> pd.DataFrame:
     """Merge local ETC Excel/CSV from ETC_INPUT_FOLDER (no DB download)."""
     folder = resolve_etc_input_folder()
@@ -305,6 +431,11 @@ def load_etc_from_folder(entity_name: str, config: dict) -> pd.DataFrame:
     df = pd.read_csv(merged_path, dtype=str, keep_default_na=False)
     print(f"ETC merge columns: {list((etc_cfg.get('merge_columns') or {}).keys())}")
     print(f"Merged ETC rows: {len(df)} | columns: {list(df.columns)}")
+    df = filter_etc_by_vehicle_class(df, config)
+    df = filter_etc_by_reason(df, config)
+    # Persist filtered merge so downstream checks match the pipeline input.
+    df.to_csv(merged_path, index=False, encoding="utf-8-sig")
+    print(f"Wrote filtered ETC merge: {merged_path}")
     return df
 
 
@@ -575,19 +706,271 @@ def normalize_journey_types(etc_df: pd.DataFrame, config: dict) -> pd.DataFrame:
     return result
 
 
+def resolve_permit_paths() -> list[Path]:
+    """Return all permit Excel/CSV files from PERMIT_FOLDER."""
+    raw = str(PERMIT_FOLDER or "").strip()
+    if not raw:
+        raise RuntimeError(
+            "Set PERMIT_FOLDER at the top of E6_main.py to a folder of "
+            "permit Excel/CSV files. Scraping is not used."
+        )
+    path = Path(raw)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    if path.is_file():
+        raise RuntimeError(
+            f"PERMIT_FOLDER must be a folder, not a file: {path}\n"
+            "Put the permit file(s) in a folder and point PERMIT_FOLDER at it."
+        )
+    if not path.is_dir():
+        raise FileNotFoundError(f"Permit folder not found: {path}")
+
+    files = sorted(
+        p
+        for p in path.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in PERMIT_FILE_EXTENSIONS
+        and not p.name.startswith("~$")
+    )
+    if not files:
+        raise FileNotFoundError(
+            f"No permit Excel/CSV files found in folder: {path}"
+        )
+    print(f"Permit folder: {path} ({len(files)} file(s))")
+    return files
+
+
+def load_permit_file(path: Path, config: dict) -> pd.DataFrame:
+    """Read one permit file. Falls back to header-row detection."""
+    columns_cfg = config.get("columns") or {}
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    else:
+        df = pd.read_excel(path, sheet_name=0, dtype=str)
+    df.columns = [_normalize_header_cell(column) for column in df.columns]
+    try:
+        resolve_vehicle_column(df, columns_cfg)
+        return df
+    except KeyError:
+        pass
+
+    keywords = list(config.get("header_keywords") or [])
+    keywords.extend(columns_cfg.get("etc_vehicle_aliases") or [])
+    keywords.append(str(columns_cfg.get("permit_type") or PERMIT_FIELDS[0]))
+    keywords.append(str(columns_cfg.get("permit_no") or PERMIT_FIELDS[1]))
+    df_raw = read_etc_raw(path)
+    header_idx = detect_header_row(
+        df_raw,
+        keywords,
+        scan_rows=int(config.get("header_scan_rows") or 25),
+        min_matches=int(config.get("min_header_matches") or 2),
+    )
+    _headers, body = dataframe_from_header(df_raw, header_idx)
+    print(
+        f"Permit header at row {header_idx + 1} in {path.name} "
+        f"({len(body):,} data rows)"
+    )
+    return body
+
+
+def load_permit_frames(config: dict) -> pd.DataFrame:
+    paths = resolve_permit_paths()
+    frames: list[pd.DataFrame] = []
+    for path in paths:
+        frame = load_permit_file(path, config)
+        print(f"Permit file: {path} ({len(frame):,} rows)")
+        frames.append(frame)
+    if len(frames) == 1:
+        return frames[0]
+    combined = pd.concat(frames, ignore_index=True)
+    print(f"Combined permit rows from {len(paths)} file(s): {len(combined):,}")
+    return combined
+
+
+def merge_permit_into_etc(
+    etc_df: pd.DataFrame,
+    scraped_df: pd.DataFrame,
+    vehicle_col: str,
+    columns_cfg: dict,
+) -> pd.DataFrame:
+    """Left-join permit fields onto ETC by normalized VRN (all ETC rows kept)."""
+    permit_type = columns_cfg.get("permit_type") or PERMIT_FIELDS[0]
+    permit_no = columns_cfg.get("permit_no") or PERMIT_FIELDS[1]
+    permit_validity = columns_cfg.get("permit_validity") or PERMIT_FIELDS[2]
+    permit_cols = [permit_type, permit_no, permit_validity]
+
+    out = etc_df.copy()
+    out["_join_key"] = out[vehicle_col].map(normalize_vehicle_number)
+
+    if scraped_df is None or scraped_df.empty:
+        for col in permit_cols:
+            if col not in out.columns:
+                out[col] = ""
+        return out.drop(columns=["_join_key"])
+
+    right = scraped_df.copy()
+    right.columns = [_normalize_header_cell(column) for column in right.columns]
+    try:
+        scrape_veh = resolve_vehicle_column(right, columns_cfg)
+    except KeyError:
+        scrape_veh = None
+        for col in right.columns:
+            key = str(col).casefold()
+            if "veh" in key and ("reg" in key or "no" in key or "number" in key):
+                scrape_veh = col
+                break
+    if scrape_veh is None:
+        raise KeyError(
+            "Permit file is missing a vehicle column. "
+            f"Available: {list(right.columns)}"
+        )
+
+    rename_map = {}
+    for src, dst in zip(PERMIT_FIELDS, permit_cols):
+        if src in right.columns:
+            rename_map[src] = dst
+        elif dst in right.columns:
+            rename_map[dst] = dst
+    right = right.rename(columns=rename_map)
+    for col in permit_cols:
+        if col not in right.columns:
+            right[col] = ""
+
+    right["_join_key"] = right[scrape_veh].map(normalize_vehicle_number)
+    right = (
+        right[right["_join_key"].ne("")]
+        .drop_duplicates(subset=["_join_key"], keep="first")[
+            ["_join_key", *permit_cols]
+        ]
+    )
+
+    drop_existing = [c for c in permit_cols if c in out.columns]
+    if drop_existing:
+        out = out.drop(columns=drop_existing)
+
+    merged = out.merge(right, on="_join_key", how="left").drop(columns=["_join_key"])
+    for col in permit_cols:
+        merged[col] = merged[col].fillna("")
+    return merged
+
+
+def save_fetched_permit(
+    enriched: pd.DataFrame,
+    vehicle_col: str,
+    columns_cfg: dict,
+) -> Path | None:
+    """Write one row per vehicle with the permit columns that were joined."""
+    permit_cols = [
+        columns_cfg.get("permit_type") or PERMIT_FIELDS[0],
+        columns_cfg.get("permit_no") or PERMIT_FIELDS[1],
+        columns_cfg.get("permit_validity") or PERMIT_FIELDS[2],
+    ]
+    missing = [col for col in [vehicle_col, *permit_cols] if col not in enriched.columns]
+    if missing:
+        print(f"Permit Excel not written — missing columns: {missing}")
+        return None
+
+    work = enriched[[vehicle_col, *permit_cols]].copy()
+    work["_key"] = work[vehicle_col].map(normalize_vehicle_number)
+    work = (
+        work.loc[work["_key"].ne("")]
+        .drop_duplicates(subset=["_key"], keep="first")
+        .drop(columns=["_key"])
+        .reset_index(drop=True)
+    )
+    if work.empty:
+        print("Permit Excel not written — no vehicle rows.")
+        return None
+
+    path = save_etc(work, Path(PERMIT_OUTPUT_FILE))
+    print(f"Wrote permit data: {path} ({len(work):,} vehicle(s))")
+    return path
+
+
+def attach_permit_data(
+    etc_df: pd.DataFrame,
+    vehicle_col: str,
+    columns_cfg: dict,
+    config: dict,
+) -> pd.DataFrame:
+    """Join permits from all files in PERMIT_FOLDER onto ETC by vehicle number."""
+    scraped = load_permit_frames(config)
+    enriched = merge_permit_into_etc(etc_df, scraped, vehicle_col, columns_cfg)
+    matched = 0
+    permit_type = columns_cfg.get("permit_type") or PERMIT_FIELDS[0]
+    if permit_type in enriched.columns:
+        matched = int(
+            enriched[permit_type].fillna("").astype(str).str.strip().ne("").sum()
+        )
+    print(
+        f"Permit fields applied to full ETC: {len(enriched):,} rows retained "
+        f"({matched:,} with permit data)."
+    )
+    save_fetched_permit(enriched, vehicle_col, columns_cfg)
+    return enriched
+
+
+def filter_etc_by_permit_type(
+    df: pd.DataFrame,
+    columns_cfg: dict,
+    config: dict | None = None,
+) -> pd.DataFrame:
+    """Keep only rows whose Permit Type is in permit_type_keep_values."""
+    columns_cfg = columns_cfg or {}
+    config = config or {}
+    permit_col = resolve_column(
+        df,
+        str(columns_cfg.get("permit_type") or PERMIT_FIELDS[0]),
+        [PERMIT_FIELDS[0], "Permit Type", "permit_type"],
+    )
+    if not permit_col:
+        raise RuntimeError(
+            "Permit Type filter requires a Permit Type column after permit join. "
+            f"Available: {list(df.columns)}"
+        )
+
+    keep_values = columns_cfg.get("permit_type_keep_values")
+    if keep_values is None:
+        keep_values = (config.get("columns") or {}).get("permit_type_keep_values")
+    if keep_values is None:
+        keep_values = ["NATIONAL PERMIT"]
+    keep_set = {
+        str(v).strip().casefold()
+        for v in keep_values
+        if str(v).strip()
+    }
+    if not keep_set:
+        print("Permit Type filter: keep_values empty — keeping all rows.")
+        return df
+
+    before = len(df)
+    mask = df[permit_col].astype(str).str.strip().str.casefold().isin(keep_set)
+    filtered = df.loc[mask].reset_index(drop=True)
+    print(
+        f"Permit Type filter ({permit_col!r} in "
+        f"{sorted({str(v).strip() for v in keep_values if str(v).strip()})}): "
+        f"kept {len(filtered):,}/{before:,} rows"
+    )
+    if filtered.empty:
+        raise RuntimeError(
+            "Permit Type filter removed every row. "
+            f"Check Permit Type values vs {list(keep_values)!r}."
+        )
+    return filtered
+
+
 def apply_rates_and_loss(
     etc_df: pd.DataFrame,
     config: dict,
     entity_name: str,
 ) -> pd.DataFrame:
+    """
+    Applicable Rate = always single-journey rate for TC Class index.
+    Journey Type is ignored for rating.
+    """
     columns_cfg = config.get("columns") or {}
 
-    journey_col = resolve_column(
-        etc_df,
-        str(columns_cfg.get("journey_type_normalized_output") or "Journey Type"),
-        list(columns_cfg.get("journey_type_aliases") or [])
-        + [str(columns_cfg.get("journey_type") or "Journey Type")],
-    )
     tc_col = resolve_column(
         etc_df,
         str(columns_cfg.get("tc_class_output") or columns_cfg.get("tc_class") or ""),
@@ -605,8 +988,6 @@ def apply_rates_and_loss(
     )
 
     missing = []
-    if not journey_col:
-        missing.append("Journey Type")
     if not tc_col:
         missing.append("TC Class")
     if not settle_col:
@@ -627,8 +1008,8 @@ def apply_rates_and_loss(
 
     cutover = parse_rate_cutover_date(config)
     tc_lookup = build_tc_class_index_lookup(config.get("tc_class_index_map") or {})
-    skip_set = build_tc_class_skip_set(config.get("tc_class_skip_list") or [])
-    journey_lookup = build_name_to_category_lookup(config.get("journey_type_map") or {})
+    excluded = build_excluded_class_keys(config)
+    journey_cat = str(RATE_JOURNEY_KEY or "single").strip().lower() or "single"
 
     tag_parsed = pd.to_datetime(etc_df[tag_col], errors="coerce")
     settlements = [_to_float_or_none(v) for v in etc_df[settle_col].tolist()]
@@ -638,26 +1019,19 @@ def apply_rates_and_loss(
     rated = 0
     skipped = 0
 
-    for journey_raw, tc_raw, settle, tag_ts in zip(
-        etc_df[journey_col].tolist(),
+    for tc_raw, settle, tag_ts in zip(
         etc_df[tc_col].tolist(),
         settlements,
         tag_parsed.tolist(),
     ):
-        journey_key = normalize_value_key(journey_raw)
-        # Already normalized to single/return/local, but accept aliases too
-        journey_cat = journey_lookup.get(journey_key) if journey_key else None
-        if journey_key and journey_cat is None and journey_key in {"single", "return", "local"}:
-            journey_cat = journey_key
-
         tc_key = normalize_value_key(tc_raw)
-        if tc_key and tc_key in skip_set:
+        if class_matches_excluded(tc_key, excluded):
             rates.append(None)
             losses.append(None)
             skipped += 1
             continue
 
-        if not journey_cat or not tc_key or tag_ts is None or pd.isna(tag_ts):
+        if not tc_key or tag_ts is None or pd.isna(tag_ts):
             rates.append(None)
             losses.append(None)
             continue
@@ -686,7 +1060,7 @@ def apply_rates_and_loss(
     )
     print(
         f"Applicable Rate / Loss for entity {entity_name!r} "
-        f"(cutover {cutover.isoformat()}): "
+        f"(always journey={journey_cat!r}, cutover {cutover.isoformat()}): "
         f"{rated}/{len(result)} rated"
         + (f", skipped TC={skipped}" if skipped else "")
         + f", Loss ≠ 0: {nonzero_loss}"
@@ -705,9 +1079,10 @@ def save_etc(df: pd.DataFrame, path: Path) -> Path:
 
 def main() -> int:
     print("=" * 60)
-    print("E6 — local ETC + local VRN + rates/Loss")
+    print("E6 — local ETC + permit + VRN + single rates/Loss")
     print(f"ETC_INPUT_FOLDER = {ETC_INPUT_FOLDER!r}")
     print(f"VRN_INPUT_FOLDER = {VRN_INPUT_FOLDER!r}")
+    print(f"PERMIT_FOLDER = {PERMIT_FOLDER!r}")
     print("=" * 60)
 
     config = load_config()
@@ -722,9 +1097,14 @@ def main() -> int:
     print(f"Vehicle column: {vehicle_col}")
 
     print("-" * 60)
+    print("Joining permit data from PERMIT_FOLDER…")
+    enriched = attach_permit_data(etc_df, vehicle_col, columns_cfg, config)
+    enriched = filter_etc_by_permit_type(enriched, columns_cfg, config)
+
+    print("-" * 60)
     print("Loading / merging local VRN and attaching TC Class…")
     enriched = enrich_etc_with_vrn_tc_class(
-        etc_df,
+        enriched,
         vehicle_col,
         columns_cfg,
         entity_name,
@@ -732,7 +1112,7 @@ def main() -> int:
     )
 
     print("-" * 60)
-    enriched = normalize_journey_types(enriched, config)
+    print(f"Applying {RATE_JOURNEY_KEY!r} rates (journey type ignored)…")
     enriched = apply_rates_and_loss(enriched, config, entity_name)
 
     out_path = save_etc(enriched, Path(ETC_OUTPUT_FILE))

@@ -11,20 +11,23 @@ E5 — Invalid lookup query (IHMCL class check for 2-axle and above).
 5) Add column Matched = "yes" when indexes match (all rows kept)
 6) On both sheets: map NPCI Class Desc and Correct Vehicle Class to rate
    indexes, Exception Value = Correct single rate - NPCI single rate
-7) Optionally upsert audit_exception_metrics (exception id 5):
+7) Optionally upsert audit_exception_metrics (exception id 5) for all months:
      - Upto Lcv: all rows, Impact by Reader Read Time month
      - 2-axel and above: Matched=yes only, same aggregation
      - Update existing month when new count OR amount is greater
+8) Optional S3 upload of the workbook when UPLOAD_OUTPUT_TO_S3=True:
+     - Before upload, drop 2-axel rows where Matched is empty or No
+     - S3 file name includes exception code, plaza, month-year label
 
 Different from E5_main.py:
   - Splits by Charged Vehicle Class first
   - Only scrapes the 2-axle+ sheet
   - Matches by class index (Correct vs IHMCL mapper)
-  - Marks Matched instead of dropping non-matches
+  - Marks Matched instead of dropping non-matches (local Excel keeps all)
 
 Run:
   1. Set INPUT_FILE, ENTITY_NAME, PLAZA_IDENTIFIER below
-  2. python Invalid_lookup_query.py
+  2. python Main_E5.py
 
 DB update only (existing workbook):
   python invalid_lookup_db_update.py
@@ -42,6 +45,13 @@ from pathlib import Path
 import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 CONFIG_JSON = BASE_DIR / "e5_config.json"
 OUTPUT_DIR = BASE_DIR / "output"
 
@@ -58,12 +68,16 @@ ENTITY_NAME = "bassi"  # plaza_rates key for single-journey rates
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 5
 UPDATE_DB = True  # False = write Excel only, skip audit_exception_metrics
+DB_DRY_RUN = False
+# Upload filtered invalid_lookup workbook to S3 + audit_exception_output_files row.
+UPLOAD_OUTPUT_TO_S3 = False
 # True  = IHMCL_bot_selenium.py (Selenium Chrome)
 # False = IHMCL_bot.py (legacy non-selenium path)
 USE_SELENIUM = True
 # Used only when USE_SELENIUM=True. True = Selenium Grid; False = local Chrome.
 USE_SELENIUM_GRID = True
 SKIP_SCRAPE = False  # True = split sheets only, no IHMCL
+MATCHED_YES = {"yes", "y", "true", "1"}
 
 CHARGED_CLASS_COLUMN = "Charged Vehicle Class"
 CORRECT_CLASS_COLUMN = "Correct Vehicle Class"
@@ -547,14 +561,52 @@ def save_workbook(
     upto_df: pd.DataFrame,
     above_df: pd.DataFrame,
     output_dir: Path = OUTPUT_DIR,
+    *,
+    file_name: str | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = output_dir / f"invalid_lookup_{stamp}.xlsx"
+    path = output_dir / (file_name or f"invalid_lookup_{stamp}.xlsx")
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         upto_df.to_excel(writer, sheet_name=SHEET_UPTO_LCV, index=False)
         above_df.to_excel(writer, sheet_name=SHEET_TWO_AXLE, index=False)
     return path
+
+
+def filter_two_axle_for_upload(above_df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only Matched=yes on 2-axel sheet (drop empty / No / other)."""
+    if above_df is None or above_df.empty:
+        return pd.DataFrame() if above_df is None else above_df.copy()
+    work = above_df.copy()
+    if "Matched" not in work.columns:
+        print(
+            f"WARNING: no Matched column on {SHEET_TWO_AXLE!r} — "
+            "upload sheet will be empty."
+        )
+        return work.iloc[0:0].copy()
+    matched = work["Matched"].astype(str).str.strip().str.casefold()
+    # Treat literal "nan" / "none" / "nat" from empty cells as unmatched.
+    emptyish = matched.isin({"", "nan", "none", "nat", "null", "na"})
+    keep = matched.isin(MATCHED_YES) & ~emptyish
+    filtered = work.loc[keep].reset_index(drop=True)
+    print(
+        f"S3 prep {SHEET_TWO_AXLE}: kept {len(filtered):,}/{len(work):,} "
+        "rows with Matched=yes (removed empty/No)."
+    )
+    return filtered
+
+
+def resolve_plaza_id(config: dict) -> str:
+    plaza_id = str(PLAZA_IDENTIFIER or "").strip()
+    if not plaza_id:
+        plaza_id = str((config.get("plaza_identifier") or "")).strip()
+    if not plaza_id:
+        raise RuntimeError(
+            "PLAZA_IDENTIFIER is required for DB/S3. "
+            "Set it at the top of Main_E5.py "
+            "(or plaza_identifier in e5_config.json)."
+        )
+    return plaza_id
 
 
 def main() -> int:
@@ -662,22 +714,26 @@ def main() -> int:
         print(f"  Matched=yes: {int((above_df['Matched'] == 'yes').sum()):,}")
     print("=" * 60)
 
-    if UPDATE_DB:
-        plaza_id = str(PLAZA_IDENTIFIER or "").strip()
-        if not plaza_id:
-            plaza_id = str((config.get("plaza_identifier") or "")).strip()
-        if not plaza_id:
-            raise RuntimeError(
-                "PLAZA_IDENTIFIER is required when UPDATE_DB=True. "
-                "Set it at the top of Invalid_lookup_query.py "
-                "(or plaza_identifier in e5_config.json)."
-            )
-        from invalid_lookup_db_update import update_db_from_invalid_lookup_file
+    from invalid_lookup_db_update import (
+        aggregate_invalid_lookup_workbook,
+        upsert_invalid_lookup_monthly,
+    )
 
-        dry_run = bool(config.get("db_dry_run", False))
-        print("Updating audit_exception_metrics (exception_type_id=5)…")
-        update_db_from_invalid_lookup_file(
-            out_path,
+    # Monthly totals used for metrics DB (all months) and S3 month-year label.
+    monthly = aggregate_invalid_lookup_workbook(
+        {SHEET_UPTO_LCV: upto_df, SHEET_TWO_AXLE: above_df}
+    )
+    dry_run = bool(DB_DRY_RUN) or bool(config.get("db_dry_run", False))
+
+    if UPDATE_DB:
+        plaza_id = resolve_plaza_id(config)
+        print("-" * 60)
+        print(
+            f"Updating audit_exception_metrics (exception_type_id=5) "
+            f"for {len(monthly)} month(s)…"
+        )
+        upsert_invalid_lookup_monthly(
+            monthly,
             plaza_id,
             exception_type_id=int(EXCEPTION_TYPE_ID),
             dry_run=dry_run,
@@ -685,6 +741,37 @@ def main() -> int:
     else:
         print("UPDATE_DB=False — audit_exception_metrics not updated.")
 
+    if not UPLOAD_OUTPUT_TO_S3:
+        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
+        return 0
+
+    plaza_id = resolve_plaza_id(config)
+    if not monthly:
+        raise RuntimeError(
+            "No months with Impact data — cannot build S3 month_label. "
+            "Check Reader Read Time / Impact on the output sheets."
+        )
+    month_periods = [(int(row["year"]), int(row["month"])) for row in monthly]
+    label = month_label_from_periods(month_periods)
+
+    filtered_above = filter_two_axle_for_upload(above_df)
+    upload_path = save_workbook(
+        upto_df,
+        filtered_above,
+        file_name=f"invalid_lookup_s3_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+    )
+    print("-" * 60)
+    print(
+        f"Uploading {upload_path.name} to S3 "
+        f"(month_label={label!r}, months={len(month_periods)})…"
+    )
+    upload_exception_output(
+        upload_path,
+        plaza_id,
+        exception_type_id=int(EXCEPTION_TYPE_ID),
+        month_label=label,
+        dry_run=dry_run,
+    )
     return 0
 
 

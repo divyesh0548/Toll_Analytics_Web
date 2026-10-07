@@ -257,12 +257,14 @@ def update_db_from_invalid_lookup_sheets(
     return _upsert(rows, plaza_identifier, exception_type_id, dry_run)
 
 
-def _upsert(
+def upsert_invalid_lookup_monthly(
     rows: list[dict],
     plaza_identifier: str,
-    exception_type_id: int,
-    dry_run: bool,
+    *,
+    exception_type_id: int = EXCEPTION_TYPE_ID,
+    dry_run: bool = False,
 ) -> dict[str, int]:
+    """Upsert pre-aggregated monthly Impact rows into audit_exception_metrics."""
     load_env()
     print(f"Plaza: {plaza_identifier}")
     print(f"exception_type_id: {exception_type_id}")
@@ -292,6 +294,20 @@ def _upsert(
         + (" (dry run)" if dry_run else "")
     )
     return stats
+
+
+def _upsert(
+    rows: list[dict],
+    plaza_identifier: str,
+    exception_type_id: int,
+    dry_run: bool,
+) -> dict[str, int]:
+    return upsert_invalid_lookup_monthly(
+        rows,
+        plaza_identifier,
+        exception_type_id=exception_type_id,
+        dry_run=dry_run,
+    )
 
 
 def main() -> int:
