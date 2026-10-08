@@ -3,8 +3,14 @@
   "vehicle_class_value": "VC4",
   "start_effective_date": "Start Effective Date",
   "end_effective_date": "End Effective Date",
+  "issuance_date": "Issuance Date",
   "issuance_fees": "Issuance Fees (Rs.)",
+  "payment_mode": "Payment Mode",
+  "payment_mode_exclude": "IHMCL_Exemption",
   "months": "Months",
+  "monthly_rate_column": "Monthly Rate",
   "loss": "Loss",
-  "monthly_rate": 360
+  "monthly_rate_before_apr_2026": 350,
+  "monthly_rate_from_apr_2026": 360,
+  "rate_cutover_date": "2026-04-01"
 }

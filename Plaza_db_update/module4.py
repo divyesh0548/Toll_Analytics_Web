@@ -75,7 +75,7 @@ from excel_common import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 ENTITY_NAME = "aroli"  # submissions.entity_name (usually same as plaza folder name)
-FROM_DATE = "2025-11-20"  # inclusive YYYY-MM-DD
+FROM_DATE = "2026-04-15"  # inclusive YYYY-MM-DD
 TO_DATE = "2026-08-31"  # inclusive YYYY-MM-DD
 
 DOWNLOAD_FOLDER = ROOT_DIR / "etc_downloads"
@@ -190,7 +190,7 @@ def fetch_etc_records(
     entity_name: str,
     start: date,
     end: date,
-) -> list[dict]:
+    ) -> list[dict]:
     query = sql.SQL(
         """
         SELECT id, entity_name, date, shift, etc_file_url

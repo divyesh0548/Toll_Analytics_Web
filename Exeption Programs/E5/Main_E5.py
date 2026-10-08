@@ -70,7 +70,7 @@ EXCEPTION_TYPE_ID = 5
 UPDATE_DB = True  # False = write Excel only, skip audit_exception_metrics
 DB_DRY_RUN = False
 # Upload filtered invalid_lookup workbook to S3 + audit_exception_output_files row.
-UPLOAD_OUTPUT_TO_S3 = False
+UPLOAD_OUTPUT_TO_S3 = True
 # True  = IHMCL_bot_selenium.py (Selenium Chrome)
 # False = IHMCL_bot.py (legacy non-selenium path)
 USE_SELENIUM = True
@@ -181,7 +181,7 @@ def add_exception_values(
     entity_name: str,
     cutover: date,
     sheet_label: str,
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     """
     NPCI_class_index / Correct_class_index from tc_class_index_map.
     Exception Value = Correct single rate − NPCI single rate.
@@ -291,7 +291,7 @@ def split_by_charged_class(
     df: pd.DataFrame,
     charged_col: str,
     upto_classes: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
     allowed = {normalize_key(v) for v in upto_classes if normalize_key(v)}
     keys = df[charged_col].map(normalize_key)
     upto = df.loc[keys.isin(allowed)].copy().reset_index(drop=True)

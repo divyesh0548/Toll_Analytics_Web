@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, time
 from pathlib import Path
@@ -805,13 +806,15 @@ def is_unreadable_workbook_error(exc: Exception) -> bool:
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, zipfile.BadZipFile):
+        # Bad zip / broken OOXML XML (e.g. "duplicate attribute" in sheet XML).
+        if isinstance(current, (zipfile.BadZipFile, ET.ParseError)):
             return True
         message = str(current).lower()
         needles = (
             "could not read stylesheet",
             "unable to read workbook",
             "invalid xml",
+            "duplicate attribute",
             "not a zip file",
             "bad zip file",
             "bad magic number",
@@ -822,6 +825,8 @@ def is_unreadable_workbook_error(exc: Exception) -> bool:
             "content_types",
             "does not support file format",
             "excel file format cannot be determined",
+            "xml.etree",
+            "parseerror",
         )
         if any(needle in message for needle in needles):
             return True

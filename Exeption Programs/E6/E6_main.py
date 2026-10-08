@@ -9,6 +9,7 @@ E6 — Local ETC + permit folder + local VRN → single rates/Loss → DB.
 6) Merge VRN from VRN_INPUT_FOLDER; attach TC Class
 7) Applicable Rate = always single-journey rate for TC Class index; Loss = Rate − settlement
 8) Optionally upsert audit_exception_metrics (exception id 6)
+9) Optionally upload etc_enriched.xlsx to S3 (month-year from read_datetime)
 
 Run:
   1. Set ENTITY_NAME, ETC_INPUT_FOLDER, VRN_INPUT_FOLDER, PERMIT_FOLDER
@@ -37,6 +38,13 @@ ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 OUTPUT_DIR = BASE_DIR / "output"
 
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 PERMIT_FIELDS = ["Permit Type", "Permit/Authorization No", "Permit Validity"]
 PERMIT_FILE_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
 
@@ -45,7 +53,7 @@ if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
-# --- Runtime inputs (edit these; not in config) ---
+# --- Runtime inputs / flags (edit these; not in config) ---
 ENTITY_NAME = "mokha"
 # Local ETC Excel/CSV folder for the period. Required — ETC is not downloaded.
 ETC_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/etc_input"
@@ -55,12 +63,16 @@ VRN_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/vr
 PERMIT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/Permit Input"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_enriched.xlsx"
 PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
-# plazas.plaza_identifier — required when UPDATE_DB is True
-PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
+# plazas.plaza_identifier — required for metrics DB and S3 upload
+PLAZA_IDENTIFIER = ""
 EXCEPTION_TYPE_ID = 6
-# Last step: write monthly Loss totals into audit_exception_metrics
+# Date column on etc_enriched.xlsx used for S3 month/year label.
+READ_DATETIME_COLUMN = "read_datetime"
+# Write monthly Loss totals into audit_exception_metrics
 UPDATE_DB = False
 DB_DRY_RUN = False
+# Upload etc_enriched.xlsx to S3 + audit_exception_output_files row.
+UPLOAD_OUTPUT_TO_S3 = True
 # Always use single-journey plaza rates (ignore journey type for Loss).
 RATE_JOURNEY_KEY = "single"
 
@@ -237,7 +249,9 @@ def resolve_plaza_identifier() -> str:
         return value
     value = input("Enter plaza_identifier (plazas.plaza_identifier): ").strip()
     if not value:
-        raise RuntimeError("PLAZA_IDENTIFIER is required when UPDATE_DB is True.")
+        raise RuntimeError(
+            "PLAZA_IDENTIFIER is required for metrics DB and/or S3 upload."
+        )
     return value
 
 
@@ -1077,12 +1091,77 @@ def save_etc(df: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?"
+)
+
+
+def _parse_output_datetime(value) -> pd.Timestamp | None:
+    """Parse read_datetime from output (ISO year-first or DD-MM-YYYY)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip().lstrip("\t")
+    if not text or text.casefold() in {"nan", "none", "nat", ""}:
+        return None
+    if _ISO_DATETIME_RE.match(text):
+        ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
+    else:
+        ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return pd.Timestamp(ts)
+
+
+def month_periods_from_read_datetime(
+    output_path: Path,
+    column: str = READ_DATETIME_COLUMN,
+) -> list[tuple[int, int]]:
+    """
+    Unique (year, month) pairs from read_datetime on etc_enriched.xlsx.
+    Used for the S3 month_label.
+    """
+    path = Path(output_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Output file not found: {path}")
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xls", ".xlsm"}:
+        frame = pd.read_excel(path, dtype=str)
+    else:
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    if column not in frame.columns:
+        raise RuntimeError(
+            f"{path.name} is missing {column!r} for S3 month label. "
+            f"Available: {list(frame.columns)}"
+        )
+    periods: set[tuple[int, int]] = set()
+    skipped = 0
+    for raw in frame[column].tolist():
+        ts = _parse_output_datetime(raw)
+        if ts is None:
+            skipped += 1
+            continue
+        periods.add((int(ts.year), int(ts.month)))
+    print(
+        f"S3 months from {column!r}: {len(periods)} unique "
+        f"(skipped unreadable: {skipped})"
+    )
+    if not periods:
+        raise RuntimeError(
+            f"No parseable {column!r} values in {path.name} — "
+            "cannot build S3 month_label."
+        )
+    return sorted(periods)
+
+
 def main() -> int:
     print("=" * 60)
     print("E6 — local ETC + permit + VRN + single rates/Loss")
     print(f"ETC_INPUT_FOLDER = {ETC_INPUT_FOLDER!r}")
     print(f"VRN_INPUT_FOLDER = {VRN_INPUT_FOLDER!r}")
     print(f"PERMIT_FOLDER = {PERMIT_FOLDER!r}")
+    print(f"UPDATE_DB = {UPDATE_DB}")
+    print(f"DB_DRY_RUN = {DB_DRY_RUN}")
+    print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
     print("=" * 60)
 
     config = load_config()
@@ -1119,27 +1198,50 @@ def main() -> int:
     print(f"Wrote enriched ETC: {out_path}")
     print(f"Rows: {len(enriched)} | Columns: {list(enriched.columns)}")
 
-    if not UPDATE_DB:
+    plaza_identifier = ""
+    if UPDATE_DB or UPLOAD_OUTPUT_TO_S3:
+        plaza_identifier = resolve_plaza_identifier()
+
+    dry_run = bool(DB_DRY_RUN)
+
+    if UPDATE_DB:
+        print("-" * 60)
+        print("Updating audit_exception_metrics (exception_type_id=6)…")
+        update_db_from_dataframe(
+            enriched,
+            plaza_identifier,
+            exception_type_id=int(EXCEPTION_TYPE_ID),
+            dry_run=dry_run,
+            tag_date_aliases=(
+                [str(columns_cfg.get("tag_read_datetime") or "")]
+                + list(columns_cfg.get("tag_read_datetime_aliases") or [])
+            ),
+            loss_aliases=[
+                str(columns_cfg.get("loss_output") or "Loss"),
+                "Loss",
+            ],
+        )
+    else:
         print("UPDATE_DB=False — audit_exception_metrics not updated.")
+
+    if not UPLOAD_OUTPUT_TO_S3:
+        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
         return 0
 
-    plaza_identifier = resolve_plaza_identifier()
     print("-" * 60)
-    print("Updating audit_exception_metrics (exception_type_id=6)…")
-    columns_cfg = config.get("columns") or {}
-    update_db_from_dataframe(
-        enriched,
+    print(f"Reading {READ_DATETIME_COLUMN!r} from output for S3 month label…")
+    month_periods = month_periods_from_read_datetime(out_path)
+    label = month_label_from_periods(month_periods)
+    print(
+        f"Uploading {Path(out_path).name} to S3 "
+        f"(month_label={label!r}, months={len(month_periods)})…"
+    )
+    upload_exception_output(
+        out_path,
         plaza_identifier,
         exception_type_id=int(EXCEPTION_TYPE_ID),
-        dry_run=bool(DB_DRY_RUN),
-        tag_date_aliases=(
-            [str(columns_cfg.get("tag_read_datetime") or "")]
-            + list(columns_cfg.get("tag_read_datetime_aliases") or [])
-        ),
-        loss_aliases=[
-            str(columns_cfg.get("loss_output") or "Loss"),
-            "Loss",
-        ],
+        month_label=label,
+        dry_run=dry_run,
     )
     return 0
 

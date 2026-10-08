@@ -18,16 +18,13 @@ In compare section display how much volumn is reduced or increaed based on compa
 
 
 
+1. Apply a plaza related bg if looks good.
 
+2. Interchnage the positions of Count and Transaction columns
 
-In given 12 Exceptions these logic are present.
+3. Normalize all figures in website in either lakh or Cr.
 
-First 3 are exempt query
-1. LNC CT, LNC FT 
-2. NLNC 
-3. commercial
+4. Increase the font size of exception numbers
 
-5th is the violation reporting bot
-
-For 6th program is ready to fetch permit data.
+5. Make the lables more white and bigger, so they are easily visible.
 

@@ -4,10 +4,11 @@ E9 — Unsettled ETC amounts by month.
 1. Read ETC files from ETC_INPUT_FOLDER.
 2. Keep the columns listed in e9_config.json.
 3. Keep rows whose Settlement Type is UNSETTLED and write that file.
-4. Group by the month of Reader Read Time.
+4. Read dates from the output file → year/month buckets.
 5. Count rows and sum Amount. Skip amount 0, empty, or NA.
-6. Write audit_exception_metrics for PLAZA_IDENTIFIER, exception id 9.
+6. Optionally upsert audit_exception_metrics (exception id 9).
    An existing year+month is updated only when the new count or amount is greater.
+7. Optionally upload the output file to S3 (month-year label from those dates).
 
 Run:
   1. Set ETC_INPUT_FOLDER and PLAZA_IDENTIFIER below
@@ -29,6 +30,13 @@ import psycopg2
 from dotenv import dotenv_values
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 CONFIG_PATH = BASE_DIR / "e9_config.json"
 WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 
@@ -36,6 +44,11 @@ ETC_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E9\ET
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 9
 OUTPUT_FILE = BASE_DIR / "output" / "e9_unsettled.csv"
+# Write monthly totals into audit_exception_metrics.
+Metrics_DB_Update = True
+DB_DRY_RUN = False
+# Upload e9_unsettled.csv to S3 + audit_exception_output_files row.
+UPLOAD_OUTPUT_TO_S3 = True
 
 COLUMN_KEYS = ("reader_read_time", "settlement_type", "amount")
 
@@ -207,23 +220,41 @@ def parse_amount(value) -> float | None:
     return number
 
 
-def monthly_totals(unsettled: pd.DataFrame) -> list[dict]:
+def monthly_totals(unsettled: pd.DataFrame, config: dict) -> list[dict]:
+    """
+    Build year/month totals from Reader Read Time + Amount on the unsettled
+    output (or an equivalent frame with the same column names).
+    """
+    time_name, _type_name, amount_name = column_names(config)
+    if time_name not in unsettled.columns or amount_name not in unsettled.columns:
+        raise RuntimeError(
+            "Output is missing date/amount columns for monthly totals. "
+            f"Need {time_name!r} and {amount_name!r}. "
+            f"Available: {list(unsettled.columns)}"
+        )
+
     buckets: dict[tuple[int, int], dict] = defaultdict(lambda: {"rows": 0, "amount": 0.0})
     skipped_date = 0
     skipped_amount = 0
-    for record in unsettled.itertuples(index=False):
-        amount = parse_amount(record[2])
+    for time_raw, amount_raw in zip(
+        unsettled[time_name].tolist(),
+        unsettled[amount_name].tolist(),
+    ):
+        amount = parse_amount(amount_raw)
         if amount is None:
             skipped_amount += 1
             continue
-        when = parse_datetime(record[0])
+        when = parse_datetime(time_raw)
         if when is None:
             skipped_date += 1
             continue
         bucket = buckets[(when.year, when.month)]
         bucket["rows"] += 1
         bucket["amount"] += amount
-    print(f"Skipped for totals — amount 0/empty/NA: {skipped_amount}, unreadable time: {skipped_date}")
+    print(
+        f"Skipped for totals — amount 0/empty/NA: {skipped_amount}, "
+        f"unreadable time: {skipped_date}"
+    )
     rows = []
     for (year, month), bucket in sorted(buckets.items()):
         rows.append(
@@ -239,6 +270,13 @@ def monthly_totals(unsettled: pd.DataFrame) -> list[dict]:
             f"amount={bucket['amount']:,.2f}"
         )
     return rows
+
+
+def load_output_file(path: Path = OUTPUT_FILE) -> pd.DataFrame:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Output file not found: {path}")
+    return pd.read_csv(path, dtype=str, keep_default_na=False)
 
 
 def _analytics_connection_kwargs() -> dict:
@@ -275,7 +313,22 @@ def _analytics_connection_kwargs() -> dict:
     }
 
 
-def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
+def resolve_plaza_identifier() -> str:
+    plaza = str(PLAZA_IDENTIFIER or "").strip()
+    if not plaza:
+        raise RuntimeError(
+            "Set PLAZA_IDENTIFIER at the top of Main_E9.py "
+            "(required for metrics DB and S3 upload)."
+        )
+    return plaza
+
+
+def update_exception_metrics(
+    rows: list[dict],
+    plaza_identifier: str,
+    *,
+    dry_run: bool = False,
+) -> None:
     plaza = str(plaza_identifier or "").strip()
     if not plaza:
         raise RuntimeError(
@@ -290,6 +343,7 @@ def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
     print(f"Target DB: {kwargs['database']}.audit_exception_metrics")
     print(f"plaza_identifier: {plaza}")
     print(f"exception_type_id: {EXCEPTION_TYPE_ID}")
+    print(f"Months to sync: {len(rows)}" + (" (dry run)" if dry_run else ""))
 
     insert_sql = """
         INSERT INTO audit_exception_metrics (
@@ -347,11 +401,23 @@ def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
                 )
                 current = existing.get((year, month))
                 if current is None:
-                    print(f"  {year}-{month:02d}: INSERT count={new_count:,}, amount={new_amount:,.2f}")
-                    cursor.execute(
-                        insert_sql,
-                        (plaza, EXCEPTION_TYPE_ID, year, month, new_amount, new_count),
+                    print(
+                        f"  {year}-{month:02d}: INSERT count={new_count:,}, "
+                        f"amount={new_amount:,.2f}"
+                        + (" [dry-run]" if dry_run else "")
                     )
+                    if not dry_run:
+                        cursor.execute(
+                            insert_sql,
+                            (
+                                plaza,
+                                EXCEPTION_TYPE_ID,
+                                year,
+                                month,
+                                new_amount,
+                                new_count,
+                            ),
+                        )
                     continue
                 old_count, old_amount = current
                 if new_count > old_count or new_amount > old_amount:
@@ -359,22 +425,37 @@ def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
                         f"  {year}-{month:02d}: UPDATE "
                         f"count {old_count:,} -> {new_count:,}, "
                         f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+                        + (" [dry-run]" if dry_run else "")
                     )
-                    cursor.execute(
-                        update_sql,
-                        (new_amount, new_count, plaza, EXCEPTION_TYPE_ID, year, month),
-                    )
+                    if not dry_run:
+                        cursor.execute(
+                            update_sql,
+                            (
+                                new_amount,
+                                new_count,
+                                plaza,
+                                EXCEPTION_TYPE_ID,
+                                year,
+                                month,
+                            ),
+                        )
                     continue
                 print(
                     f"  {year}-{month:02d}: KEEP "
                     f"stored count={old_count:,}, amount={old_amount:,.2f}"
                 )
-        conn.commit()
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
 
 
 def main() -> int:
     print("=" * 60)
     print("E9 — UNSETTLED ETC rows by month")
+    print(f"ETC_INPUT_FOLDER = {ETC_INPUT_FOLDER!r}")
+    print(f"Metrics_DB_Update = {Metrics_DB_Update}")
+    print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
     print("=" * 60)
     config = load_config()
     unsettled_value = column_name(config, "unsettled_value")
@@ -388,15 +469,55 @@ def main() -> int:
         raise RuntimeError("No readable ETC files.")
     merged = pd.concat(frames, ignore_index=True)
     type_name = column_name(config, "settlement_type")
-    unsettled = merged.loc[merged[type_name].map(lambda value: is_unsettled(value, unsettled_value))].copy()
+    unsettled = merged.loc[
+        merged[type_name].map(lambda value: is_unsettled(value, unsettled_value))
+    ].copy()
     print(f"UNSETTLED rows: {len(unsettled)} of {len(merged)}")
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     unsettled.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
     print(f"Wrote: {OUTPUT_FILE}")
 
-    totals = monthly_totals(unsettled)
-    update_exception_metrics(totals, PLAZA_IDENTIFIER)
+    # Months/years come from dates on the written output file.
+    print("-" * 60)
+    print(f"Reading dates from output for monthly totals: {OUTPUT_FILE}")
+    output_df = load_output_file(OUTPUT_FILE)
+    totals = monthly_totals(output_df, config)
+    if not totals:
+        print("No months with countable Amount — metrics/S3 month label skipped.")
+        return 0
+
+    plaza_id = resolve_plaza_identifier()
+    dry_run = bool(DB_DRY_RUN)
+
+    if Metrics_DB_Update:
+        print("-" * 60)
+        print(
+            f"Updating audit_exception_metrics (exception_type_id={EXCEPTION_TYPE_ID}) "
+            f"for {len(totals)} month(s)…"
+        )
+        update_exception_metrics(totals, plaza_id, dry_run=dry_run)
+    else:
+        print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
+
+    if not UPLOAD_OUTPUT_TO_S3:
+        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
+        return 0
+
+    month_periods = [(int(row["year"]), int(row["month"])) for row in totals]
+    label = month_label_from_periods(month_periods)
+    print("-" * 60)
+    print(
+        f"Uploading {OUTPUT_FILE.name} to S3 "
+        f"(month_label={label!r}, months={len(month_periods)})…"
+    )
+    upload_exception_output(
+        OUTPUT_FILE,
+        plaza_id,
+        exception_type_id=int(EXCEPTION_TYPE_ID),
+        month_label=label,
+        dry_run=dry_run,
+    )
     return 0
 
 

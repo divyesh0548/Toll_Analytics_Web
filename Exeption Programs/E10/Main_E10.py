@@ -9,9 +9,10 @@ E10 — Local VRN folder + checkpost Weight + local ETC merge + overweight.
 6) Overweight / Overweight %; keep Overweight > 0 (blank SWB treated as 0)
 7) OW Status (OW At WIM / Not Charged At SWB / Altered at WIM/SWB)
 8) Update E10 / E10-A / E10-B / E10-C monthly metrics from the merged CSV
+9) Optionally upload e10_vrn_etc_merged.csv to S3 (month-year from read_datetime)
 
 Run:
-  1. Set ENTITY_NAME, VRN_INPUT_FOLDER, and ETC_INPUT_FOLDER
+  1. Set ENTITY_NAME, VRN_INPUT_FOLDER, ETC_INPUT_FOLDER, and PLAZA_IDENTIFIER
   2. python Main_E10.py
 """
 
@@ -32,6 +33,13 @@ from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 E4_DIR = BASE_DIR.parent / "E4"
 WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 E4_ENV = E4_DIR / ".env"
@@ -66,10 +74,15 @@ def _load_vehicle_class_module():
 _VEHICLE_CLASS_MOD = _load_vehicle_class_module()
 WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
-# --- Runtime inputs (edit these; not in config) ---
+# --- Runtime inputs / flags (edit these; not in e10_config.json) ---
 ENTITY_NAME = "bassi"
-# Plaza UUID in the analytics DB. Required for the E10 metric update.
-PLAZA_IDENTIFIER = ""
+# Plaza UUID in the analytics DB. Required for metrics DB and S3 upload.
+PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
+# Parent exception code for S3 / audit_exception_output_files.
+EXCEPTION_CODE = "E10"
+# Date column on the merged output used for S3 month/year label.
+READ_DATETIME_COLUMN = "read_datetime"
+
 # Local VRN folder (Excel/CSV). Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\Combined VRNs"
 # Local ETC folder (Excel/CSV) for the same date range as VRN. Required — ETC is not downloaded.
@@ -77,6 +90,13 @@ ETC_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\C
 VRN_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_with_weight.csv"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "e10_merged_etc.csv"
 MERGED_VRN_ETC_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_etc_merged.csv"
+
+# Write E10 / E10-A / E10-B / E10-C monthly totals into audit_exception_metrics.
+Metrics_DB_Update = True
+# When True, S3 put + output-files DB insert are skipped (still prints the plan).
+DB_DRY_RUN = False
+# Upload e10_vrn_etc_merged.csv to S3 + audit_exception_output_files row.
+UPLOAD_OUTPUT_TO_S3 = True
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -1577,9 +1597,49 @@ def save_output(df: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def month_periods_from_read_datetime(
+    csv_path: Path,
+    column: str = READ_DATETIME_COLUMN,
+) -> list[tuple[int, int]]:
+    """
+    Unique (year, month) pairs from read_datetime on the merged output file.
+    Used for the S3 month_label (same pattern as E4/E9).
+    """
+    path = Path(csv_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Output file not found: {path}")
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    if column not in frame.columns:
+        raise RuntimeError(
+            f"{path.name} is missing {column!r} for S3 month label. "
+            f"Available: {list(frame.columns)}"
+        )
+    periods: set[tuple[int, int]] = set()
+    skipped = 0
+    for raw in frame[column].tolist():
+        ts = _parse_join_datetime(raw)
+        if ts is None:
+            skipped += 1
+            continue
+        periods.add((int(ts.year), int(ts.month)))
+    print(
+        f"S3 months from {column!r}: {len(periods)} unique "
+        f"(skipped unreadable: {skipped})"
+    )
+    if not periods:
+        raise RuntimeError(
+            f"No parseable {column!r} values in {path.name} — "
+            "cannot build S3 month_label."
+        )
+    return sorted(periods)
+
+
 def main() -> int:
     print("=" * 60)
     print("E10 — Local VRN + Weight + ETC + Overweight + Applicable Rate")
+    print(f"Metrics_DB_Update = {Metrics_DB_Update}")
+    print(f"DB_DRY_RUN = {DB_DRY_RUN}")
+    print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
     print("=" * 60)
 
     load_env()
@@ -1662,16 +1722,42 @@ def main() -> int:
     print(f"Merged rows: {len(merged)} | Columns: {list(merged.columns)}")
     print(f"Merged output: {merged_out}")
 
-    print("-" * 60)
-    print("Updating E10 segment metrics…")
     plaza_identifier = str(PLAZA_IDENTIFIER).strip()
-    if not plaza_identifier:
+    if (Metrics_DB_Update or UPLOAD_OUTPUT_TO_S3) and not plaza_identifier:
         raise RuntimeError(
             "Set PLAZA_IDENTIFIER at the top of Main_E10.py. "
-            "The merged CSV was written, but audit metrics were not updated."
+            "The merged CSV was written, but audit metrics / S3 were not updated."
         )
-    updater = _load_module_from_path(BASE_DIR / "Update_DB_E10.py", "update_db_e10")
-    updater.update_e10_metrics(merged_out, plaza_identifier)
+
+    dry_run = bool(DB_DRY_RUN)
+
+    if Metrics_DB_Update:
+        print("-" * 60)
+        print("Updating E10 segment metrics…")
+        updater = _load_module_from_path(BASE_DIR / "Update_DB_E10.py", "update_db_e10")
+        updater.update_e10_metrics(merged_out, plaza_identifier)
+    else:
+        print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
+
+    if not UPLOAD_OUTPUT_TO_S3:
+        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
+        return 0
+
+    print("-" * 60)
+    print(f"Reading {READ_DATETIME_COLUMN!r} from output for S3 month label…")
+    month_periods = month_periods_from_read_datetime(merged_out)
+    label = month_label_from_periods(month_periods)
+    print(
+        f"Uploading {Path(merged_out).name} to S3 "
+        f"(month_label={label!r}, months={len(month_periods)})…"
+    )
+    upload_exception_output(
+        merged_out,
+        plaza_identifier,
+        exception_code=str(EXCEPTION_CODE),
+        month_label=label,
+        dry_run=dry_run,
+    )
     return 0
 
 
