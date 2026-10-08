@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+
+{% block title %}{{ full_exempt_group_label }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Exempt Query · Advanced</p>
+        <h1>{{ full_exempt_group_label }}</h1>
+        <p>
+            Upload LC/ETC, VRN, and pass files once. The pipeline runs Merge + Normalize,
+            Merge + Remove Duplicate, and Final Exempt automatically under one process folder.
+        </p>
+    </div>
+    <div class="actions" style="margin-top: 0; gap: 8px; flex-wrap: wrap;">
+        <button type="button" class="btn secondary" data-bs-toggle="modal" data-bs-target="#headerKeywordsModal">Header Keywords</button>
+        <button type="button" class="btn secondary" data-bs-toggle="modal" data-bs-target="#vrnNormalizationConfigModal">VRN Normalization Config</button>
+        <button type="button" class="btn secondary" data-bs-toggle="modal" data-bs-target="#lcNormalizationConfigModal">LC/ETC Normalization Config</button>
+        <button type="button" class="btn secondary" data-bs-toggle="modal" data-bs-target="#passSeparatorConfigModal">Pass Config</button>
+        <a class="btn secondary" href="{{ url_for('exempt_query_hub') }}">Back to Exempt Query</a>
+    </div>
+</section>
+
+{% include "partials/header_keywords_modal.html" %}
+{% include "partials/vrn_normalization_config_modal.html" %}
+{% include "partials/lc_normalization_config_modal.html" %}
+{% include "partials/pass_separator_config_modal.html" %}
+
+{% if messages %}
+    <div class="message-list">
+        {% for message_type, message in messages %}
+            <div class="message {{ 'success' if message_type == 'success' else 'error' }}">
+                {{ message }}
+                {% if message_type == 'success' and 'Process Management' in message %}
+                    <a href="{{ url_for('current_process') }}" style="margin-left: 6px;">Open Process Management</a>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
+
+{% set config_review_items = [
+    "Header Keywords",
+    "VRN Normalization Config",
+    "LC/ETC Normalization Config",
+    "Pass Config",
+] %}
+{% include "partials/config_review_notice.html" %}
+
+<section class="workflow-layout">
+    <div class="workflow-main">
+        <form id="full-exempt-form" method="post" enctype="multipart/form-data" class="stack">
+            <article class="card">
+                <div class="section-head">
+                    <div>
+                        <h2>Process Inputs</h2>
+                        <p>
+                            Files are stored under
+                            <code>{{ full_exempt_folder }}/&lt;process&gt;/input/{lc_etc,vrn,pass}/</code>.
+                            Outputs land in <code>output/</code>. If any step fails, the run stops — start again from the beginning.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="stack">
+                    <div class="stack">
+                        {% set process_name_locked = (lc_files | length) > 0 or (vrn_files | length) > 0 or (pass_files | length) > 0 or (concessionaire_files | length) > 0 or (rates_files | length) > 0 or (approved_files | length) > 0 %}
+                        {% include "partials/process_name_field.html" %}
+                    </div>
+
+                    <div class="form-control-row">
+                        <div class="stack" style="flex: 1 1 280px;">
+                            <label for="plaza_name" class="muted">Plaza</label>
+                            <select id="plaza_name" class="field" name="plaza_name" required>
+                                <option value="">Select plaza</option>
+                                {% for plaza in plazas %}
+                                    <option value="{{ plaza }}" {% if process_config.get('plaza_name') == plaza %}selected{% endif %}>{{ plaza }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="stack" style="flex: 1 1 280px;">
+                            <label for="output_file_name" class="muted">Final output name <span style="font-weight: normal;">(optional)</span></label>
+                            <input id="output_file_name" class="field" type="text" name="output_file_name" value="{{ process_config.get('output_file_name', '') }}" placeholder="{process_name}_final.xlsx">
+                        </div>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">1. LC/ETC source files</h3>
+                        <p class="muted">Required. .xlsx, .xls, or .csv — normalized in step 1 of the pipeline.</p>
+                        <label for="lc_files" class="muted">LC/ETC files</label>
+                        <input id="lc_files" class="file-input" type="file" name="lc_files" accept=".xlsx,.xls,.csv" multiple>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">2. VRN source files</h3>
+                        <p class="muted">Required. .xlsx, .xls, or .csv — normalized in step 2 of the pipeline.</p>
+                        <label for="vrn_files" class="muted">VRN files</label>
+                        <input id="vrn_files" class="file-input" type="file" name="vrn_files" accept=".xlsx,.xls,.csv" multiple>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">3. Pass reports</h3>
+                        <p class="muted">Required. One or more monthly pass reports (.xls, .xlsx, .csv).</p>
+                        <label for="pass_files" class="muted">Pass files</label>
+                        <input id="pass_files" class="file-input" type="file" name="pass_files" accept=".xls,.xlsx,.csv" multiple>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">4. Annexure inputs</h3>
+                        <p class="muted" id="annexure-hint">
+                            After the final workbook, Concessionaire VRNs are merged and Approved Exemption
+                            or Classwise Annexure runs from the plaza mapping.
+                        </p>
+                        <div class="stack" style="gap: 12px;">
+                            <div>
+                                <label for="concessionaire_files" class="muted">Concessionaire / Project Vehicle files (required)</label>
+                                <input id="concessionaire_files" class="file-input" type="file" name="concessionaire_files" accept=".xls,.xlsx,.csv" multiple>
+                            </div>
+                            <div>
+                                <label for="rates_file" class="muted">Rates file <span style="font-weight: normal;">(optional override)</span></label>
+                                <input id="rates_file" class="file-input" type="file" name="rates_file" accept=".xls,.xlsx,.csv">
+                                <p class="muted" id="rates-default-hint" style="margin-top: 6px;"></p>
+                            </div>
+                            <div id="approved-upload-wrap">
+                                <label for="approved_exemption_file" class="muted">Approved Exemption file <span style="font-weight: normal;">(optional override)</span></label>
+                                <input id="approved_exemption_file" class="file-input" type="file" name="approved_exemption_file" accept=".xls,.xlsx,.csv">
+                                <p class="muted" id="approved-default-hint" style="margin-top: 6px;"></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-control-row" style="align-items: center; gap: 16px; flex-wrap: wrap;">
+                        <div class="form-check form-switch" style="margin: 0;">
+                            <input
+                                class="form-check-input"
+                                type="checkbox"
+                                role="switch"
+                                id="update_exception_metrics"
+                                name="update_exception_metrics"
+                                value="1"
+                                {% if process_config.get('update_exception_metrics') %}checked{% endif %}
+                            >
+                            <label class="form-check-label" for="update_exception_metrics">
+                                Update exception metrics in DB after annexure
+                            </label>
+                        </div>
+                        <p class="muted" style="margin: 0; flex: 1 1 240px;">
+                            When on, Summary totals from LNC CT/FT, NLNC, and commercial are written to
+                            <code>audit_exception_metrics</code>. Requires
+                            <code>plaza_identifiers</code> mapping for the selected plaza.
+                        </p>
+                    </div>
+
+                    <div class="form-control-row">
+                        <button class="btn" type="submit" name="action" value="apply">Apply Inputs</button>
+                    </div>
+                    {% if not submit_ready %}
+                        <p class="muted">Start becomes available after plaza, LC/ETC, VRN, pass, and Concessionaire files are attached.</p>
+                    {% endif %}
+                    <div class="actions">
+                        <button class="btn" type="submit" name="action" value="process" {% if not submit_ready %}disabled{% endif %}>Start Full Exempt Pipeline</button>
+                    </div>
+                </div>
+            </article>
+        </form>
+    </div>
+
+    <aside class="workflow-sidebar">
+        <article class="card">
+            <div class="section-head">
+                <div>
+                    <h2>Attached Files</h2>
+                </div>
+            </div>
+            {% if lc_files or vrn_files or pass_files or concessionaire_files or rates_files or approved_files %}
+                <ul class="data-list">
+                    {% for filename in lc_files %}
+                        <li class="data-row">
+                            <span class="data-name">LC/ETC: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ full_exempt_lc_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in vrn_files %}
+                        <li class="data-row">
+                            <span class="data-name">VRN: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ full_exempt_vrn_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in pass_files %}
+                        <li class="data-row">
+                            <span class="data-name">Pass: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ full_exempt_pass_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in concessionaire_files %}
+                        <li class="data-row">
+                            <span class="data-name">Concessionaire: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ full_exempt_concessionaire_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in rates_files %}
+                        <li class="data-row">
+                            <span class="data-name">Rates override: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ full_exempt_rates_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in approved_files %}
+                        <li class="data-row">
+                            <span class="data-name">Approved override: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ full_exempt_approved_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div class="empty-state">
+                    <p>No files attached yet for this process.</p>
+                </div>
+            {% endif %}
+        </article>
+    </aside>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const form = document.getElementById("full-exempt-form");
+    const resetFormAfterSubmit = "{{ '1' if reset_form_after_submit else '0' }}" === "1";
+    if (resetFormAfterSubmit && form) {
+        form.reset();
+    }
+
+    (function () {
+        const plazaSelect = document.getElementById("plaza_name");
+        const annexureDefaults = {{ annexure_defaults_json|safe }};
+
+        function syncAnnexureHints() {
+            const plaza = plazaSelect ? plazaSelect.value : "";
+            const info = annexureDefaults[plaza] || null;
+            const ratesHint = document.getElementById("rates-default-hint");
+            const approvedHint = document.getElementById("approved-default-hint");
+            const approvedWrap = document.getElementById("approved-upload-wrap");
+            const annexureHint = document.getElementById("annexure-hint");
+            if (!info) {
+                if (ratesHint) ratesHint.textContent = "Select a plaza to see the default rates file.";
+                if (approvedHint) approvedHint.textContent = "";
+                if (approvedWrap) approvedWrap.style.display = "none";
+                return;
+            }
+            if (annexureHint) {
+                annexureHint.textContent = info.uses_approved_script
+                    ? "This plaza uses Approved Exemption after the final workbook."
+                    : "This plaza uses Classwise Annexure after the final workbook.";
+            }
+            if (ratesHint) {
+                ratesHint.textContent = info.default_rates_file
+                    ? "Default rates: " + info.default_rates_file + " (upload only to override)."
+                    : "No default rates mapped for this plaza — upload a rates file.";
+            }
+            if (approvedWrap) {
+                approvedWrap.style.display = info.uses_approved_script ? "" : "none";
+            }
+            if (approvedHint) {
+                approvedHint.textContent = info.default_approved_file
+                    ? "Default approved: " + info.default_approved_file + " (upload only to override)."
+                    : "No default approved file mapped — upload one for this plaza.";
+            }
+        }
+
+        if (plazaSelect) plazaSelect.addEventListener("change", syncAnnexureHints);
+        syncAnnexureHints();
+    })();
+</script>
+{% endblock %}

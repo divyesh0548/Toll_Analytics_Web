@@ -1,0 +1,380 @@
+{% extends "base.html" %}
+
+{% block title %}Process Management{% endblock %}
+
+{% block content %}
+<style>
+    .process-parent-badge {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        padding: 4px 10px;
+        margin-bottom: 8px;
+        border-radius: 999px;
+        background: rgba(99, 102, 241, 0.12);
+        border: 1px solid rgba(99, 102, 241, 0.28);
+        color: #4338ca;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: none;
+    }
+    .process-parent-badge.exempt-query {
+        background: rgba(16, 185, 129, 0.12);
+        border-color: rgba(16, 185, 129, 0.28);
+        color: #047857;
+    }
+    .process-row-main {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+    .process-subtype {
+        font-size: 13px;
+    }
+    .status-parent-badge {
+        margin-bottom: 8px;
+    }
+</style>
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Process Management</p>
+        <h1>Available Processes</h1>
+        <p>This list shows every process instance under <code>File_Process</code>, grouped by parent process.</p>
+    </div>
+</section>
+
+<article id="merge-status-card" class="card" style="margin-bottom: 22px;">
+    <div class="section-head">
+        <div>
+            <span class="process-parent-badge status-parent-badge">{{ valid_invalid_group_label }}</span>
+            <h2>{{ life_cycle_subprocess_label }} Process</h2>
+            <p id="merge-status-text">
+                {% if life_cycle_state.running %}
+                    Processing is ongoing for "{{ life_cycle_state.process_name }}".
+                {% elif life_cycle_state.last_status %}
+                    {{ life_cycle_state.last_status }}
+                {% else %}
+                    No Life cycle merge process is running.
+                {% endif %}
+            </p>
+            <p id="merge-status-time" class="muted">
+                {% if life_cycle_state.running and life_cycle_state.started_at %}
+                    Elapsed: calculating...
+                {% else %}
+                    Elapsed: -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</article>
+
+<article id="valid-invalid-status-card" class="card" style="margin-bottom: 22px;">
+    <div class="section-head">
+        <div>
+            <span class="process-parent-badge status-parent-badge">{{ valid_invalid_group_label }}</span>
+            <h2>{{ valid_invalid_subprocess_label }} Process</h2>
+            <p id="valid-invalid-status-text">
+                {% if valid_invalid_state.running %}
+                    Processing is ongoing for "{{ valid_invalid_state.process_name }}".
+                {% elif valid_invalid_state.last_status %}
+                    {{ valid_invalid_state.last_status }}
+                {% else %}
+                    No Valid/Invalid Lookup process is running.
+                {% endif %}
+            </p>
+            <p id="valid-invalid-status-time" class="muted">
+                {% if valid_invalid_state.running and valid_invalid_state.started_at %}
+                    Elapsed: calculating...
+                {% else %}
+                    Elapsed: -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</article>
+
+<article id="merge-normalize-status-card" class="card" style="margin-bottom: 22px;">
+    <div class="section-head">
+        <div>
+            <span class="process-parent-badge exempt-query status-parent-badge">{{ exempt_query_group_label }}</span>
+            <h2>{{ merge_normalize_group_label }} Process</h2>
+            <p id="merge-normalize-status-text">
+                {% if merge_normalize_state.running %}
+                    Processing is ongoing for "{{ merge_normalize_state.process_name }}" ({{ merge_normalize_file_kind_labels.get(merge_normalize_state.file_kind, merge_normalize_state.file_kind) }}).
+                {% elif merge_normalize_state.last_status %}
+                    {{ merge_normalize_state.last_status }}
+                {% else %}
+                    No {{ merge_normalize_group_label }} process is running.
+                {% endif %}
+            </p>
+            <p id="merge-normalize-status-time" class="muted">
+                {% if merge_normalize_state.running and merge_normalize_state.started_at %}
+                    Elapsed: calculating...
+                {% else %}
+                    Elapsed: -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</article>
+
+<article id="merge-remove-dup-status-card" class="card" style="margin-bottom: 22px;">
+    <div class="section-head">
+        <div>
+            <span class="process-parent-badge exempt-query status-parent-badge">{{ exempt_query_group_label }}</span>
+            <h2>{{ merge_remove_dup_group_label }} Process</h2>
+            <p id="merge-remove-dup-status-text">
+                {% if merge_remove_dup_state.running %}
+                    Processing is ongoing for "{{ merge_remove_dup_state.process_name }}".
+                {% elif merge_remove_dup_state.last_status %}
+                    {{ merge_remove_dup_state.last_status }}
+                {% else %}
+                    No {{ merge_remove_dup_group_label }} process is running.
+                {% endif %}
+            </p>
+            <p id="merge-remove-dup-status-time" class="muted">
+                {% if merge_remove_dup_state.running and merge_remove_dup_state.started_at %}
+                    Elapsed: calculating...
+                {% else %}
+                    Elapsed: -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</article>
+
+<article id="final-exempt-status-card" class="card" style="margin-bottom: 22px;">
+    <div class="section-head">
+        <div>
+            <span class="process-parent-badge exempt-query status-parent-badge">{{ exempt_query_group_label }}</span>
+            <h2>{{ final_exempt_group_label }}</h2>
+            <p id="final-exempt-status-text">
+                {% if final_exempt_state.running %}
+                    Processing is ongoing for "{{ final_exempt_state.process_name }}": {{ final_exempt_state.last_status }}
+                {% elif final_exempt_state.last_status %}
+                    {{ final_exempt_state.last_status }}
+                {% else %}
+                    No {{ final_exempt_group_label }} is running.
+                {% endif %}
+            </p>
+            <p id="final-exempt-status-time" class="muted">
+                {% if final_exempt_state.running and final_exempt_state.started_at %}
+                    Elapsed: calculating...
+                {% else %}
+                    Elapsed: -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</article>
+
+<article id="full-exempt-status-card" class="card" style="margin-bottom: 22px;">
+    <div class="section-head">
+        <div>
+            <span class="process-parent-badge exempt-query status-parent-badge">{{ exempt_query_group_label }}</span>
+            <h2>{{ full_exempt_group_label }}</h2>
+            <p id="full-exempt-status-text">
+                {% if full_exempt_state.running %}
+                    Processing is ongoing for "{{ full_exempt_state.process_name }}": {{ full_exempt_state.last_status }}
+                {% elif full_exempt_state.last_status %}
+                    {{ full_exempt_state.last_status }}
+                {% else %}
+                    No {{ full_exempt_group_label }} is running.
+                {% endif %}
+            </p>
+            <p id="full-exempt-status-time" class="muted">
+                {% if full_exempt_state.running and full_exempt_state.started_at %}
+                    Elapsed: calculating...
+                {% else %}
+                    Elapsed: -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</article>
+
+<article class="list-card">
+    <div class="section-head">
+        <div>
+            <h2>Process Folders</h2>
+            <p>Each row shows the parent process badge, process name, and sub-process type.</p>
+        </div>
+    </div>
+    {% if available_processes %}
+        <ul class="data-list">
+            {% for item in available_processes %}
+                <li class="data-row">
+                    <div class="process-row-main">
+                        <span class="process-parent-badge{% if item.parent_label == exempt_query_group_label %} exempt-query{% endif %}">{{ item.parent_label }}</span>
+                        <span class="data-name">{{ item.process_name }}</span>
+                        <span class="muted process-subtype">{{ item.subprocess_label }}</span>
+                    </div>
+                    <a class="btn secondary" href="{{ url_for('file_process_directories', path=item.relative_path) }}">Open</a>
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <div class="empty-state">
+            <p>No process folders found.</p>
+        </div>
+    {% endif %}
+</article>
+
+<script>
+    const mergeStatusText = document.getElementById("merge-status-text");
+    const mergeStatusTime = document.getElementById("merge-status-time");
+    const validInvalidStatusText = document.getElementById("valid-invalid-status-text");
+    const validInvalidStatusTime = document.getElementById("valid-invalid-status-time");
+    const mergeNormalizeStatusText = document.getElementById("merge-normalize-status-text");
+    const mergeNormalizeStatusTime = document.getElementById("merge-normalize-status-time");
+    const mergeRemoveDupStatusText = document.getElementById("merge-remove-dup-status-text");
+    const mergeRemoveDupStatusTime = document.getElementById("merge-remove-dup-status-time");
+    const finalExemptStatusText = document.getElementById("final-exempt-status-text");
+    const finalExemptStatusTime = document.getElementById("final-exempt-status-time");
+    const fullExemptStatusText = document.getElementById("full-exempt-status-text");
+    const fullExemptStatusTime = document.getElementById("full-exempt-status-time");
+
+    function formatElapsed(seconds) {
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
+        if (mins > 0) return `${mins}m ${secs}s`;
+        return `${secs}s`;
+    }
+
+    async function refreshMergeStatus() {
+        try {
+            const response = await fetch("{{ url_for('life_cycle_merge_status') }}");
+            if (!response.ok) return;
+            const state = await response.json();
+
+            if (state.running) {
+                mergeStatusText.textContent = `Processing is ongoing for "${state.process_name}".`;
+                mergeStatusTime.textContent = `Elapsed: ${formatElapsed(state.elapsed_seconds || 0)}`;
+            } else {
+                mergeStatusText.textContent = state.last_status || "No Life cycle merge process is running.";
+                mergeStatusTime.textContent = "Elapsed: -";
+            }
+        } catch (err) {
+            // Ignore intermittent polling errors and keep previous status.
+        }
+    }
+
+    async function refreshValidInvalidStatus() {
+        try {
+            const response = await fetch("{{ url_for('valid_invalid_status') }}");
+            if (!response.ok) return;
+            const state = await response.json();
+
+            if (state.running) {
+                validInvalidStatusText.textContent = `Processing is ongoing for "${state.process_name}".`;
+                validInvalidStatusTime.textContent = `Elapsed: ${formatElapsed(state.elapsed_seconds || 0)}`;
+            } else {
+                validInvalidStatusText.textContent = state.last_status || "No Valid/Invalid Lookup process is running.";
+                validInvalidStatusTime.textContent = "Elapsed: -";
+            }
+        } catch (err) {
+            // Ignore intermittent polling errors and keep previous status.
+        }
+    }
+
+    async function refreshMergeNormalizeStatus() {
+        try {
+            const response = await fetch("{{ url_for('merge_normalize_status') }}");
+            if (!response.ok) return;
+            const state = await response.json();
+
+            if (state.running) {
+                const kindLabel = state.file_kind_label || state.file_kind || "?";
+                mergeNormalizeStatusText.textContent =
+                    `Processing is ongoing for "${state.process_name}" (${kindLabel}).`;
+                mergeNormalizeStatusTime.textContent = `Elapsed: ${formatElapsed(state.elapsed_seconds || 0)}`;
+            } else {
+                mergeNormalizeStatusText.textContent =
+                    state.last_status || "No {{ merge_normalize_group_label }} process is running.";
+                mergeNormalizeStatusTime.textContent = "Elapsed: -";
+            }
+        } catch (err) {
+            // Ignore intermittent polling errors and keep previous status.
+        }
+    }
+
+    async function refreshMergeRemoveDupStatus() {
+        try {
+            const response = await fetch("{{ url_for('merge_remove_dup_status') }}");
+            if (!response.ok) return;
+            const state = await response.json();
+
+            if (state.running) {
+                mergeRemoveDupStatusText.textContent =
+                    `Processing is ongoing for "${state.process_name}".`;
+                mergeRemoveDupStatusTime.textContent = `Elapsed: ${formatElapsed(state.elapsed_seconds || 0)}`;
+            } else {
+                mergeRemoveDupStatusText.textContent =
+                    state.last_status || "No {{ merge_remove_dup_group_label }} process is running.";
+                mergeRemoveDupStatusTime.textContent = "Elapsed: -";
+            }
+        } catch (err) {
+            // Ignore intermittent polling errors and keep previous status.
+        }
+    }
+
+    async function refreshFinalExemptStatus() {
+        try {
+            const response = await fetch("{{ url_for('final_exempt_status') }}");
+            if (!response.ok) return;
+            const state = await response.json();
+
+            if (state.running) {
+                const step = state.last_status ? ` ${state.last_status}` : "";
+                finalExemptStatusText.textContent =
+                    `Processing is ongoing for "${state.process_name}".${step}`;
+                finalExemptStatusTime.textContent = `Elapsed: ${formatElapsed(state.elapsed_seconds || 0)}`;
+            } else {
+                finalExemptStatusText.textContent =
+                    state.last_status || "No {{ final_exempt_group_label }} is running.";
+                finalExemptStatusTime.textContent = "Elapsed: -";
+            }
+        } catch (err) {
+            // Ignore intermittent polling errors and keep previous status.
+        }
+    }
+
+    async function refreshFullExemptStatus() {
+        try {
+            const response = await fetch("{{ url_for('full_exempt_status') }}");
+            if (!response.ok) return;
+            const state = await response.json();
+
+            if (state.running) {
+                const step = state.last_status ? `: ${state.last_status}` : "";
+                fullExemptStatusText.textContent =
+                    `Processing is ongoing for "${state.process_name}"${step}`;
+                fullExemptStatusTime.textContent = `Elapsed: ${formatElapsed(state.elapsed_seconds || 0)}`;
+            } else {
+                fullExemptStatusText.textContent =
+                    state.last_status || "No {{ full_exempt_group_label }} is running.";
+                fullExemptStatusTime.textContent = "Elapsed: -";
+            }
+        } catch (err) {
+            // Ignore intermittent polling errors and keep previous status.
+        }
+    }
+
+    refreshMergeStatus();
+    refreshValidInvalidStatus();
+    refreshMergeNormalizeStatus();
+    refreshMergeRemoveDupStatus();
+    refreshFinalExemptStatus();
+    refreshFullExemptStatus();
+    setInterval(refreshMergeStatus, 3000);
+    setInterval(refreshValidInvalidStatus, 3000);
+    setInterval(refreshMergeNormalizeStatus, 3000);
+    setInterval(refreshMergeRemoveDupStatus, 3000);
+    setInterval(refreshFinalExemptStatus, 3000);
+    setInterval(refreshFullExemptStatus, 3000);
+</script>
+{% endblock %}

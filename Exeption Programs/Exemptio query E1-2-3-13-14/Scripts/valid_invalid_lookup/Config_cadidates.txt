@@ -1,0 +1,19 @@
+# Config lists for Valid/Invalid Lookup live in:
+#   valid_invalid_config.py   (defaults + schema + helpers)
+#   valid_invalid_config.json (portal-editable values; overlays defaults)
+#
+# Mapping to Code candidates:
+# 1. Journey types to drop ................. JOURNEY_TYPES_TO_DROP
+# 2. Status column candidates .............. STATUS_COLUMN_CANDIDATES
+# 3. Accepted status values ................ ACCEPTED_STATUS_VALUES
+# 4. Journey type normalization ............ LOCAL_CONTI_SINGLE_JOURNEY_TYPES,
+#                                            CONT_JOURNEY_TYPES, normalize_journey_type()
+# 5. Journey columns from Rate sheet ....... RATE_SHEET_JOURNEY_COLUMN_RENAMES
+# 6. Excluded vehicle classes (lifecycle) .. LIFECYCLE_EXCLUDED_VEHICLE_CLASSES
+# 7. Bus vehicle classes ................... BUS_VEHICLE_CLASSES
+# 8. Heavy/Special classes ................. HEAVY_SPECIAL_VEHICLE_CLASSES,
+#                                            CRANE_MOUNTED_VEHICLE_CLASS
+# 9. NPCI → TC class mapping ............... NPCI_TO_TC_CLASS, map_npci_to_tc_class()
+# 10. Zero-settlement journey types ........ ZERO_SETTLEMENT_REMOVE_JOURNEY_TYPES
+# 11. Discount/Pass journey types .......... DISCOUNT_PASS_JOURNEY_TYPES
+# 12. Invalid excluded classes ............. INVALID_EXCLUDED_VEHICLE_CLASSES

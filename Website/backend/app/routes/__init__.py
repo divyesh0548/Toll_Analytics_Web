@@ -3,7 +3,15 @@
 from app.routes.analytics import analytics_bp
 from app.routes.auth import auth_bp
 from app.routes.companies import companies_bp
+from app.routes.exception_jobs import exception_jobs_bp
 from app.routes.plazas import plazas_bp
 from app.routes.spvs import spvs_bp
 
-__all__ = ["auth_bp", "companies_bp", "spvs_bp", "plazas_bp", "analytics_bp"]
+__all__ = [
+    "auth_bp",
+    "companies_bp",
+    "spvs_bp",
+    "plazas_bp",
+    "analytics_bp",
+    "exception_jobs_bp",
+]

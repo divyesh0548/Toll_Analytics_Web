@@ -349,6 +349,9 @@ export function PortfolioPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
+            <Link to="/exceptions/uploads">Exception uploads</Link>
+          </Button>
+          <Button asChild variant="outline">
             <Link to="/companies/spvs/new">
               <Plus className="h-4 w-4" />
               New SPV

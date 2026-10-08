@@ -15,7 +15,10 @@ export function Navbar() {
 
   const navItems = isSiteAdmin
     ? [{ to: '/admin/users', label: 'Users' }]
-    : [{ to: '/portfolio', label: 'Portfolio' }]
+    : [
+        { to: '/portfolio', label: 'Portfolio' },
+        { to: '/exceptions/uploads', label: 'Exceptions' },
+      ]
 
   function handleConfirmLogout() {
     logout()

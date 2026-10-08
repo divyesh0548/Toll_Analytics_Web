@@ -9,6 +9,7 @@
   "payment_mode_exclude": "IHMCL_Exemption",
   "months": "Months",
   "monthly_rate_column": "Monthly Rate",
+  "receivable_amt": "Receivable Amt",
   "loss": "Loss",
   "monthly_rate_before_apr_2026": 350,
   "monthly_rate_from_apr_2026": 360,

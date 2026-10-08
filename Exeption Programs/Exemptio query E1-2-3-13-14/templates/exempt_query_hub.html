@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}Exempt Query{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Process Group</p>
+        <h1>Exempt Query</h1>
+        <p>Select a sub-process below. Files are stored under <code>File_Process/{{ exempt_query_folder }}/</code>.</p>
+    </div>
+    <div class="actions" style="margin-top: 0;">
+        <a class="btn secondary" href="{{ url_for('home') }}">Back to Home</a>
+    </div>
+</section>
+
+<section class="grid cols-2">
+    <article class="card">
+        <h3 class="card-title">{{ merge_normalize_group_label }}</h3>
+        <p>Upload LC/ETC or VRN files, normalize them, and merge into one output file per process.</p>
+        <div class="actions">
+            <a class="btn" href="{{ url_for('merge_normalize') }}">Open</a>
+        </div>
+    </article>
+    <article class="card">
+        <h3 class="card-title">{{ merge_remove_dup_group_label }}</h3>
+        <p>Import or upload VRN and LC/ETC outputs, merge them, and remove duplicates into <code>semi-final-output.csv</code>.</p>
+        <div class="actions">
+            <a class="btn" href="{{ url_for('merge_remove_duplicate') }}">Open</a>
+        </div>
+    </article>
+</section>
+
+<section class="grid cols-2" style="margin-top: 20px;">
+    <article class="card">
+        <h3 class="card-title">{{ final_exempt_group_label }}</h3>
+        <p>Import or upload the deduplicated semi-final CSV, upload mixed pass reports, and produce the final exempt-query Excel workbook.</p>
+        <div class="actions">
+            <a class="btn" href="{{ url_for('final_exempt_process') }}">Open</a>
+        </div>
+    </article>
+    <article class="card">
+        <h3 class="card-title">{{ full_exempt_group_label }}</h3>
+        <p>Advanced: upload LC/ETC, VRN, and pass files once, then run all three steps automatically into one process folder.</p>
+        <div class="actions">
+            <a class="btn" href="{{ url_for('full_exempt_pipeline') }}">Open</a>
+        </div>
+    </article>
+</section>
+
+<section class="grid cols-1" style="margin-top: 20px;">
+    <article class="card">
+        <h3 class="card-title">Browse Folders</h3>
+        <p>Open the Exempt Query tree, including <code>{{ merge_normalize_folder }}</code>, <code>{{ merge_remove_dup_folder }}</code>, <code>{{ final_exempt_folder }}</code>, and <code>{{ full_exempt_folder }}</code>.</p>
+        <div class="actions">
+            <a class="btn secondary" href="{{ url_for('file_process_directories', path=exempt_query_folder) }}">Open in Directory Browser</a>
+        </div>
+    </article>
+</section>
+{% endblock %}

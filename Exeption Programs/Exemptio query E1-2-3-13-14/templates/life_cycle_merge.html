@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block title %}{{ life_cycle_subprocess_label }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Process Intake</p>
+        <h1>{{ life_cycle_subprocess_label }}</h1>
+        <p>Upload source files, review the current input set, and submit the merge when the process is ready.</p>
+    </div>
+    <div class="actions" style="margin-top: 0;">
+        <button
+            type="button"
+            class="btn secondary"
+            data-bs-toggle="modal"
+            data-bs-target="#headerKeywordsModal"
+        >
+            Header Keywords
+        </button>
+    </div>
+</section>
+
+{% if messages %}
+    <div class="message-list">
+        {% for message_type, message in messages %}
+            <div class="message {{ 'success' if message_type == 'success' else 'error' }}">
+                {{ message }}
+                {% if message_type == 'success' and 'Process Management' in message %}
+                    <a href="{{ url_for('current_process') }}" style="margin-left: 6px;">Open Process Management</a>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
+
+{% set config_review_items = ["Header Keywords"] %}
+{% include "partials/config_review_notice.html" %}
+
+<section class="workflow-layout">
+    <div class="workflow-main">
+        <article class="card">
+            <div class="section-head">
+                <div>
+                    <h2>Life Cycle / Etc Files Merge</h2>
+                    <p>Process name, file upload, and final submit are grouped here because they belong to the same workflow.</p>
+                </div>
+            </div>
+            <form id="upload-form" method="post" enctype="multipart/form-data" class="stack">
+                <div class="stack">
+                    {% set process_name_locked = (uploaded_files | length) > 0 %}
+                    {% include "partials/process_name_field.html" %}
+                </div>
+                <div class="stack">
+                    <label for="files_input" class="muted">Upload Files</label>
+                    <div class="form-control-row">
+                        <input id="files_input" class="file-input" type="file" name="files" multiple accept=".xlsx,.csv,.xls">
+                        <button id="upload-btn" class="btn" type="submit" name="action" value="upload">Upload Files</button>
+                    </div>
+                    <p class="muted">Supported file types: {{ allowed_extensions | join(', ') }}</p>
+                    <p class="muted">At least {{ min_life_cycle_merge_files }} files are required before Submit is enabled.</p>
+                    <p id="keywords-wait-note" class="muted" style="display: none;">Loading header keywords… Submit will be enabled once keywords are ready.</p>
+                </div>
+                <div class="stats">
+                    <div class="stat">
+                        <strong>{{ uploaded_files | length }}</strong>
+                        <span class="muted">Uploaded file(s) in the current process folder</span>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button
+                        id="final-submit-btn"
+                        class="btn"
+                        type="submit"
+                        name="action"
+                        value="process"
+                        disabled
+                    >
+                        Submit
+                    </button>
+                </div>
+            </form>
+        </article>
+    </div>
+
+    <aside class="workflow-sidebar">
+        <article class="list-card">
+            <div class="section-head">
+                <div>
+                    <h2>Uploaded Files</h2>
+                    <p>Files currently stored in the selected process input folder.</p>
+                </div>
+            </div>
+            {% if uploaded_files %}
+                <ul class="data-list">
+                    {% for filename in uploaded_files %}
+                        <li class="data-row">
+                            <span class="data-name">{{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div class="empty-state">
+                    <p>No files uploaded yet for this process.</p>
+                </div>
+            {% endif %}
+        </article>
+    </aside>
+</section>
+
+{% include "partials/header_keywords_modal.html" %}
+
+<script>
+    const resetFormAfterSubmit = "{{ '1' if reset_form_after_submit else '0' }}" === "1";
+    const uploadForm = document.getElementById("upload-form");
+    const processNameInput = document.getElementById("process_name_input");
+    const finalSubmitBtn = document.getElementById("final-submit-btn");
+    const keywordsWaitNote = document.getElementById("keywords-wait-note");
+    const minMergeFiles = {{ min_life_cycle_merge_files }};
+    const uploadedFileCount = {{ uploaded_files | length }};
+    let keywordsError = false;
+
+    function updateSubmitState() {
+        const keywordsApi = window.headerKeywordsAsync;
+        const keywordsReady = keywordsApi && keywordsApi.isReady();
+        const keywordsOk = keywordsReady && keywordsApi.getCount() >= keywordsApi.getMinRequired();
+        const filesOk = uploadedFileCount >= minMergeFiles;
+
+        if (keywordsWaitNote) {
+            if (keywordsReady) {
+                keywordsWaitNote.style.display = "none";
+            } else if (keywordsError) {
+                keywordsWaitNote.textContent = "Could not load header keywords. Open Header Keywords to retry.";
+                keywordsWaitNote.style.display = "block";
+            } else {
+                keywordsWaitNote.textContent = "Loading header keywords… Submit will be enabled once keywords are ready.";
+                keywordsWaitNote.style.display = "block";
+            }
+        }
+        if (finalSubmitBtn) {
+            finalSubmitBtn.disabled = !(keywordsOk && filesOk);
+            if (keywordsReady && !keywordsOk) {
+                finalSubmitBtn.title = `At least ${keywordsApi.getMinRequired()} header keywords are required.`;
+            } else {
+                finalSubmitBtn.title = "";
+            }
+        }
+    }
+
+    if (processNameInput) {
+        processNameInput.focus();
+    }
+    if (resetFormAfterSubmit && uploadForm) {
+        uploadForm.reset();
+    }
+
+    document.addEventListener("header-keywords-loading", updateSubmitState);
+    document.addEventListener("header-keywords-ready", updateSubmitState);
+    document.addEventListener("header-keywords-error", () => {
+        keywordsError = true;
+        updateSubmitState();
+    });
+    updateSubmitState();
+</script>
+{% endblock %}

@@ -7,12 +7,13 @@ E7 — Local passes issued at a lower or zero charge (VC4 only).
 4. Months = absolute calendar-month difference between Start/End Effective Date
    (day of month ignored). Start after End still yields a positive month count.
 5. Monthly rate from Issuance Date: before 2026-04-01 → 350, else → 360.
-6. If Months × rate ≤ Issuance Fees → drop the row.
-   Else Loss = Months × rate − Issuance Fees (positive).
-7. Write those rows (with Loss) as the output CSV.
-8. Monthly metrics / S3 month label use Issuance Date year+month.
+6. Receivable Amt = Months × Monthly Rate.
+7. If Receivable Amt ≤ Issuance Fees → drop the row.
+   Else Loss = Receivable Amt − Issuance Fees (positive).
+8. Write those rows (Receivable Amt left of Loss) as the output CSV.
+9. Monthly metrics / S3 month label use Issuance Date year+month.
    Existing audit_exception_metrics rows are left unchanged (neglected).
-9. Optionally upload the output file to S3.
+10. Optionally upload the output file to S3.
 
 Run:
   1. Set PASS_INPUT_FOLDER and PLAZA_IDENTIFIER below
@@ -284,6 +285,11 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
         if str(config.get("monthly_rate_column") or "").strip()
         else "Monthly Rate"
     )
+    receivable_name = (
+        column_name(config, "receivable_amt")
+        if str(config.get("receivable_amt") or "").strip()
+        else "Receivable Amt"
+    )
     loss_name = column_name(config, "loss")
     class_value = column_name(config, "vehicle_class_value")
     exclude_payment = column_name(config, "payment_mode_exclude")
@@ -319,6 +325,7 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
     months_out: list[int] = []
     rates_out: list[float] = []
     fees_out: list[float] = []
+    receivable_out: list[float] = []
     losses_out: list[float] = []
     issuance_parsed: list[datetime] = []
     keep_mask: list[bool] = []
@@ -340,6 +347,7 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             months_out.append(0)
             rates_out.append(0.0)
             fees_out.append(0.0)
+            receivable_out.append(0.0)
             losses_out.append(0.0)
             issuance_parsed.append(datetime.min)
             continue
@@ -349,6 +357,7 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             months_out.append(0)
             rates_out.append(0.0)
             fees_out.append(0.0)
+            receivable_out.append(0.0)
             losses_out.append(0.0)
             issuance_parsed.append(datetime.min)
             continue
@@ -358,33 +367,38 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             months_out.append(0)
             rates_out.append(0.0)
             fees_out.append(0.0)
+            receivable_out.append(0.0)
             losses_out.append(0.0)
             issuance_parsed.append(issuance)
             continue
 
         count = month_count(start, end)
         rate = monthly_rate_for_issuance(issuance, config, cutover)
-        expected = count * rate
-        if expected <= fee:
+        receivable = round(count * rate, 2)
+        if receivable <= fee:
             dropped_no_loss += 1
             keep_mask.append(False)
             months_out.append(count)
             rates_out.append(rate)
             fees_out.append(fee)
+            receivable_out.append(receivable)
             losses_out.append(0.0)
             issuance_parsed.append(issuance)
             continue
 
-        loss = round(expected - fee, 2)
+        loss = round(receivable - fee, 2)
         keep_mask.append(True)
         months_out.append(count)
         rates_out.append(rate)
         fees_out.append(fee)
+        receivable_out.append(receivable)
         losses_out.append(loss)
         issuance_parsed.append(issuance)
 
     work[months_name] = months_out
     work[rate_col] = rates_out
+    # Receivable Amt = Months × Monthly Rate; keep immediately left of Loss.
+    work[receivable_name] = receivable_out
     work[loss_name] = losses_out
     work["_issuance"] = issuance_parsed
 

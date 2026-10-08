@@ -234,3 +234,56 @@ export function getPortfolioVolume() {
 export function getPortfolioRollup() {
   return request('/api/analytics/portfolio/rollup')
 }
+
+export function listExceptionPrograms() {
+  return request('/api/exception-jobs/programs')
+}
+
+export function listExceptionJobs(plazaIdentifier) {
+  const query = plazaIdentifier
+    ? `?plaza_identifier=${encodeURIComponent(plazaIdentifier)}`
+    : ''
+  return request(`/api/exception-jobs${query}`)
+}
+
+export function getExceptionJob(jobUuid) {
+  return request(`/api/exception-jobs/${jobUuid}`)
+}
+
+export function createExceptionJob(payload) {
+  return request('/api/exception-jobs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function uploadExceptionJobFile(jobUuid, slot, file) {
+  const body = new FormData()
+  body.append('slot', slot)
+  body.append('file', file)
+  return request(`/api/exception-jobs/${jobUuid}/files`, {
+    method: 'POST',
+    body,
+  })
+}
+
+export function deleteExceptionJobFile(jobUuid, fileId) {
+  return request(`/api/exception-jobs/${jobUuid}/files/${fileId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function startExceptionJob(jobUuid) {
+  return request(`/api/exception-jobs/${jobUuid}/start`, {
+    method: 'POST',
+  })
+}
+
+export function markExceptionJobFailed(jobUuid, reason) {
+  return request(`/api/exception-jobs/${jobUuid}/mark-failed`, {
+    method: 'POST',
+    body: JSON.stringify(
+      reason ? { reason } : { reason: 'Marked failed — process was not running.' },
+    ),
+  })
+}

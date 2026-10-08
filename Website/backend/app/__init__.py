@@ -28,13 +28,21 @@ def create_app(config_name: str | None = None) -> Flask:
     # Import models so Flask-Migrate can detect them.
     from app import models  # noqa: F401
 
-    from app.routes import analytics_bp, auth_bp, companies_bp, plazas_bp, spvs_bp
+    from app.routes import (
+        analytics_bp,
+        auth_bp,
+        companies_bp,
+        exception_jobs_bp,
+        plazas_bp,
+        spvs_bp,
+    )
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(companies_bp, url_prefix="/api/companies")
     app.register_blueprint(spvs_bp, url_prefix="/api/spvs")
     app.register_blueprint(plazas_bp, url_prefix="/api/plazas")
     app.register_blueprint(analytics_bp, url_prefix="/api/analytics")
+    app.register_blueprint(exception_jobs_bp, url_prefix="/api/exception-jobs")
 
     @app.get("/api/health")
     def health():
@@ -44,8 +52,10 @@ def create_app(config_name: str | None = None) -> Flask:
     from app.services.audit_exception_bootstrap import (
         bootstrap_audit_exception_types_on_startup,
     )
+    from app.services.exception_job_worker import start_exception_job_worker
 
     bootstrap_siteadmin_on_startup(app)
     bootstrap_audit_exception_types_on_startup(app)
+    start_exception_job_worker(app)
 
     return app

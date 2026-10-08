@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+
+{% block title %}{{ final_exempt_group_label }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="eyebrow">Exempt Query</p>
+        <h1>{{ final_exempt_group_label }}</h1>
+        <p>Process a deduplicated semi-final CSV and mixed pass reports into the final Excel workbook.</p>
+    </div>
+    <div class="actions" style="margin-top: 0; gap: 8px;">
+        <button class="btn secondary" data-bs-toggle="modal" data-bs-target="#passSeparatorConfigModal">Pass Config</button>
+        <a class="btn secondary" href="{{ url_for('exempt_query_hub') }}">Back to Exempt Query</a>
+    </div>
+</section>
+
+{% include "partials/pass_separator_config_modal.html" %}
+
+{% if messages %}
+    <div class="message-list">
+        {% for message_type, message in messages %}
+            <div class="message {{ 'success' if message_type == 'success' else 'error' }}">
+                {{ message }}
+                {% if message_type == 'success' and 'Process Management' in message %}
+                    <a href="{{ url_for('current_process') }}" style="margin-left: 6px;">Open Process Management</a>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
+
+{% set config_review_items = ["Pass Config"] %}
+{% include "partials/config_review_notice.html" %}
+
+<section class="workflow-layout">
+    <div class="workflow-main">
+        <form id="final-exempt-form" method="post" enctype="multipart/form-data" class="stack">
+            <article class="card">
+                <div class="section-head">
+                    <div>
+                        <h2>Process Inputs</h2>
+                        <p>Pass reports are automatically separated into MP and LT. MP is required; LT runs only when LT rows are found.</p>
+                    </div>
+                </div>
+
+                <div class="stack">
+                    <div class="stack">
+                        {% set process_name_locked = (semi_file | length) > 0 or (pass_files | length) > 0 or (concessionaire_files | length) > 0 or (rates_files | length) > 0 or (approved_files | length) > 0 %}
+                        {% include "partials/process_name_field.html" %}
+                    </div>
+
+                    <div class="form-control-row">
+                        <div class="stack" style="flex: 1 1 280px;">
+                            <label for="plaza_name" class="muted">Plaza</label>
+                            <select id="plaza_name" class="field" name="plaza_name" required>
+                                <option value="">Select plaza</option>
+                                {% for plaza in plazas %}
+                                    <option value="{{ plaza }}" {% if process_config.get('plaza_name') == plaza %}selected{% endif %}>{{ plaza }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="stack" style="flex: 1 1 280px;">
+                            <label for="output_file_name" class="muted">Final output name <span style="font-weight: normal;">(optional)</span></label>
+                            <input id="output_file_name" class="field" type="text" name="output_file_name" value="{{ process_config.get('output_file_name', '') }}" placeholder="{process_name}_final.xlsx">
+                        </div>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">Semi-final CSV</h3>
+                        <div class="stack" style="gap: 8px; margin-bottom: 12px;">
+                            <label class="muted" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="radio" name="semi_source" value="upload" id="semi_source_upload" checked>
+                                Upload a CSV
+                            </label>
+                            <label class="muted" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="radio" name="semi_source" value="import" id="semi_source_import">
+                                Import from Merge + Remove Duplicate
+                            </label>
+                        </div>
+                        <div id="semi_upload_wrap" class="stack">
+                            <label for="semi_file" class="muted">Semi-final CSV</label>
+                            <input id="semi_file" class="file-input" type="file" name="semi_file" accept=".csv">
+                        </div>
+                        <div id="semi_import_wrap" class="stack" style="display: none;">
+                            <label for="semi_import" class="muted">Merge + Remove Duplicate output</label>
+                            <select id="semi_import" class="field" name="semi_import">
+                                <option value="">Select semi-final output</option>
+                                {% for item in semi_outputs %}
+                                    <option value="{{ item.relative_path }}">{{ item.label }}</option>
+                                {% endfor %}
+                            </select>
+                            {% if not semi_outputs %}
+                                <p class="muted">No semi-final outputs are available yet. Run Merge + Remove Duplicate first, or upload a CSV.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">Pass files</h3>
+                        <p class="muted">Upload one or more monthly pass reports in .xls, .xlsx, or .csv format. They are merged before MP/LT separation.</p>
+                        <label for="pass_files" class="muted">Pass reports</label>
+                        <input id="pass_files" class="file-input" type="file" name="pass_files" accept=".xls,.xlsx,.csv" multiple>
+                    </div>
+
+                    <div class="card" style="padding: 16px;">
+                        <h3 style="margin-bottom: 10px;">Annexure inputs (after Final workbook)</h3>
+                        <p class="muted" id="annexure-hint">
+                            After the final workbook is built, the portal merges Concessionaire VRNs and runs
+                            Approved Exemption or Classwise Annexure based on the selected plaza.
+                        </p>
+                        <div class="stack" style="gap: 12px;">
+                            <div>
+                                <label for="concessionaire_files" class="muted">Concessionaire / Project Vehicle files (required, one or more)</label>
+                                <input id="concessionaire_files" class="file-input" type="file" name="concessionaire_files" accept=".xls,.xlsx,.csv" multiple>
+                            </div>
+                            <div>
+                                <label for="rates_file" class="muted">Rates file <span style="font-weight: normal;">(optional override)</span></label>
+                                <input id="rates_file" class="file-input" type="file" name="rates_file" accept=".xls,.xlsx,.csv">
+                                <p class="muted" id="rates-default-hint" style="margin-top: 6px;"></p>
+                            </div>
+                            <div id="approved-upload-wrap">
+                                <label for="approved_exemption_file" class="muted">Approved Exemption file <span style="font-weight: normal;">(optional override)</span></label>
+                                <input id="approved_exemption_file" class="file-input" type="file" name="approved_exemption_file" accept=".xls,.xlsx,.csv">
+                                <p class="muted" id="approved-default-hint" style="margin-top: 6px;"></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-control-row">
+                        <button class="btn" type="submit" name="action" value="apply">Apply Inputs</button>
+                    </div>
+                    {% if not submit_ready %}
+                        <p class="muted">Start becomes available after plaza, semi-final CSV, pass file(s), and Concessionaire file(s) are attached (rates/approved use plaza defaults when mapped).</p>
+                    {% endif %}
+                    <div class="actions">
+                        <button class="btn" type="submit" name="action" value="process" {% if not submit_ready %}disabled{% endif %}>Start Final Exempt Process</button>
+                    </div>
+                </div>
+            </article>
+        </form>
+    </div>
+
+    <aside class="workflow-sidebar">
+        <article class="list-card">
+            <div class="section-head">
+                <div>
+                    <h2>Attached Files</h2>
+                    <p>Source inputs remain stored with this process; runtime intermediates are kept in <code>Intermediate_Files/</code>.</p>
+                </div>
+            </div>
+            {% if semi_file or pass_files or concessionaire_files or rates_files or approved_files %}
+                <ul class="data-list">
+                    {% if semi_file %}
+                        <li class="data-row">
+                            <span class="data-name">Semi: {{ semi_file }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="semi">
+                                <input type="hidden" name="filename" value="{{ semi_file }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endif %}
+                    {% for filename in pass_files %}
+                        <li class="data-row">
+                            <span class="data-name">Pass: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="pass">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in concessionaire_files %}
+                        <li class="data-row">
+                            <span class="data-name">Concessionaire: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ concessionaire_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in rates_files %}
+                        <li class="data-row">
+                            <span class="data-name">Rates override: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ rates_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                    {% for filename in approved_files %}
+                        <li class="data-row">
+                            <span class="data-name">Approved override: {{ filename }}</span>
+                            <form method="post" style="margin: 0;">
+                                <input type="hidden" name="action" value="delete">
+                                <input type="hidden" name="process_name" value="{{ current_process_name }}">
+                                <input type="hidden" name="slot" value="{{ approved_slot }}">
+                                <input type="hidden" name="filename" value="{{ filename }}">
+                                <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div class="empty-state"><p>No files attached yet for this process.</p></div>
+            {% endif %}
+        </article>
+    </aside>
+</section>
+
+<script>
+    (function () {
+        const uploadRadio = document.getElementById("semi_source_upload");
+        const importRadio = document.getElementById("semi_source_import");
+        const uploadWrap = document.getElementById("semi_upload_wrap");
+        const importWrap = document.getElementById("semi_import_wrap");
+        const fileInput = document.getElementById("semi_file");
+        const importSelect = document.getElementById("semi_import");
+        const plazaSelect = document.getElementById("plaza_name");
+        const annexureDefaults = {{ annexure_defaults_json|safe }};
+
+        function syncSourceUi() {
+            const importing = importRadio && importRadio.checked;
+            if (uploadWrap) uploadWrap.style.display = importing ? "none" : "";
+            if (importWrap) importWrap.style.display = importing ? "" : "none";
+            if (fileInput) {
+                fileInput.disabled = importing;
+                if (importing) fileInput.value = "";
+            }
+            if (importSelect) importSelect.disabled = !importing;
+        }
+
+        function syncAnnexureHints() {
+            const plaza = plazaSelect ? plazaSelect.value : "";
+            const info = annexureDefaults[plaza] || null;
+            const ratesHint = document.getElementById("rates-default-hint");
+            const approvedHint = document.getElementById("approved-default-hint");
+            const approvedWrap = document.getElementById("approved-upload-wrap");
+            const annexureHint = document.getElementById("annexure-hint");
+            if (!info) {
+                if (ratesHint) ratesHint.textContent = "Select a plaza to see the default rates file.";
+                if (approvedHint) approvedHint.textContent = "";
+                if (approvedWrap) approvedWrap.style.display = "none";
+                if (annexureHint) {
+                    annexureHint.textContent = "After the final workbook is built, annexure runs using the selected plaza mapping.";
+                }
+                return;
+            }
+            if (annexureHint) {
+                annexureHint.textContent = info.uses_approved_script
+                    ? "This plaza uses Approved Exemption after the final workbook."
+                    : "This plaza uses Classwise Annexure after the final workbook.";
+            }
+            if (ratesHint) {
+                ratesHint.textContent = info.default_rates_file
+                    ? "Default rates: " + info.default_rates_file + " (upload only to override)."
+                    : "No default rates mapped for this plaza — upload a rates file.";
+            }
+            if (approvedWrap) {
+                approvedWrap.style.display = info.uses_approved_script ? "" : "none";
+            }
+            if (approvedHint) {
+                approvedHint.textContent = info.default_approved_file
+                    ? "Default approved: " + info.default_approved_file + " (upload only to override)."
+                    : "No default approved file mapped — upload one for this plaza.";
+            }
+        }
+
+        if (uploadRadio) uploadRadio.addEventListener("change", syncSourceUi);
+        if (importRadio) importRadio.addEventListener("change", syncSourceUi);
+        if (plazaSelect) plazaSelect.addEventListener("change", syncAnnexureHints);
+        syncSourceUi();
+        syncAnnexureHints();
+    })();
+</script>
+{% endblock %}

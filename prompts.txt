@@ -1,0 +1,7 @@
+On file upload display a loading animation so that user will be assured that file is being uplaoded.
+
+In some files upload, override option is given, means those files already eixsts in backend server. So display that file name and indicate that no need to upload, unless you realy want to.
+
+And name jobs with plaza_name + datetime. 
+
+Also add query name if jobs will be listed together for all queries. If not then do not add.

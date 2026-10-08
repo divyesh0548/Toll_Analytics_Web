@@ -28,3 +28,5 @@ In compare section display how much volumn is reduced or increaed based on compa
 
 5. Make the lables more white and bigger, so they are easily visible.
 
+6. In exception reuslt, display the percentage of each compared to total.
+
