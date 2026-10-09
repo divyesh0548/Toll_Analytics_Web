@@ -30,12 +30,32 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
-load_dotenv(REPO_ROOT / ".env")
+# Exeption Programs/ (holds .env + common/)
+EXCEPTION_PROGRAMS_ROOT = SCRIPT_DIR.parents[2]
+# Repo root (Website/backend/.env)
+REPO_ROOT = EXCEPTION_PROGRAMS_ROOT.parent
+
+
+def _load_metrics_env() -> None:
+    """
+    Prefer Website/backend/.env for toll_analytics + AWS, then Exeption Programs/.env.
+    override=True so a stale process env cannot block RDS_/Toll_Analytics_DB.
+    """
+    for env_path in (
+        REPO_ROOT / "Website" / "backend" / ".env",
+        EXCEPTION_PROGRAMS_ROOT / ".env",
+    ):
+        if env_path.is_file():
+            load_dotenv(env_path, override=True)
+
+
+_load_metrics_env()
 
 _FINAL_SCRIPTS_DIR = SCRIPT_DIR / "Final_7_scripts"
 if str(_FINAL_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_FINAL_SCRIPTS_DIR))
+if str(EXCEPTION_PROGRAMS_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXCEPTION_PROGRAMS_ROOT))
 
 from annexure_plaza_config import resolve_plaza_identifier  # noqa: E402
 
@@ -85,18 +105,34 @@ def _metrics_table_name() -> str:
 
 
 def _db_engine():
-    host = os.environ.get("RDS_HOST", "").strip()
-    port = os.environ.get("RDS_PORT", "5432").strip() or "5432"
-    user = os.environ.get("RDS_USER", "").strip()
-    password = os.environ.get("RDS_PASSWORD", "").strip()
+    _load_metrics_env()
+    host = (
+        os.environ.get("RDS_HOST", "").strip()
+        or os.environ.get("DB_HOST", "").strip()
+    )
+    port = (
+        os.environ.get("RDS_PORT", "").strip()
+        or os.environ.get("DB_PORT", "").strip()
+        or "5432"
+    )
+    user = (
+        os.environ.get("RDS_USER", "").strip()
+        or os.environ.get("DB_USER", "").strip()
+    )
+    password = (
+        os.environ.get("RDS_PASSWORD", "").strip()
+        or os.environ.get("DB_PASSWORD", "").strip()
+    )
     db_name = _analytics_db_name()
+    if not db_name:
+        db_name = os.environ.get("DB_NAME", "").strip()
     missing = [
         label
         for label, value in (
-            ("RDS_HOST", host),
-            ("RDS_USER", user),
-            ("RDS_PASSWORD", password),
-            ("Toll_Analytics_DB", db_name),
+            ("RDS_HOST/DB_HOST", host),
+            ("RDS_USER/DB_USER", user),
+            ("RDS_PASSWORD/DB_PASSWORD", password),
+            ("Toll_Analytics_DB/DB_NAME", db_name),
         )
         if not value
     ]
@@ -252,10 +288,14 @@ def collect_exception_metrics(output_folder: Path) -> Dict[int, Dict[Tuple[int, 
 def upsert_exception_metrics(
     plaza_identifier: str,
     metrics_by_type: Dict[int, Dict[Tuple[int, int], Dict[str, float]]],
+    *,
+    force_update: bool = False,
 ) -> Tuple[int, int, int]:
     """
     Returns (inserted, updated, skipped).
-    Update only when new count > existing count (writes both count and amount).
+
+    Default: update only when new count > existing count.
+    force_update=True: always overwrite amount/count (Website Full Exempt runs).
     """
     plaza_identifier = str(plaza_identifier or "").strip()
     if not plaza_identifier:
@@ -334,7 +374,7 @@ def upsert_exception_metrics(
                     continue
 
                 existing_count = int(existing["total_count"] or 0)
-                if new_count > existing_count:
+                if force_update or new_count > existing_count:
                     conn.execute(
                         update_sql,
                         {
@@ -351,14 +391,109 @@ def upsert_exception_metrics(
     return inserted, updated, skipped
 
 
+def upload_annexure_exception_outputs(
+    output_folder: str | Path,
+    plaza_identifier: str,
+    *,
+    dry_run: bool = False,
+) -> Tuple[bool, str]:
+    """
+    Upload each annexure workbook from EXCEPTION_FILE_MAP to S3 and INSERT
+    audit_exception_output_files rows (same helper as E4/E6/E7/E9/E10).
+
+    Multi-file types (1, 13) upload every present file under that exception_type_id.
+    """
+    try:
+        from common.s3_output_upload import (  # noqa: WPS433
+            month_label_from_periods,
+            upload_exception_output,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Could not import S3 upload helper: {exc}"
+
+    identifier = str(plaza_identifier or "").strip()
+    if not identifier:
+        return False, "plaza_identifier is required for annexure S3 upload."
+
+    folder = Path(output_folder).expanduser().resolve()
+    if not folder.is_dir():
+        return False, f"Annexure output folder not found: {folder}"
+
+    uploaded = 0
+    skipped: List[str] = []
+    notes: List[str] = []
+
+    for exception_type_id, filenames in EXCEPTION_FILE_MAP.items():
+        found_any = False
+        for filename in filenames:
+            path = _find_file(folder, filename)
+            if not path:
+                skipped.append(f"{filename} (type {exception_type_id})")
+                continue
+            found_any = True
+            try:
+                file_metrics = extract_monthly_metrics(path)
+                if not file_metrics:
+                    notes.append(f"{path.name}: no month rows in Summary — skipped upload")
+                    continue
+                # extract keys are (month, year); S3 helper wants (year, month).
+                periods = [(int(y), int(m)) for (m, y) in file_metrics.keys()]
+                label = month_label_from_periods(periods)
+                result = upload_exception_output(
+                    path,
+                    identifier,
+                    exception_type_id=int(exception_type_id),
+                    month_label=label,
+                    dry_run=dry_run,
+                )
+                uploaded += 1
+                # original_file_name keeps the annexure role (LNC CT, NLNC, …);
+                # file_name adds plaza / month_label / timestamp for S3 uniqueness.
+                notes.append(
+                    f"type {exception_type_id} original={result.get('original_file_name')} "
+                    f"→ {result.get('file_name')} "
+                    f"(plaza={result.get('plaza_name')}, "
+                    f"month={result.get('month_label')})"
+                )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    False,
+                    f"S3 upload failed for {path.name} "
+                    f"(exception_type_id={exception_type_id}): {exc}",
+                )
+        if not found_any:
+            notes.append(
+                f"no files present for exception_type_id={exception_type_id}"
+            )
+
+    if uploaded == 0:
+        detail = "; ".join(notes + [f"missing: {', '.join(skipped)}"] if skipped else notes)
+        return False, f"No annexure outputs uploaded: {detail}"
+
+    msg = (
+        f"Uploaded {uploaded} annexure output file(s) to S3 / "
+        f"audit_exception_output_files."
+    )
+    if notes:
+        msg += " " + " | ".join(notes)
+    return True, msg
+
+
 def sync_exception_metrics_from_folder(
     output_folder: str | Path,
     plaza_identifier: str = "",
     plaza_name: str = "",
+    *,
+    force_update: bool = False,
+    upload_outputs: bool = False,
+    upload_dry_run: bool = False,
 ) -> Tuple[bool, str]:
     """
     Public entry used by the Full Exempt Pipeline and CLI.
     Provide plaza_identifier directly, or plaza_name to resolve from config.
+
+    force_update: always overwrite metrics rows (Website jobs).
+    upload_outputs: also upload EXCEPTION_FILE_MAP workbooks to S3 + output_files table.
     """
     try:
         identifier = str(plaza_identifier or "").strip()
@@ -373,16 +508,30 @@ def sync_exception_metrics_from_folder(
 
         folder = Path(output_folder)
         metrics = collect_exception_metrics(folder)
-        inserted, updated, skipped = upsert_exception_metrics(identifier, metrics)
+        inserted, updated, skipped = upsert_exception_metrics(
+            identifier, metrics, force_update=force_update
+        )
         month_rows = sum(len(v) for v in metrics.values())
-        return (
-            True,
+        parts = [
             (
                 f"Exception metrics synced for plaza_identifier '{identifier}': "
                 f"{month_rows} month-row(s) across {len(metrics)} exception type(s); "
-                f"inserted={inserted}, updated={updated}, skipped={skipped}."
-            ),
-        )
+                f"inserted={inserted}, updated={updated}, skipped={skipped}"
+                f"{' (force_update)' if force_update else ''}."
+            )
+        ]
+
+        if upload_outputs:
+            ok_up, up_msg = upload_annexure_exception_outputs(
+                folder,
+                identifier,
+                dry_run=upload_dry_run,
+            )
+            if not ok_up:
+                return False, parts[0] + " " + up_msg
+            parts.append(up_msg)
+
+        return True, " ".join(parts)
     except Exception as exc:
         return False, f"Exception metrics DB update failed: {exc}"
 

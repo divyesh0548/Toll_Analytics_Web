@@ -50,7 +50,8 @@ ENV_FILE = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 def load_env() -> None:
     if not ENV_FILE.is_file():
         raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    load_dotenv(ENV_FILE, override=False)
+    # override=True so E4/submissions DB_NAME from the job env does not stick.
+    load_dotenv(ENV_FILE, override=True)
 
 
 def require_env(name: str) -> str:
@@ -60,13 +61,27 @@ def require_env(name: str) -> str:
     return value
 
 
+def toll_analytics_db_name() -> str:
+    """
+    DB that holds plazas + audit_exception_metrics / output_files.
+    Prefer explicit analytics names, then Website DB_NAME (toll_analytics).
+    Never use submissions / Source_DB_NAME.
+    """
+    return (
+        os.getenv("Toll_Analytics_DB", "").strip()
+        or os.getenv("Plaza_analytics_DB_NAME", "").strip()
+        or os.getenv("ANALYTICS_DB_NAME", "").strip()
+        or require_env("DB_NAME")
+    )
+
+
 def connection_kwargs() -> dict:
     return {
         "host": require_env("DB_HOST"),
-        "port": int(require_env("DB_PORT")),
+        "port": int(os.getenv("DB_PORT") or "5432"),
         "user": require_env("DB_USER"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("DB_NAME"),
+        "database": toll_analytics_db_name(),
     }
 
 

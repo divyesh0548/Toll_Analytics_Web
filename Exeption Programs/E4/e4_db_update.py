@@ -186,8 +186,10 @@ def aggregate_monthly_loss_and_trips(
 ) -> list[dict]:
     """
     Group by year/month of the pass start date.
-    total_amount = sum(Loss); total_count = sum(Trips taken).
+    total_amount = sum of positive Loss only (negatives ignored);
+    total_count = sum(Trips taken).
     end_date_aliases is accepted and ignored so older callers still run.
+    Does not change Loss values in the output file — metrics only.
     """
     if pass_df is None or pass_df.empty:
         return []
@@ -221,7 +223,10 @@ def aggregate_monthly_loss_and_trips(
 
     work["year"] = work["_start"].dt.year.astype(int)
     work["month"] = work["_start"].dt.month.astype(int)
-    work["_loss"] = pd.to_numeric(work[loss_col], errors="coerce").fillna(0)
+    # Metrics: only positive Loss contributes to total_amount.
+    work["_loss"] = (
+        pd.to_numeric(work[loss_col], errors="coerce").fillna(0).clip(lower=0)
+    )
     work["_trips"] = pd.to_numeric(work[trips_col], errors="coerce").fillna(0)
     if only_nonzero_trips:
         work = work.loc[work["_trips"] != 0].copy()

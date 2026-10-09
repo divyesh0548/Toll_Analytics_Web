@@ -266,11 +266,13 @@ def upsert_invalid_lookup_monthly(
 ) -> dict[str, int]:
     """Upsert pre-aggregated monthly Impact rows into audit_exception_metrics."""
     load_env()
+    conn_kw = connection_kwargs()
+    print(f"Metrics DB: {conn_kw.get('database')}")
     print(f"Plaza: {plaza_identifier}")
     print(f"exception_type_id: {exception_type_id}")
     print(f"Months to sync: {len(rows)}")
 
-    conn = psycopg2.connect(**connection_kwargs())
+    conn = psycopg2.connect(**conn_kw)
     try:
         plaza = fetch_plaza(conn, plaza_identifier)
         if plaza is None:

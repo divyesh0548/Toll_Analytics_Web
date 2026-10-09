@@ -1,1 +1,3 @@
 Aroli updated till July - 2026.
+
+Need to wire two seperate process in E05 query.

@@ -1,0 +1,13 @@
+{
+  "_readme": [
+    "Shared map for all exception programs (E4, E5, E6, E7, E9, E10, …).",
+    "Key   = plazas.plaza_identifier (toll_analytics / Website).",
+    "Value = submissions.entity_name (also plaza_rates / ETC-VRN download key).",
+    "Website jobs should only ask for plaza; resolve entity_name via this file.",
+    "Fill empty string values with the correct submissions entity_name, or delete unused rows."
+  ],
+  "plaza_identifier_to_entity_name": {
+    "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6": "bassi",
+    "d55c2122-117c-45be-8554-7ea76730932b": "odhaki_paipkhar"
+  }
+}

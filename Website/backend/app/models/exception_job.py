@@ -12,6 +12,17 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _iso_utc(value: datetime | None) -> str | None:
+    """Serialize datetimes as UTC ISO-8601 (…Z). DB stays UTC; UI converts to local."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
 JOB_STATUSES = (
     "draft",
     "queued",
@@ -67,10 +78,31 @@ class ExceptionJob(db.Model):
     )
     plaza = db.relationship("Plaza", foreign_keys=[plaza_identifier])
 
-    def to_dict(self, *, include_files: bool = True) -> dict:
+    def to_dict(self, *, include_files: bool = True, include_program_in_name: bool = False) -> dict:
+        plaza_name = self.plaza.plaza_name if self.plaza else None
+        # Name is plaza only — UI appends local-time created_at (DB remains UTC).
+        job_name = str(plaza_name or self.pipeline_plaza_key or "Job")
+        if include_program_in_name:
+            # Short program hint only when the UI lists jobs across programs.
+            code = str(self.program_code or "").strip()
+            short = {
+                "full_exempt_e1_e2_e3_e13_e14": "Exempt Query",
+                "e04": "E04",
+                "e05_group": "E05",
+                "valid_invalid_lookup": "Valid/Invalid",
+                "e05": "Incorrect FASTag",
+                "e06": "E06",
+                "e07": "E07",
+                "e09": "E09",
+                "e10": "E10",
+                "e15": "E15",
+            }.get(code, code)
+            job_name = f"{short} · {job_name}"
+
         payload = {
             "id": self.id,
             "job_uuid": self.job_uuid,
+            "job_name": job_name,
             "program_code": self.program_code,
             "plaza_identifier": self.plaza_identifier,
             "pipeline_plaza_key": self.pipeline_plaza_key,
@@ -78,15 +110,16 @@ class ExceptionJob(db.Model):
             "progress_message": self.progress_message,
             "error_message": self.error_message,
             "process_name": self.process_name,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "plaza_name": self.plaza.plaza_name if self.plaza else None,
+            "started_at": _iso_utc(self.started_at),
+            "finished_at": _iso_utc(self.finished_at),
+            "created_at": _iso_utc(self.created_at),
+            "updated_at": _iso_utc(self.updated_at),
+            "plaza_name": plaza_name,
         }
         if include_files:
             payload["files"] = [f.to_dict() for f in self.files]
         return payload
+
 
 
 class ExceptionJobFile(db.Model):
@@ -120,5 +153,5 @@ class ExceptionJobFile(db.Model):
             "file_size_bytes": (
                 int(self.file_size_bytes) if self.file_size_bytes is not None else None
             ),
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": _iso_utc(self.created_at),
         }

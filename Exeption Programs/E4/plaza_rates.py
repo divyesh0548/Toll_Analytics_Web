@@ -2,6 +2,8 @@
 # TODO: Replace these placeholder rates with actual rates for all 40 plazas
 # The plaza names should match exactly as they appear in the database (entity_name column)
 
+from datetime import date
+
 # List of plazas where rates are applied as mudhipar = bahadrabad, dukkavanipalem, hattargi, kelapur, kognoli, mahasamudram, maigalganj
 PLAZA_RATES = {
     "aroli": {
@@ -1825,6 +1827,44 @@ def get_all_plaza_names():
         List of plaza names
     """
     return list(PLAZA_RATES.keys())
+
+
+def normalize_plaza_rate_key(plaza_name):
+    """Normalize UI / DB plaza names to plaza_rates dictionary keys."""
+    if plaza_name is None:
+        return ""
+    return str(plaza_name).strip().lower().replace(" ", "_")
+
+
+# New tariff applies from April 2026 onwards (inclusive).
+APR26_RATES_START_DATE = date(2026, 4, 1)
+
+
+def resolve_plaza_rates_dict(plaza_name, as_of_date=None):
+    """
+    Pick the rate table for a plaza.
+
+    If as_of_date is on/after April 2026 and the plaza has Apr26 rates, use those.
+    Otherwise fall back to PLAZA_RATES. Returns (rates_dict, source_label).
+    """
+    key = normalize_plaza_rate_key(plaza_name)
+    if not key:
+        return None, None
+
+    use_apr26 = False
+    if as_of_date is not None:
+        try:
+            if hasattr(as_of_date, "date") and not isinstance(as_of_date, date):
+                as_of_date = as_of_date.date()
+            use_apr26 = as_of_date >= APR26_RATES_START_DATE
+        except (TypeError, ValueError):
+            use_apr26 = False
+
+    if use_apr26 and key in Plaza_Rates_Apr26_onwards:
+        return Plaza_Rates_Apr26_onwards[key], "apr26"
+    if key in PLAZA_RATES:
+        return PLAZA_RATES[key], "base"
+    return None, None
 
 
 def should_process_entity(entity_name):

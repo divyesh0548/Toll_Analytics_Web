@@ -7,11 +7,18 @@ from collections import defaultdict
 from datetime import date
 
 from app.extensions import db
-from app.models.audit_exception import AuditExceptionMetric, AuditExceptionType
+from app.models.audit_exception import (
+    AuditExceptionMetric,
+    AuditExceptionOutputFile,
+    AuditExceptionType,
+)
 from app.services.audit_exception_bootstrap import ensure_audit_exception_types
 
 
 MONTH_LABELS = list(month_abbr)  # index 1 = Jan
+_MONTH_ABBR_TO_NUM = {
+    month_abbr[i].casefold(): i for i in range(1, 13) if month_abbr[i]
+}
 
 
 def _period_label(year: int, month: int | None) -> str:
@@ -19,6 +26,86 @@ def _period_label(year: int, month: int | None) -> str:
         return f"{year} (full year)"
     name = MONTH_LABELS[month] if 1 <= month <= 12 else str(month)
     return f"{name} {year}"
+
+
+def parse_month_label_periods(month_label: str) -> set[tuple[int, int]]:
+    """
+    Parse output month_label into (year, month) pairs.
+
+    Supported shapes (from common.s3_output_upload):
+      2026-Jan
+      2026-Apr-May
+      2026-Nov-Dec_2027-Jan-Feb
+    Also accepts legacy Mon-YYYY / Mon-Mon-YYYY.
+    """
+    text = str(month_label or "").strip()
+    if not text:
+        return set()
+
+    pairs: set[tuple[int, int]] = set()
+    for part in text.split("_"):
+        part = part.strip()
+        if not part:
+            continue
+        tokens = [t.strip() for t in part.split("-") if t.strip()]
+        if not tokens:
+            continue
+
+        # YEAR-Mon-Mon-...
+        if tokens[0].isdigit() and len(tokens[0]) == 4:
+            year = int(tokens[0])
+            for tok in tokens[1:]:
+                month_num = _MONTH_ABBR_TO_NUM.get(tok[:3].casefold())
+                if month_num:
+                    pairs.add((year, month_num))
+            continue
+
+        # Mon-...-YEAR
+        if tokens[-1].isdigit() and len(tokens[-1]) == 4:
+            year = int(tokens[-1])
+            for tok in tokens[:-1]:
+                month_num = _MONTH_ABBR_TO_NUM.get(tok[:3].casefold())
+                if month_num:
+                    pairs.add((year, month_num))
+
+    return pairs
+
+
+def _output_file_matches(
+    month_label: str,
+    *,
+    year: int,
+    month: int | None,
+) -> bool:
+    periods = parse_month_label_periods(month_label)
+    if not periods:
+        return False
+    if month is None:
+        return any(y == year for y, _m in periods)
+    return (year, month) in periods
+
+
+def _load_output_files_by_type(
+    plaza_identifier: str,
+    *,
+    year: int,
+    month: int | None,
+) -> dict[int, list[dict]]:
+    """Newest-first output files per exception_type_id matching the selection."""
+    rows = (
+        AuditExceptionOutputFile.query.filter_by(
+            plaza_identifier=plaza_identifier,
+            is_final_output=True,
+        )
+        .order_by(AuditExceptionOutputFile.created_at.desc())
+        .all()
+    )
+    by_type: dict[int, list[dict]] = defaultdict(list)
+    for row in rows:
+        if not _output_file_matches(row.month_label, year=year, month=month):
+            continue
+        by_type[int(row.exception_type_id)].append(row.to_dict())
+    return by_type
 
 
 def _available_periods(plaza_identifier: str) -> list[dict]:
@@ -155,6 +242,10 @@ def build_plaza_audit_exceptions(
             "status": None,
         }
 
+    output_files_by_type = _load_output_files_by_type(
+        plaza_identifier, year=year, month=month
+    )
+
     exceptions = []
     for exc_type in parents:
         metric = _metric_for(exc_type.id)
@@ -175,6 +266,9 @@ def build_plaza_audit_exceptions(
                     "percentage": child_metric.get("percentage"),
                     "severity": child_metric.get("severity"),
                     "status": child_metric.get("status"),
+                    "output_files": list(
+                        output_files_by_type.get(int(child.id), [])
+                    ),
                 }
             )
         if segments:
@@ -199,6 +293,9 @@ def build_plaza_audit_exceptions(
                 "percentage": percentage,
                 "severity": metric.get("severity"),
                 "status": metric.get("status"),
+                "output_files": list(
+                    output_files_by_type.get(int(exc_type.id), [])
+                ),
                 "segments": segments,
             }
         )

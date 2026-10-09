@@ -6,17 +6,63 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 import {
+  attachStagingInvalidFile,
   createExceptionJob,
   deleteExceptionJobFile,
+  getAnnexureServerDefaults,
   getExceptionJob,
   listExceptionJobs,
   listExceptionPrograms,
   listPlazas,
+  listStagingInvalidFiles,
   markExceptionJobFailed,
   startExceptionJob,
   uploadExceptionJobFile,
 } from '@/lib/api'
-import { cn } from '@/lib/utils'
+import { cn, formatLocalDateTime } from '@/lib/utils'
+
+const PROGRAM_SHORT = {
+  full_exempt_e1_e2_e3_e13_e14: 'Exempt Query',
+  e04: 'E04',
+  e05_group: 'E05',
+  valid_invalid_lookup: 'Valid/Invalid',
+  e05: 'Incorrect FASTag',
+  e06: 'E06',
+  e07: 'E07',
+  e09: 'E09',
+  e10: 'E10',
+  e15: 'E15',
+}
+
+function jobFilterCode(program) {
+  if (!program) return undefined
+  if (Array.isArray(program.job_program_codes) && program.job_program_codes.length) {
+    return program.job_program_codes.join(',')
+  }
+  if (program.is_process_group && Array.isArray(program.processes)) {
+    return program.processes.map((p) => p.code).join(',')
+  }
+  return program.code
+}
+
+function processesFor(program) {
+  if (!program) return []
+  if (program.is_process_group && Array.isArray(program.processes)) {
+    return program.processes.filter((p) => p.enabled !== false)
+  }
+  return [program]
+}
+
+/** Plaza + local created_at only (DB/API keep UTC). Never reuse job_name timestamps. */
+function jobDisplayName(job, { includeProgram = false } = {}) {
+  if (!job) return ''
+  const plaza = job.plaza_name || job.pipeline_plaza_key || job.plaza_identifier || 'Job'
+  const when = formatLocalDateTime(job.created_at)
+  const base = includeProgram
+    ? `${PROGRAM_SHORT[job.program_code] || job.program_code || 'Job'} · ${plaza}`
+    : plaza
+  return when && when !== '—' ? `${base} · ${when}` : base
+}
 
 const FULL_EXEMPT_CODE = 'full_exempt_e1_e2_e3_e13_e14'
 
@@ -42,18 +88,27 @@ export function ExceptionUploadsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedProgram, setSelectedProgram] = useState(null)
+  const [selectedProcess, setSelectedProcess] = useState(null)
 
   const [plazaIdentifier, setPlazaIdentifier] = useState('')
   const [pipelinePlazaKey, setPipelinePlazaKey] = useState('')
   const [activeJob, setActiveJob] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [uploadingSlot, setUploadingSlot] = useState(null)
+  const [uploadingNames, setUploadingNames] = useState([])
   const [notice, setNotice] = useState('')
+  const [serverDefaults, setServerDefaults] = useState(null)
+  const [stagingFiles, setStagingFiles] = useState([])
+  const [stagingFileId, setStagingFileId] = useState('')
 
-  const loadCatalog = useCallback(async () => {
+  const activeProcess = selectedProcess || processesFor(selectedProgram)[0] || null
+
+  const loadCatalog = useCallback(async (program) => {
+    const filterCode = jobFilterCode(program)
     const [catalog, plazaData, jobData] = await Promise.all([
       listExceptionPrograms(),
       listPlazas(),
-      listExceptionJobs(),
+      listExceptionJobs(undefined, filterCode || undefined),
     ])
     setPrograms(catalog.programs || [])
     setPipelineKeys(catalog.pipeline_plaza_keys || [])
@@ -65,7 +120,7 @@ export function ExceptionUploadsPage() {
     let active = true
     ;(async () => {
       try {
-        await loadCatalog()
+        await loadCatalog(selectedProgram)
       } catch (err) {
         if (active) setError(err.message || 'Failed to load exception programs')
       } finally {
@@ -75,7 +130,72 @@ export function ExceptionUploadsPage() {
     return () => {
       active = false
     }
-  }, [loadCatalog])
+  }, [loadCatalog, selectedProgram])
+
+  // Default / sync process when opening a program group.
+  useEffect(() => {
+    if (!selectedProgram) {
+      setSelectedProcess(null)
+      return
+    }
+    const procs = processesFor(selectedProgram)
+    if (!procs.length) {
+      setSelectedProcess(null)
+      return
+    }
+    setSelectedProcess((prev) => {
+      if (prev && procs.some((p) => p.code === prev.code)) return prev
+      return procs[0]
+    })
+  }, [selectedProgram])
+
+  // Load server-side default rates / approved exemption for override slots.
+  useEffect(() => {
+    const key = activeJob?.pipeline_plaza_key || pipelinePlazaKey
+    if (!key || selectedProgram?.code !== FULL_EXEMPT_CODE) {
+      setServerDefaults(null)
+      return undefined
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await getAnnexureServerDefaults(key)
+        if (!cancelled) setServerDefaults(data)
+      } catch {
+        if (!cancelled) setServerDefaults(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [activeJob?.pipeline_plaza_key, pipelinePlazaKey, selectedProgram?.code])
+
+  // Staging invalid_table list for E05 main process (latest first).
+  useEffect(() => {
+    const plazaId = activeJob?.plaza_identifier || plazaIdentifier
+    if (!plazaId || !activeProcess?.allows_staging_invalid_pick) {
+      setStagingFiles([])
+      setStagingFileId('')
+      return undefined
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await listStagingInvalidFiles(plazaId, 5)
+        if (!cancelled) setStagingFiles(data.files || [])
+      } catch {
+        if (!cancelled) setStagingFiles([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeJob?.plaza_identifier,
+    plazaIdentifier,
+    activeProcess?.allows_staging_invalid_pick,
+    activeJob?.status,
+  ])
 
   // Poll active job while queued/running
   useEffect(() => {
@@ -86,7 +206,10 @@ export function ExceptionUploadsPage() {
         const data = await getExceptionJob(activeJob.job_uuid)
         setActiveJob(data.job)
         if (['succeeded', 'failed'].includes(data.job.status)) {
-          const jobData = await listExceptionJobs()
+          const jobData = await listExceptionJobs(
+            undefined,
+            jobFilterCode(selectedProgram),
+          )
           setJobs(jobData.jobs || [])
         }
       } catch {
@@ -94,7 +217,7 @@ export function ExceptionUploadsPage() {
       }
     }, 3000)
     return () => clearInterval(timer)
-  }, [activeJob?.job_uuid, activeJob?.status])
+  }, [activeJob?.job_uuid, activeJob?.status, selectedProgram])
 
   const plazaOptions = useMemo(
     () =>
@@ -114,18 +237,29 @@ export function ExceptionUploadsPage() {
   const selectedPlaza = plazas.find((p) => p.plaza_identifier === plazaIdentifier)
 
   async function handleCreateJob() {
+    const process = activeProcess
+    if (!process?.code) {
+      setError('Select a process before creating a job.')
+      return
+    }
     setBusy(true)
     setNotice('')
     setError('')
     try {
       const data = await createExceptionJob({
-        program_code: FULL_EXEMPT_CODE,
+        program_code: process.code,
         plaza_identifier: plazaIdentifier,
-        pipeline_plaza_key: pipelinePlazaKey,
+        ...(process.requires_pipeline_plaza_key ||
+        selectedProgram?.requires_pipeline_plaza_key
+          ? { pipeline_plaza_key: pipelinePlazaKey }
+          : {}),
       })
       setActiveJob(data.job)
       setNotice('Job created. Upload the required files, then Start.')
-      const jobData = await listExceptionJobs()
+      const jobData = await listExceptionJobs(
+        undefined,
+        jobFilterCode(selectedProgram) || process.code,
+      )
       setJobs(jobData.jobs || [])
     } catch (err) {
       setError(err.message || 'Could not create job')
@@ -136,19 +270,29 @@ export function ExceptionUploadsPage() {
 
   async function handleUpload(slotKey, fileList) {
     if (!activeJob || !fileList?.length) return
+    const files = Array.from(fileList)
+    setUploadingSlot(slotKey)
+    setUploadingNames(files.map((f) => f.name))
     setBusy(true)
     setError('')
+    setNotice('')
     try {
       let job = activeJob
-      for (const file of Array.from(fileList)) {
+      for (const file of files) {
         const data = await uploadExceptionJobFile(activeJob.job_uuid, slotKey, file)
         job = data.job
       }
       setActiveJob(job)
-      setNotice('Upload saved to S3.')
+      setNotice(
+        files.length === 1
+          ? `Uploaded ${files[0].name}`
+          : `Uploaded ${files.length} files`,
+      )
     } catch (err) {
       setError(err.message || 'Upload failed')
     } finally {
+      setUploadingSlot(null)
+      setUploadingNames([])
       setBusy(false)
     }
   }
@@ -176,7 +320,10 @@ export function ExceptionUploadsPage() {
       const data = await markExceptionJobFailed(activeJob.job_uuid)
       setActiveJob(data.job)
       setNotice('Job marked failed. You can Retry now.')
-      const jobData = await listExceptionJobs()
+      const jobData = await listExceptionJobs(
+        undefined,
+        jobFilterCode(selectedProgram),
+      )
       setJobs(jobData.jobs || [])
     } catch (err) {
       setError(err.message || 'Could not mark job failed')
@@ -201,13 +348,56 @@ export function ExceptionUploadsPage() {
     }
   }
 
+  async function handleAttachStaging(fileIdOverride) {
+    const id = fileIdOverride ?? stagingFileId
+    if (!activeJob || !id) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const data = await attachStagingInvalidFile(activeJob.job_uuid, Number(id))
+      setActiveJob(data.job)
+      setStagingFileId(String(id))
+      setNotice('Invalid table attached. You can Start the job when ready.')
+    } catch (err) {
+      setError(err.message || 'Could not attach staging file')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const stagingOptions = useMemo(
+    () =>
+      stagingFiles.map((f) => ({
+        value: String(f.id),
+        label: f.file_name || f.original_file_name || `file #${f.id}`,
+        meta: formatLocalDateTime(f.created_at),
+      })),
+    [stagingFiles],
+  )
+
   async function openJob(jobUuid) {
     setBusy(true)
     setError('')
     try {
       const data = await getExceptionJob(jobUuid)
       setActiveJob(data.job)
-      setSelectedProgram(programs.find((p) => p.code === data.job.program_code) || null)
+      const jobCode = data.job.program_code
+      const parent =
+        programs.find((p) => p.code === jobCode) ||
+        programs.find(
+          (p) =>
+            p.is_process_group &&
+            (p.processes || []).some((proc) => proc.code === jobCode),
+        ) ||
+        null
+      setSelectedProgram(parent)
+      if (parent?.is_process_group) {
+        const proc = (parent.processes || []).find((p) => p.code === jobCode)
+        setSelectedProcess(proc || null)
+      } else {
+        setSelectedProcess(parent)
+      }
       setPlazaIdentifier(data.job.plaza_identifier)
       setPipelinePlazaKey(data.job.pipeline_plaza_key)
     } catch (err) {
@@ -215,6 +405,11 @@ export function ExceptionUploadsPage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  function serverDefaultForSlot(slotKey) {
+    if (!serverDefaults || !slotKey) return null
+    return serverDefaults[slotKey] || null
   }
 
   if (loading) {
@@ -293,6 +488,9 @@ export function ExceptionUploadsPage() {
                 <CardContent>
                   <p className="text-small text-muted-foreground">
                     Codes: {(program.group_exception_codes || []).join(', ')}
+                    {program.is_process_group && program.processes?.length
+                      ? ` · ${program.processes.length} processes`
+                      : ''}
                   </p>
                 </CardContent>
               </Card>
@@ -307,7 +505,12 @@ export function ExceptionUploadsPage() {
                 <div>
                   <CardTitle>{selectedProgram.label}</CardTitle>
                   <CardDescription>
-                    Metrics: {(selectedProgram.group_exception_codes || []).join(', ')}
+                    {`Metrics: ${(selectedProgram.group_exception_codes || []).join(', ')}`}
+                    {selectedProgram.description ? (
+                      <span className="mt-1 block text-muted-foreground">
+                        {selectedProgram.description}
+                      </span>
+                    ) : null}
                   </CardDescription>
                 </div>
                 <Button
@@ -316,6 +519,7 @@ export function ExceptionUploadsPage() {
                   size="sm"
                   onClick={() => {
                     setSelectedProgram(null)
+                    setSelectedProcess(null)
                     setActiveJob(null)
                   }}
                 >
@@ -324,34 +528,95 @@ export function ExceptionUploadsPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
+              {selectedProgram.is_process_group && processesFor(selectedProgram).length > 1 ? (
+                <div className="space-y-2">
+                  <Label>Process</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {processesFor(selectedProgram).map((proc) => (
+                      <Button
+                        key={proc.code}
+                        type="button"
+                        size="sm"
+                        variant={activeProcess?.code === proc.code ? 'default' : 'outline'}
+                        disabled={busy}
+                        onClick={() => {
+                          setSelectedProcess(proc)
+                          if (activeJob && activeJob.program_code !== proc.code) {
+                            setActiveJob(null)
+                          }
+                          setNotice('')
+                          setError('')
+                        }}
+                      >
+                        {proc.label}
+                      </Button>
+                    ))}
+                  </div>
+                  {activeProcess?.description ? (
+                    <p className="text-small text-muted-foreground">
+                      {activeProcess.description}
+                    </p>
+                  ) : null}
+                  {activeProcess?.updates_metrics === false ? (
+                    <p className="text-small text-muted-foreground">
+                      This step does not update metrics — staging file only.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
               {!activeJob ? (
                 <>
-                  <div className="grid gap-4 sm:grid-cols-2">
+                  <div
+                    className={cn(
+                      'grid gap-4',
+                      (activeProcess?.requires_pipeline_plaza_key ||
+                        selectedProgram.requires_pipeline_plaza_key)
+                        ? 'sm:grid-cols-2'
+                        : 'sm:grid-cols-1',
+                    )}
+                  >
                     <div className="space-y-2">
-                      <Label>Website plaza</Label>
+                      <Label>Plaza</Label>
                       <SearchableSelect
                         options={plazaOptions}
                         value={plazaIdentifier}
                         onChange={setPlazaIdentifier}
                         placeholder="Select plaza…"
                       />
+                      {(activeProcess?.uses_entity_map ?? selectedProgram.uses_entity_map) ? (
+                        <p className="text-small text-muted-foreground">
+                          Entity name for rates / downloads is resolved from{' '}
+                          <code className="text-small">plaza_entity_map.json</code>.
+                        </p>
+                      ) : null}
                     </div>
-                    <div className="space-y-2">
-                      <Label>Pipeline plaza key</Label>
-                      <SearchableSelect
-                        options={pipelineOptions}
-                        value={pipelinePlazaKey}
-                        onChange={setPipelinePlazaKey}
-                        placeholder="e.g. BASSI…"
-                      />
-                      <p className="text-small text-muted-foreground">
-                        Must match codes_dump / annexure config (usually uppercase name).
-                      </p>
-                    </div>
+                    {(activeProcess?.requires_pipeline_plaza_key ||
+                      selectedProgram.requires_pipeline_plaza_key) ? (
+                      <div className="space-y-2">
+                        <Label>Pipeline plaza key</Label>
+                        <SearchableSelect
+                          options={pipelineOptions}
+                          value={pipelinePlazaKey}
+                          onChange={setPipelinePlazaKey}
+                          placeholder="e.g. BASSI…"
+                        />
+                        <p className="text-small text-muted-foreground">
+                          Must match codes_dump / annexure config (usually uppercase name).
+                        </p>
+                      </div>
+                    ) : null}
                   </div>
                   <Button
                     type="button"
-                    disabled={busy || !plazaIdentifier || !pipelinePlazaKey}
+                    disabled={
+                      busy ||
+                      !plazaIdentifier ||
+                      !activeProcess?.code ||
+                      ((activeProcess?.requires_pipeline_plaza_key ||
+                        selectedProgram.requires_pipeline_plaza_key) &&
+                        !pipelinePlazaKey)
+                    }
                     onClick={handleCreateJob}
                   >
                     {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
@@ -362,7 +627,7 @@ export function ExceptionUploadsPage() {
                 <>
                   <div className="flex flex-wrap items-center gap-2 text-body">
                     <span className="text-muted-foreground">Job</span>
-                    <code className="text-small">{activeJob.job_uuid.slice(0, 8)}…</code>
+                    <span className="font-medium">{jobDisplayName(activeJob)}</span>
                     <span
                       className={cn(
                         'rounded-sm px-2 py-0.5 text-small capitalize',
@@ -371,15 +636,143 @@ export function ExceptionUploadsPage() {
                     >
                       {activeJob.status}
                     </span>
-                    {selectedPlaza ? (
-                      <span className="text-muted-foreground">· {selectedPlaza.plaza_name}</span>
-                    ) : null}
-                    <span className="text-muted-foreground">· {activeJob.pipeline_plaza_key}</span>
+                    <code className="text-small text-muted-foreground">
+                      {activeJob.job_uuid.slice(0, 8)}…
+                    </code>
                   </div>
 
-                  {(selectedProgram.input_slots || []).map((slot) => {
+                  {(activeProcess?.input_slots || selectedProgram.input_slots || []).map((slot) => {
                     const slotFiles = (activeJob.files || []).filter((f) => f.slot === slot.key)
                     const canEdit = ['draft', 'failed'].includes(activeJob.status)
+                    const isUploading = uploadingSlot === slot.key
+                    const defaults = slot.server_default ? serverDefaultForSlot(slot.key) : null
+                    const hasServerFile = Boolean(defaults?.exists && defaults?.file_name)
+                    const hasOverrideUpload = slotFiles.length > 0
+                    const isInvalidPickSlot = Boolean(slot.or_staging_pick)
+                    const hasInvalidReady = isInvalidPickSlot && slotFiles.length > 0
+
+                    // Clearer two-path UX for Incorrect FASTag invalid table.
+                    if (isInvalidPickSlot) {
+                      return (
+                        <div
+                          key={slot.key}
+                          className="space-y-3 rounded-sm border border-border p-4"
+                        >
+                          <div>
+                            <p className="text-subheader">
+                              Invalid table
+                              <span className="text-primary"> *</span>
+                            </p>
+                            <p className="mt-1 text-small text-muted-foreground">
+                              Pick one path: reuse a file from Valid/Invalid Lookup, or upload
+                              a new file. Then click Start job.
+                            </p>
+                          </div>
+
+                          {hasInvalidReady ? (
+                            <div className="space-y-2 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-3 py-3">
+                              <p className="text-body font-medium text-emerald-800 dark:text-emerald-200">
+                                Ready — invalid table attached
+                              </p>
+                              {slotFiles.map((file) => (
+                                <div
+                                  key={file.id}
+                                  className="flex items-center justify-between gap-2 text-body"
+                                >
+                                  <span className="truncate">{file.original_file_name}</span>
+                                  {canEdit ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      disabled={busy}
+                                      onClick={() => handleDeleteFile(file.id)}
+                                    >
+                                      Change
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {canEdit && !hasInvalidReady ? (
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div className="space-y-3 rounded-sm border border-border bg-secondary/20 p-3">
+                                <div>
+                                  <p className="text-body font-medium">A. From Valid/Invalid</p>
+                                  <p className="text-small text-muted-foreground">
+                                    Latest files for this plaza first. Selecting one attaches it.
+                                  </p>
+                                </div>
+                                {stagingOptions.length === 0 ? (
+                                  <p className="text-small text-muted-foreground">
+                                    None yet — run “Valid / Invalid Lookup” for this plaza first,
+                                    or use upload on the right.
+                                  </p>
+                                ) : (
+                                  <SearchableSelect
+                                    value={stagingFileId}
+                                    onChange={(value) => {
+                                      setStagingFileId(value)
+                                      if (value) handleAttachStaging(value)
+                                    }}
+                                    options={stagingOptions}
+                                    placeholder="Choose existing invalid file…"
+                                    disabled={busy}
+                                  />
+                                )}
+                              </div>
+
+                              <div className="space-y-3 rounded-sm border border-border bg-secondary/20 p-3">
+                                <div>
+                                  <p className="text-body font-medium">B. Upload new file</p>
+                                  <p className="text-small text-muted-foreground">
+                                    Use this if you already have an invalid_table CSV/Excel.
+                                  </p>
+                                </div>
+                                <label
+                                  className={cn(
+                                    'inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-sm border border-border bg-background px-3 py-2 text-small hover:bg-accent',
+                                    isUploading && 'pointer-events-none opacity-70',
+                                  )}
+                                >
+                                  {isUploading ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Upload className="h-3.5 w-3.5" />
+                                  )}
+                                  {isUploading ? 'Uploading…' : 'Browse & upload invalid table'}
+                                  <input
+                                    type="file"
+                                    className="hidden"
+                                    accept={slot.accept}
+                                    disabled={busy}
+                                    onChange={(event) => {
+                                      handleUpload(slot.key, event.target.files)
+                                      event.target.value = ''
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {isUploading ? (
+                            <div className="flex items-start gap-2 rounded-sm bg-amber-500/10 px-3 py-2 text-small text-amber-900 dark:text-amber-100">
+                              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                              <div className="min-w-0">
+                                <p className="font-medium">Uploading invalid table…</p>
+                                <p className="truncate text-muted-foreground">
+                                  {uploadingNames.join(', ')}
+                                </p>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    }
+
                     return (
                       <div key={slot.key} className="space-y-2 rounded-sm border border-border p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -394,9 +787,18 @@ export function ExceptionUploadsPage() {
                             </p>
                           </div>
                           {canEdit ? (
-                            <label className="inline-flex cursor-pointer items-center gap-2 rounded-sm border border-border px-3 py-1.5 text-small hover:bg-accent">
-                              <Upload className="h-3.5 w-3.5" />
-                              Upload
+                            <label
+                              className={cn(
+                                'inline-flex cursor-pointer items-center gap-2 rounded-sm border border-border px-3 py-1.5 text-small hover:bg-accent',
+                                isUploading && 'pointer-events-none opacity-70',
+                              )}
+                            >
+                              {isUploading ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Upload className="h-3.5 w-3.5" />
+                              )}
+                              {isUploading ? 'Uploading…' : hasServerFile ? 'Override' : 'Upload'}
                               <input
                                 type="file"
                                 className="hidden"
@@ -411,9 +813,42 @@ export function ExceptionUploadsPage() {
                             </label>
                           ) : null}
                         </div>
-                        {slotFiles.length === 0 ? (
+
+                        {hasServerFile && !hasOverrideUpload ? (
+                          <div className="rounded-sm border border-dashed border-border bg-secondary/30 px-3 py-2 text-small">
+                            <p className="text-body">
+                              On server: <span className="font-medium">{defaults.file_name}</span>
+                            </p>
+                            <p className="text-muted-foreground">
+                              No need to upload unless you want to override this default.
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {hasServerFile && hasOverrideUpload ? (
+                          <p className="text-small text-muted-foreground">
+                            Using your upload instead of server default{' '}
+                            <span className="font-medium">{defaults.file_name}</span>.
+                          </p>
+                        ) : null}
+
+                        {isUploading ? (
+                          <div className="flex items-start gap-2 rounded-sm bg-amber-500/10 px-3 py-2 text-small text-amber-900 dark:text-amber-100">
+                            <Loader2 className="mt-0.5 h-4 w-4 animate-spin" />
+                            <div className="min-w-0">
+                              <p className="font-medium">Uploading to S3…</p>
+                              <p className="truncate text-muted-foreground">
+                                {uploadingNames.join(', ')}
+                              </p>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {!isUploading && slotFiles.length === 0 && !hasServerFile ? (
                           <p className="text-small text-muted-foreground">No files yet.</p>
-                        ) : (
+                        ) : null}
+
+                        {slotFiles.length > 0 ? (
                           <ul className="space-y-1">
                             {slotFiles.map((file) => (
                               <li
@@ -436,14 +871,14 @@ export function ExceptionUploadsPage() {
                               </li>
                             ))}
                           </ul>
-                        )}
+                        ) : null}
                       </div>
                     )
                   })}
 
                   {['draft', 'failed'].includes(activeJob.status) ? (
                     <Button type="button" disabled={busy} onClick={handleStart}>
-                      {busy ? (
+                      {busy && !uploadingSlot ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <Play className="h-4 w-4" />
@@ -488,7 +923,12 @@ export function ExceptionUploadsPage() {
           <Card>
             <CardHeader>
               <CardTitle>Recent jobs</CardTitle>
-              <CardDescription>Open a draft/failed job to edit uploads and re-run.</CardDescription>
+              <CardDescription>
+                {selectedProgram.label}
+                {selectedProgram.is_process_group
+                  ? ' — both processes; named as plaza + date/time.'
+                  : ' — named as plaza + date/time.'}
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               {jobs.length === 0 ? (
@@ -502,7 +942,7 @@ export function ExceptionUploadsPage() {
                     onClick={() => openJob(job.job_uuid)}
                   >
                     <div className="min-w-0">
-                      <p className="truncate text-body">{job.plaza_name || job.plaza_identifier}</p>
+                      <p className="truncate text-body">{jobDisplayName(job)}</p>
                       <p className="truncate text-small text-muted-foreground">
                         {job.pipeline_plaza_key} · {job.job_uuid.slice(0, 8)}
                       </p>

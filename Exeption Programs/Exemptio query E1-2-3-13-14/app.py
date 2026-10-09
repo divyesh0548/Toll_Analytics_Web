@@ -2999,11 +2999,18 @@ def process_full_exempt_pipeline(process_name):
 
     metrics_message = ""
     if update_exception_metrics:
-        _set_full_exempt_progress("Step 5/5: updating exception metrics in DB.")
+        _set_full_exempt_progress(
+            "Step 5/5: updating exception metrics and uploading annexure outputs to S3."
+        )
+        # force_update: Website/portal runs always write metrics (not only when
+        # count increases). upload_outputs: same S3 + audit_exception_output_files
+        # path as E4/E6/E7/E9/E10, using EXCEPTION_FILE_MAP (E1/E2/E3/E13/E14).
         ok, metrics_message = sync_exception_metrics_from_folder(
             annexure_dir,
             plaza_identifier=plaza_identifier,
             plaza_name=plaza_name,
+            force_update=True,
+            upload_outputs=True,
         )
         if not ok:
             return False, metrics_message

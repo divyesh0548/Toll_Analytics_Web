@@ -17,6 +17,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from app.extensions import db
+from app.models.audit_exception import AuditExceptionOutputFile
 from app.models.exception_job import ExceptionJob, ExceptionJobFile
 from app.models.plaza import Plaza
 from app.services.exception_job_s3 import (
@@ -25,15 +26,25 @@ from app.services.exception_job_s3 import (
     shorten_local_filename,
 )
 from app.services.exception_program_catalog import (
+    E04_PROGRAM,
+    E05_MAIN_PROCESS,
     FULL_EXEMPT_PROGRAM,
+    VALID_INVALID_PROGRAM,
+    e4_program_root,
+    e5_program_root,
     exempt_portal_root,
+    valid_invalid_script_dir,
 )
+from app.services.plaza_entity_map import require_entity_name
+from app.services.staging_output_cleanup import cleanup_expired_staging_outputs
 
 logger = logging.getLogger(__name__)
 
 _worker_started = False
 _active_child_lock = threading.Lock()
 _active_child: subprocess.Popen | None = None
+_last_staging_cleanup_at: float = 0.0
+_STAGING_CLEANUP_INTERVAL_SEC = 3600
 
 _SLOT_TO_FOLDER = {
     "lc_etc": "lc_etc",
@@ -42,6 +53,9 @@ _SLOT_TO_FOLDER = {
     "concessionaire": "concessionaire",
     "rates": "rates",
     "approved_exemption": "approved_exemption",
+    "lifecycle": "lifecycle",
+    "invalid_table": "invalid_table",
+    "ihmcl": "ihmcl",
 }
 
 
@@ -111,40 +125,93 @@ def _build_full_exempt_subprocess_env() -> dict[str, str]:
     return env
 
 
+def _build_e4_subprocess_env() -> dict[str, str]:
+    """
+    Env for E4: submissions DB (ETC/VRN download) + toll_analytics (metrics/S3).
+
+    Loads Website/backend/.env, Exeption Programs/.env, and E4/.env.
+    """
+    env: dict[str, str] = {
+        str(k): str(v) for k, v in os.environ.items() if v is not None
+    }
+    for env_path in (
+        _backend_env_path(),
+        exempt_portal_root().parent / ".env",
+        e4_program_root() / ".env",
+    ):
+        if not env_path.is_file():
+            continue
+        for key, value in dotenv_values(env_path).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    if env.get("DB_HOST") and not env.get("RDS_HOST"):
+        env["RDS_HOST"] = env["DB_HOST"]
+    if env.get("DB_PORT") and not env.get("RDS_PORT"):
+        env["RDS_PORT"] = env["DB_PORT"]
+    if env.get("DB_USER") and not env.get("RDS_USER"):
+        env["RDS_USER"] = env["DB_USER"]
+    if env.get("DB_PASSWORD") and not env.get("RDS_PASSWORD"):
+        env["RDS_PASSWORD"] = env["DB_PASSWORD"]
+    if env.get("DB_NAME") and not env.get("Toll_Analytics_DB"):
+        env["Toll_Analytics_DB"] = env["DB_NAME"]
+    env.setdefault("Exception_Metrics_Table", "audit_exception_metrics")
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def recover_orphaned_running_jobs() -> int:
     """
-    Mark jobs left as 'running' after a backend crash/restart as failed.
+    Re-queue jobs left as 'running' after a backend restart.
 
-    The worker only picks up 'queued' jobs, so a stuck 'running' row blocks
-    Retry until it is moved back to an editable status.
+    The previous process is gone, so 'running' cannot make progress. Putting
+    them back to 'queued' lets the new worker finish them (and preserves a
+    real pipeline error if they fail again). Marking them 'failed' with a
+    generic interrupt message hid the actual error from the UI.
     """
     stuck = ExceptionJob.query.filter_by(status="running").all()
     if not stuck:
         return 0
-    now = _utc_now()
     for job in stuck:
-        job.status = "failed"
-        job.error_message = (
-            "Job was interrupted (backend stopped or crashed while status was "
-            "running). Click Retry to run again."
+        job.status = "queued"
+        job.error_message = None
+        job.progress_message = (
+            "Re-queued after backend restart — worker will pick this up again."
         )
-        job.progress_message = "Interrupted — marked failed on worker restart."
-        job.finished_at = now
+        job.finished_at = None
         logger.warning(
-            "Recovered orphaned running job %s → failed", job.job_uuid
+            "Recovered orphaned running job %s → queued", job.job_uuid
         )
     db.session.commit()
     return len(stuck)
+
+
+def _maybe_cleanup_staging() -> None:
+    global _last_staging_cleanup_at
+    now = time.time()
+    if now - _last_staging_cleanup_at < _STAGING_CLEANUP_INTERVAL_SEC:
+        return
+    _last_staging_cleanup_at = now
+    try:
+        n = cleanup_expired_staging_outputs()
+        if n:
+            logger.info("Staging cleanup removed %s file(s)", n)
+    except Exception:  # noqa: BLE001
+        logger.exception("Staging output cleanup failed")
 
 
 def start_exception_job_worker(app) -> None:
     global _worker_started
     if _worker_started:
         return
-    # Flask debug reloader spawns a parent + child; only the child has
-    # WERKZEUG_RUN_MAIN=true. Without the reloader the var is unset — still start.
-    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        return
+    # Always start here. run.py uses use_reloader=False so there is no
+    # reloader parent/child split. The old guard
+    # (debug and WERKZEUG_RUN_MAIN != "true") skipped startup entirely when
+    # the reloader was off — jobs stayed "queued" forever.
     _worker_started = True
 
     with app.app_context():
@@ -154,11 +221,16 @@ def start_exception_job_worker(app) -> None:
                 logger.info("Recovered %s orphaned running exception job(s)", n)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to recover orphaned running jobs")
+        try:
+            _maybe_cleanup_staging()
+        except Exception:  # noqa: BLE001
+            logger.exception("Initial staging cleanup failed")
 
     def loop():
         while True:
             try:
                 with app.app_context():
+                    _maybe_cleanup_staging()
                     _process_one_queued_job()
             except Exception:  # noqa: BLE001
                 logger.exception("Exception job worker loop error")
@@ -167,6 +239,7 @@ def start_exception_job_worker(app) -> None:
     thread = threading.Thread(target=loop, name="exception-job-worker", daemon=True)
     thread.start()
     logger.info("Exception job worker started")
+    print("Exception job worker started", flush=True)
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -235,9 +308,16 @@ def _process_one_queued_job() -> None:
     child: subprocess.Popen | None = None
     failed = False
     try:
-        if job.program_code != FULL_EXEMPT_PROGRAM["code"]:
+        if job.program_code == FULL_EXEMPT_PROGRAM["code"]:
+            process_dir, child = _run_full_exempt_job(job)
+        elif job.program_code == E04_PROGRAM["code"]:
+            process_dir, child = _run_e4_job(job)
+        elif job.program_code == VALID_INVALID_PROGRAM["code"]:
+            process_dir, child = _run_valid_invalid_job(job)
+        elif job.program_code == E05_MAIN_PROCESS["code"]:
+            process_dir, child = _run_e5_job(job)
+        else:
             raise RuntimeError(f"Program {job.program_code!r} is not wired yet.")
-        process_dir, child = _run_full_exempt_job(job)
         job.status = "succeeded"
         job.progress_message = "Completed successfully."
         job.finished_at = _utc_now()
@@ -375,9 +455,125 @@ def _run_full_exempt_job(
     return process_dir, child
 
 
+def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    plaza = Plaza.query.filter_by(plaza_identifier=job.plaza_identifier).first()
+    if plaza is None:
+        raise RuntimeError(f"Plaza not found: {job.plaza_identifier}")
+
+    # Ensure entity_name exists before starting downloads.
+    entity_name = require_entity_name(job.plaza_identifier)
+
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e4_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = f"Downloading pass files from S3 (entity={entity_name})…"
+    db.session.commit()
+
+    e4_root = e4_program_root()
+    if not e4_root.is_dir():
+        raise RuntimeError(f"E4 program folder not found at {e4_root}")
+
+    jobs_root = e4_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    pass_dir = process_dir / "pass"
+    output_dir = process_dir / "output"
+    pass_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    files = (
+        ExceptionJobFile.query.filter_by(job_id=job.id, slot="pass")
+        .order_by(ExceptionJobFile.id.asc())
+        .all()
+    )
+    if not files:
+        raise RuntimeError("No pass files on this E4 job.")
+
+    used_names: set[str] = set()
+    for row in files:
+        base_name = shorten_local_filename(Path(row.original_file_name).name)
+        if base_name.lower() in used_names:
+            stem = Path(base_name).stem[:40]
+            suffix = Path(base_name).suffix
+            base_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+        used_names.add(base_name.lower())
+        dest = pass_dir / base_name
+        download_to_path(row.s3_key, dest)
+
+    job.progress_message = "Running E4 pipeline (pass → ETC/VRN → rates → metrics)…"
+    db.session.commit()
+
+    runner = e4_root / "run_website_e4_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E4 runner script missing: {runner}")
+
+    output_file = output_dir / "merged_pass_files.xlsx"
+    env = _build_e4_subprocess_env()
+    global _active_child
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--pass-folder",
+            str(pass_dir),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--output-file",
+            str(output_file),
+            "--update-metrics",
+            "1",
+            "--upload-output",
+            "1",
+        ],
+        cwd=str(e4_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E4 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
 def _cleanup_input_files(job: ExceptionJob) -> None:
-    """Delete S3 input objects after success (keep DB rows for history of names)."""
-    keys = [f.s3_key for f in job.files if f.s3_key]
+    """Delete S3 input objects after success (keep DB rows for history of names).
+
+    Do not delete staging invalid_table objects (is_final_output=False) — they
+    expire via the 7-day staging cleanup.
+    """
+    staging_keys = {
+        row.s3_key
+        for row in AuditExceptionOutputFile.query.filter_by(is_final_output=False).all()
+        if row.s3_key
+    }
+    keys = [
+        f.s3_key
+        for f in job.files
+        if f.s3_key and f.s3_key not in staging_keys
+    ]
+    if not keys:
+        return
     try:
         delete_keys(keys)
         job.progress_message = (
@@ -386,3 +582,215 @@ def _cleanup_input_files(job: ExceptionJob) -> None:
         db.session.commit()
     except Exception:  # noqa: BLE001
         logger.exception("Failed to delete S3 inputs for job %s", job.job_uuid)
+
+
+def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    entity_name = require_entity_name(job.plaza_identifier)
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"vil_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = (
+        f"Downloading lifecycle file (entity={entity_name})…"
+    )
+    db.session.commit()
+
+    script_dir = valid_invalid_script_dir()
+    if not script_dir.is_dir():
+        raise RuntimeError(f"Valid/Invalid script folder not found: {script_dir}")
+
+    jobs_root = script_dir / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    input_dir = process_dir / "input"
+    output_dir = process_dir / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    files = (
+        ExceptionJobFile.query.filter_by(job_id=job.id, slot="lifecycle")
+        .order_by(ExceptionJobFile.id.asc())
+        .all()
+    )
+    if not files:
+        raise RuntimeError("No lifecycle file on this Valid/Invalid job.")
+
+    dest = input_dir / shorten_local_filename(Path(files[0].original_file_name).name)
+    download_to_path(files[0].s3_key, dest)
+
+    job.progress_message = "Running Valid/Invalid Lookup (checkpostmaster + rates)…"
+    db.session.commit()
+
+    runner = script_dir / "run_website_valid_invalid_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"Valid/Invalid runner missing: {runner}")
+
+    env = _build_full_exempt_subprocess_env()
+    # Entity / plaza rates key from shared map (not Scripts plaza_rates).
+    env["VALID_INVALID_PLAZA_NAME"] = entity_name
+    global _active_child
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--lifecycle-file",
+            str(dest),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--entity-name",
+            entity_name,
+            "--output-dir",
+            str(output_dir),
+            "--upload-staging",
+            "1",
+        ],
+        cwd=str(script_dir),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"Valid/Invalid Lookup failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    entity_name = require_entity_name(job.plaza_identifier)
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e5_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = f"Downloading E05 inputs (entity={entity_name})…"
+    db.session.commit()
+
+    e5_root = e5_program_root()
+    if not e5_root.is_dir():
+        raise RuntimeError(f"E5 program folder not found at {e5_root}")
+
+    jobs_root = e5_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    invalid_dir = process_dir / "invalid_table"
+    ihmcl_dir = process_dir / "ihmcl"
+    output_dir = process_dir / "output"
+    invalid_dir.mkdir(parents=True, exist_ok=True)
+    ihmcl_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    invalid_files = (
+        ExceptionJobFile.query.filter_by(job_id=job.id, slot="invalid_table")
+        .order_by(ExceptionJobFile.id.asc())
+        .all()
+    )
+    if not invalid_files:
+        raise RuntimeError(
+            "No invalid table on this E05 job. Upload one or attach a staging file."
+        )
+    invalid_dest = invalid_dir / shorten_local_filename(
+        Path(invalid_files[0].original_file_name).name
+    )
+    download_to_path(invalid_files[0].s3_key, invalid_dest)
+
+    ihmcl_files = (
+        ExceptionJobFile.query.filter_by(job_id=job.id, slot="ihmcl")
+        .order_by(ExceptionJobFile.id.asc())
+        .all()
+    )
+    ihmcl_dest: Path | None = None
+    if ihmcl_files:
+        ihmcl_dest = ihmcl_dir / shorten_local_filename(
+            Path(ihmcl_files[0].original_file_name).name
+        )
+        download_to_path(ihmcl_files[0].s3_key, ihmcl_dest)
+        job.progress_message = "Running E05 with uploaded IHMCL file…"
+    else:
+        job.progress_message = (
+            "Running E05 (live IHMCL scrape — see EXCEPTION_USE_SELENIUM in .env)…"
+        )
+    db.session.commit()
+
+    runner = e5_root / "run_website_e5_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E5 runner script missing: {runner}")
+
+    env = _build_e4_subprocess_env()
+    # Also load E5/.env for scrape credentials if present.
+    e5_env = e5_root / ".env"
+    if e5_env.is_file():
+        for key, value in dotenv_values(e5_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    cmd = [
+        sys.executable,
+        str(runner),
+        "--invalid-table",
+        str(invalid_dest),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--entity-name",
+        entity_name,
+        "--output-dir",
+        str(output_dir),
+        "--update-metrics",
+        "1",
+        "--upload-output",
+        "1",
+    ]
+    if ihmcl_dest is not None:
+        cmd.extend(["--ihmcl-file", str(ihmcl_dest)])
+
+    global _active_child
+    child = subprocess.Popen(
+        cmd,
+        cwd=str(e5_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E5 failed with exit code {child.returncode}"
+        )
+    return process_dir, child

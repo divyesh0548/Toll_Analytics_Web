@@ -199,16 +199,35 @@ def build_output_file_name(
     plaza_name: str,
     month_label: str,
     original_suffix: str,
+    original_file_name: str | None = None,
     when: datetime | None = None,
 ) -> str:
+    """
+    S3 object / download name.
+
+    Keeps the original workbook stem (role, e.g. LNC_CT, NLNC) and adds
+    exception code, plaza, month_label, and upload timestamp.
+    Example:
+      E01_Bassi_LNC_CT_2026-Apr-May_20261009_143022.xlsx
+    """
     stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
     suffix = original_suffix if original_suffix.startswith(".") else f".{original_suffix}"
     if not suffix or suffix == ".":
         suffix = ".xlsx"
-    return (
-        f"{_safe_name(exception_code)}_{_safe_name(plaza_name)}_"
-        f"{_safe_name(month_label)}_{stamp}{suffix}"
-    )
+
+    original = Path(str(original_file_name or "")).name
+    stem = Path(original).stem if original else ""
+    stem_safe = _safe_name(stem) if stem else ""
+
+    parts = [
+        _safe_name(exception_code),
+        _safe_name(plaza_name),
+    ]
+    if stem_safe:
+        parts.append(stem_safe)
+    parts.append(_safe_name(month_label))
+    parts.append(stamp)
+    return "_".join(parts) + suffix
 
 
 def build_s3_key(plaza_name: str, file_name: str) -> str:
@@ -248,10 +267,16 @@ def upload_exception_output(
     exception_code: str | None = None,
     month_label: str | None = None,
     month_periods: Sequence[tuple[int, int]] | None = None,
+    is_final_output: bool = True,
+    name_stem: str | None = None,
     dry_run: bool = False,
 ) -> dict:
     """
     Upload one output file to S3 and INSERT a history row.
+
+    is_final_output=False → staging / intermediate (hidden from Audit downloads).
+    name_stem overrides the original filename stem in the S3 object name
+    (e.g. pass plaza_name so staging invalid tables are easy to spot).
 
     Returns dict with file_name, s3_key, file_url, month_label, db_id (None if dry_run).
     """
@@ -292,31 +317,47 @@ def upload_exception_output(
             exception_code=exception_code,
         )
         plaza_name = str(plaza["plaza_name"])
+        original_name = path.name
+        # Prefer explicit stem (e.g. invalid_table_<plaza>); always include plaza_name
+        # via build_output_file_name's plaza segment.
+        stem_source = (
+            f"{name_stem}{path.suffix}"
+            if name_stem
+            else original_name
+        )
         file_name = build_output_file_name(
-            exception_code=code,
+            exception_code=code if is_final_output else f"{code}_staging",
             plaza_name=plaza_name,
             month_label=month_label,
             original_suffix=path.suffix or ".xlsx",
+            original_file_name=stem_source,
         )
         s3_key = build_s3_key(plaza_name, file_name)
         file_url = object_url(bucket, region, s3_key)
         size = path.stat().st_size
 
         print(f"S3 upload → s3://{bucket}/{s3_key}")
-        print(f"  month_label={month_label!r}, size={size:,} bytes")
+        print(
+            f"  original={original_name!r}, plaza={plaza_name!r}, "
+            f"month_label={month_label!r}, is_final_output={is_final_output}, "
+            f"size={size:,} bytes"
+        )
 
         if dry_run:
             print("  dry_run=True — S3 put and DB insert skipped.")
             return {
                 "db_id": None,
                 "plaza_identifier": plaza_identifier,
+                "plaza_name": plaza_name,
                 "exception_type_id": type_id,
                 "exception_code": code,
                 "month_label": month_label,
                 "file_name": file_name,
+                "original_file_name": original_name,
                 "s3_key": s3_key,
                 "file_url": file_url,
                 "file_size_bytes": size,
+                "is_final_output": bool(is_final_output),
                 "dry_run": True,
             }
 
@@ -346,11 +387,12 @@ def upload_exception_output(
                     file_url,
                     original_file_name,
                     file_size_bytes,
+                    is_final_output,
                     created_at,
                     updated_at
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     NOW(), NOW()
                 )
                 RETURNING id
@@ -362,25 +404,29 @@ def upload_exception_output(
                     file_name,
                     s3_key,
                     file_url,
-                    path.name,
+                    original_name,
                     size,
+                    bool(is_final_output),
                 ),
             )
             row = cursor.fetchone()
         conn.commit()
         db_id = int(row["id"]) if row else None
-        print(f"  DB row inserted id={db_id}")
+        print(f"  DB row inserted id={db_id} is_final_output={is_final_output}")
         print(f"  file_url={file_url}")
         return {
             "db_id": db_id,
             "plaza_identifier": plaza_identifier,
+            "plaza_name": plaza_name,
             "exception_type_id": type_id,
             "exception_code": code,
             "month_label": month_label,
             "file_name": file_name,
+            "original_file_name": original_name,
             "s3_key": s3_key,
             "file_url": file_url,
             "file_size_bytes": size,
+            "is_final_output": bool(is_final_output),
             "dry_run": False,
         }
     except Exception:
@@ -388,3 +434,4 @@ def upload_exception_output(
         raise
     finally:
         conn.close()
+

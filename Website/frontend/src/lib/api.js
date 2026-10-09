@@ -239,11 +239,34 @@ export function listExceptionPrograms() {
   return request('/api/exception-jobs/programs')
 }
 
-export function listExceptionJobs(plazaIdentifier) {
-  const query = plazaIdentifier
-    ? `?plaza_identifier=${encodeURIComponent(plazaIdentifier)}`
-    : ''
+export function listExceptionJobs(plazaIdentifier, programCode) {
+  const params = new URLSearchParams()
+  if (plazaIdentifier) params.set('plaza_identifier', plazaIdentifier)
+  if (programCode) params.set('program_code', programCode)
+  const query = params.toString() ? `?${params.toString()}` : ''
   return request(`/api/exception-jobs${query}`)
+}
+
+export function getAnnexureServerDefaults(pipelinePlazaKey) {
+  return request(
+    `/api/exception-jobs/annexure-defaults?pipeline_plaza_key=${encodeURIComponent(
+      pipelinePlazaKey || '',
+    )}`,
+  )
+}
+
+export function listStagingInvalidFiles(plazaIdentifier, exceptionTypeId = 5) {
+  const params = new URLSearchParams()
+  params.set('plaza_identifier', plazaIdentifier || '')
+  params.set('exception_type_id', String(exceptionTypeId || 5))
+  return request(`/api/exception-jobs/staging-invalid-files?${params.toString()}`)
+}
+
+export function attachStagingInvalidFile(jobUuid, outputFileId) {
+  return request(`/api/exception-jobs/${jobUuid}/attach-staging`, {
+    method: 'POST',
+    body: JSON.stringify({ output_file_id: outputFileId }),
+  })
 }
 
 export function getExceptionJob(jobUuid) {

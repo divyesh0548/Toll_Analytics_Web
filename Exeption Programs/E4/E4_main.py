@@ -16,15 +16,17 @@ E4 — Pass merge → Trips taken (ETC if needed) → VRN TC Class → rates →
 6. Optional: upload merged_pass_files.xlsx to S3 when UPLOAD_OUTPUT_TO_S3=True.
 
 Run:
-  1. Set PASS_INPUT_FOLDER, ENTITY_NAME, PLAZA_IDENTIFIER below
+  1. Set PASS_INPUT_FOLDER / PLAZA_IDENTIFIER (entity_name from plaza_entity_map.json)
   2. python E4_main.py
-     or: python E4_main.py odhaki_paipkhar <plaza_uuid>
+     or: python E4_main.py <plaza_uuid>
+  Website jobs set E4_* environment variables (see run_website_e4_job.py).
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import sys
 from datetime import date, datetime
@@ -43,6 +45,9 @@ from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
+from common.plaza_entity_map import (  # noqa: E402
+    resolve_entity_name as entity_name_from_plaza,
+)
 from common.s3_output_upload import (  # noqa: E402
     month_label_from_periods,
     upload_exception_output,
@@ -53,21 +58,46 @@ ETC_DOWNLOAD_MERGE_PATH = BASE_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = BASE_DIR / "vrn-download-merge.py"
 
 # --- Runtime inputs (edit these; not in config.json) ---
+# Website overrides via env: E4_PASS_INPUT_FOLDER, E4_MERGED_OUTPUT_FILE,
+# E4_PLAZA_IDENTIFIER, E4_ENTITY_NAME, E4_METRICS_DB_UPDATE, E4_UPLOAD_OUTPUT_TO_S3, E4_DB_DRY_RUN.
 PASS_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E4\Pass"
 MERGED_OUTPUT_FILE = BASE_DIR / "output" / "merged_pass_files.xlsx"
-# submissions.entity_name — used for ETC/VRN download and plaza rates lookup.
-ENTITY_NAME = "bassi"
-# plazas.plaza_identifier — required for audit_exception_metrics upsert.
+# Optional override. Prefer resolving from PLAZA_IDENTIFIER via
+# common/plaza_entity_map.json (shared by all exception programs).
+ENTITY_NAME = ""
+# plazas.plaza_identifier — metrics/S3 + entity_name lookup. Website jobs pass this only.
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 4
 DB_DRY_RUN = False
 Metrics_DB_Update = True
 # Upload merged_pass_files.xlsx to S3 and insert audit_exception_output_files row.
 UPLOAD_OUTPUT_TO_S3 = True
-# Result months outside this range are not written to the database.
-EXPECTED_START = "2026-01-01"
-EXPECTED_END = "2026-12-31"
 EXCEL_EXTENSIONS = [".xlsx", ".xls", ".xlsm", ".csv"]
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_runtime_env_overrides() -> None:
+    """Apply E4_* env vars set by the Website worker (or CLI wrapper)."""
+    global PASS_INPUT_FOLDER, MERGED_OUTPUT_FILE, ENTITY_NAME, PLAZA_IDENTIFIER
+    global DB_DRY_RUN, Metrics_DB_Update, UPLOAD_OUTPUT_TO_S3
+
+    if os.environ.get("E4_PASS_INPUT_FOLDER", "").strip():
+        PASS_INPUT_FOLDER = os.environ["E4_PASS_INPUT_FOLDER"].strip()
+    if os.environ.get("E4_MERGED_OUTPUT_FILE", "").strip():
+        MERGED_OUTPUT_FILE = Path(os.environ["E4_MERGED_OUTPUT_FILE"].strip())
+    if os.environ.get("E4_ENTITY_NAME", "").strip():
+        ENTITY_NAME = os.environ["E4_ENTITY_NAME"].strip()
+    if os.environ.get("E4_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E4_PLAZA_IDENTIFIER"].strip()
+    DB_DRY_RUN = _env_flag("E4_DB_DRY_RUN", DB_DRY_RUN)
+    Metrics_DB_Update = _env_flag("E4_METRICS_DB_UPDATE", Metrics_DB_Update)
+    UPLOAD_OUTPUT_TO_S3 = _env_flag("E4_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -418,28 +448,73 @@ def merge_pass_folder(config: dict) -> tuple[Path, pd.DataFrame]:
     return output_path, merged
 
 
-def resolve_entity_name() -> str:
-    if len(sys.argv) >= 2 and str(sys.argv[1]).strip():
-        return str(sys.argv[1]).strip()
-    name = str(ENTITY_NAME or "").strip()
-    if name:
-        return name
-    name = input("Enter entity_name (submissions.entity_name): ").strip()
-    if not name:
-        raise RuntimeError("entity_name is required for ETC/VRN download and rates.")
-    return name
+def _positional_cli_args() -> list[str]:
+    """
+    Legacy CLI values only: python E4_main.py [entity] <plaza_uuid>
+    Ignore flag-style args from wrappers (e.g. run_website_e4_job.py --pass-folder …).
+    """
+    return [
+        str(a).strip()
+        for a in sys.argv[1:]
+        if str(a).strip() and not str(a).strip().startswith("-")
+    ]
+
+
+def _looks_like_plaza_uuid(value: str) -> bool:
+    text = str(value or "").strip()
+    return "-" in text and len(text) >= 32
 
 
 def resolve_plaza_identifier() -> str:
-    if len(sys.argv) >= 3 and str(sys.argv[2]).strip():
-        return str(sys.argv[2]).strip()
+    # Website / env (E4_PLAZA_IDENTIFIER applied in _apply_runtime_env_overrides).
     plaza_id = str(PLAZA_IDENTIFIER or "").strip()
     if plaza_id:
         return plaza_id
+
+    # Legacy CLI: python E4_main.py [entity_name] <plaza_identifier>
+    args = _positional_cli_args()
+    if len(args) >= 2 and _looks_like_plaza_uuid(args[1]):
+        return args[1]
+    if len(args) >= 1 and _looks_like_plaza_uuid(args[0]):
+        return args[0]
+
     plaza_id = input("Enter plaza_identifier (plazas.plaza_identifier UUID): ").strip()
     if not plaza_id:
         raise RuntimeError("plaza_identifier is required for audit_exception_metrics.")
     return plaza_id
+
+
+def resolve_entity_name() -> str:
+    """
+    submissions.entity_name for rates + ETC/VRN downloads.
+
+    Order: ENTITY_NAME / E4_ENTITY_NAME → plaza_entity_map.json (via plaza) →
+    legacy CLI entity → prompt.
+    """
+    name = str(ENTITY_NAME or "").strip()
+    if name:
+        return name
+
+    # Website sets E4_PLAZA_IDENTIFIER before main(); map first so wrapper
+    # argv values (pass-folder path, etc.) are never treated as entity_name.
+    plaza_id = resolve_plaza_identifier()
+    mapped = entity_name_from_plaza(plaza_id)
+    if mapped:
+        print(f"entity_name={mapped!r} from plaza_entity_map.json ({plaza_id})")
+        return mapped
+
+    args = _positional_cli_args()
+    if args and not _looks_like_plaza_uuid(args[0]):
+        return args[0]
+
+    name = input("Enter entity_name (submissions.entity_name): ").strip()
+    if not name:
+        raise RuntimeError(
+            "entity_name is required for ETC/VRN download and rates. "
+            "Set it in common/plaza_entity_map.json for this plaza_identifier, "
+            "or pass ENTITY_NAME / CLI args."
+        )
+    return name
 
 
 def pass_date_order(config: dict, entity_name: str) -> str:
@@ -852,6 +927,7 @@ def run_vrn_tc_rates_loss(
     vrn_lookup = build_vrn_tc_class_lookup(Path(vrn_path))
     with_tc = attach_tc_class_from_vrn(merged, vrn_lookup, config)
     final = compute_total_charge_and_loss(with_tc, config, entity_name)
+    final = drop_zero_trips_rows(final, config)
     save_merged_pass(final, output_path)
     return final
 
@@ -956,6 +1032,34 @@ def fill_trips_taken_from_etc(
     return result
 
 
+def drop_zero_trips_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Keep only rows where Trips taken is present and not 0 (final output / S3)."""
+    headers = [str(c) for c in df.columns]
+    trips_col = resolve_column(headers, config.get("trips_taken_column_names") or [])
+    if not trips_col:
+        trips_col = resolve_column(
+            headers,
+            [
+                str(config.get("trips_taken_output_column") or "").strip(),
+                "Trips taken",
+                "Trip taken",
+            ],
+        )
+    if not trips_col:
+        raise RuntimeError(
+            "Cannot filter zero trips — Trips taken column not found. "
+            f"Available: {list(df.columns)}"
+        )
+    before = len(df)
+    trips = pd.to_numeric(df[trips_col], errors="coerce")
+    kept = df.loc[trips.notna() & (trips != 0)].copy()
+    print(
+        f"Filtered Trips taken == 0 (and blank): removed {before - len(kept)} "
+        f"row(s); kept {len(kept)}"
+    )
+    return kept
+
+
 def save_merged_pass(df: pd.DataFrame, output_path: Path) -> Path:
     output_path = Path(output_path)
     if not output_path.is_absolute():
@@ -999,18 +1103,8 @@ def maybe_run_etc_download(merged: pd.DataFrame, config: dict, output_path: Path
     return updated
 
 
-def months_outside_expected(rows: list[dict], start: date, end: date) -> list[str]:
-    low = (start.year, start.month)
-    high = (end.year, end.month)
-    outside: list[str] = []
-    for row in rows:
-        key = (int(row["year"]), int(row["month"]))
-        if key < low or key > high:
-            outside.append(f"{key[0]}-{key[1]:02d}")
-    return outside
-
-
 def main() -> int:
+    _apply_runtime_env_overrides()
     config = load_config()
     entity_name = resolve_entity_name()
     config["pass_date_order"] = pass_date_order(config, entity_name)
@@ -1024,8 +1118,6 @@ def main() -> int:
         return 0
 
     entity_name = resolve_entity_name()
-    start_raw = str(EXPECTED_START or "").strip()
-    end_raw = str(EXPECTED_END or "").strip()
     monthly = aggregate_monthly_loss_and_trips(
         merged,
         start_date_aliases=config.get("pass_start_date_column_names") or None,
@@ -1044,31 +1136,6 @@ def main() -> int:
         )
     if not monthly:
         print("No months with trips. DB not updated.")
-        return 0
-    if not start_raw or not end_raw:
-        print(
-            "Set EXPECTED_START and EXPECTED_END (YYYY-MM-DD) at the top of "
-            "E4_main.py. DB not updated."
-        )
-        return 0
-    try:
-        expected_start = date.fromisoformat(start_raw)
-        expected_end = date.fromisoformat(end_raw)
-    except ValueError as exc:
-        raise RuntimeError(
-            "EXPECTED_START and EXPECTED_END must be YYYY-MM-DD."
-        ) from exc
-    if expected_end < expected_start:
-        raise RuntimeError(
-            f"EXPECTED_END {expected_end.isoformat()} is before "
-            f"EXPECTED_START {expected_start.isoformat()}."
-        )
-    outside = months_outside_expected(monthly, expected_start, expected_end)
-    if outside:
-        print(
-            f"Months outside {expected_start.isoformat()} → {expected_end.isoformat()}: "
-            f"{', '.join(outside)}. DB not updated."
-        )
         return 0
 
     plaza_identifier = resolve_plaza_identifier()
@@ -1113,3 +1180,4 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001
         print(f"\nERROR: {exc}")
         sys.exit(1)
+

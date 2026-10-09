@@ -36,6 +36,7 @@ DB update only (existing workbook):
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -54,6 +55,7 @@ from common.s3_output_upload import (  # noqa: E402
 
 CONFIG_JSON = BASE_DIR / "e5_config.json"
 OUTPUT_DIR = BASE_DIR / "output"
+MERGED_OUTPUT_HINT: Path = OUTPUT_DIR
 
 # Import plaza rates (same module used by E5_main)
 if str(BASE_DIR) not in sys.path:
@@ -61,7 +63,7 @@ if str(BASE_DIR) not in sys.path:
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Runtime inputs
+# Runtime inputs (Website overrides via E5_* / EXCEPTION_USE_SELENIUM env)
 # ---------------------------------------------------------------------------
 INPUT_FILE = BASE_DIR / "invalid_table-aug-bassi.csv"  # change to your invalid Excel/CSV
 ENTITY_NAME = "bassi"  # plaza_rates key for single-journey rates
@@ -73,11 +75,58 @@ DB_DRY_RUN = False
 UPLOAD_OUTPUT_TO_S3 = True
 # True  = IHMCL_bot_selenium.py (Selenium Chrome)
 # False = IHMCL_bot.py (legacy non-selenium path)
+# Overridden by EXCEPTION_USE_SELENIUM / IHMCL_USE_SELENIUM in .env (global scrape flag).
 USE_SELENIUM = True
 # Used only when USE_SELENIUM=True. True = Selenium Grid; False = local Chrome.
 USE_SELENIUM_GRID = True
 SKIP_SCRAPE = False  # True = split sheets only, no IHMCL
+# Optional pre-scraped IHMCL Excel/CSV (Vehicle Number + Mapper Vehicle Class).
+IHMCL_INPUT_FILE = ""
 MATCHED_YES = {"yes", "y", "true", "1"}
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_website_env_overrides() -> None:
+    """Apply E5_* / scrape env from Website job runner."""
+    global INPUT_FILE, ENTITY_NAME, PLAZA_IDENTIFIER, UPDATE_DB, DB_DRY_RUN
+    global UPLOAD_OUTPUT_TO_S3, USE_SELENIUM, USE_SELENIUM_GRID, SKIP_SCRAPE
+    global IHMCL_INPUT_FILE, MERGED_OUTPUT_HINT
+
+    if os.environ.get("E5_INPUT_FILE", "").strip():
+        INPUT_FILE = Path(os.environ["E5_INPUT_FILE"].strip())
+    if os.environ.get("E5_ENTITY_NAME", "").strip():
+        ENTITY_NAME = os.environ["E5_ENTITY_NAME"].strip()
+    if os.environ.get("E5_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E5_PLAZA_IDENTIFIER"].strip()
+    if "E5_METRICS_DB_UPDATE" in os.environ:
+        UPDATE_DB = _env_flag("E5_METRICS_DB_UPDATE", UPDATE_DB)
+    if "E5_UPLOAD_OUTPUT_TO_S3" in os.environ:
+        UPLOAD_OUTPUT_TO_S3 = _env_flag("E5_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
+    if "E5_DB_DRY_RUN" in os.environ:
+        DB_DRY_RUN = _env_flag("E5_DB_DRY_RUN", DB_DRY_RUN)
+    if "E5_USE_SELENIUM_GRID" in os.environ:
+        USE_SELENIUM_GRID = _env_flag("E5_USE_SELENIUM_GRID", USE_SELENIUM_GRID)
+    if os.environ.get("E5_IHMCL_INPUT_FILE", "").strip():
+        IHMCL_INPUT_FILE = os.environ["E5_IHMCL_INPUT_FILE"].strip()
+        SKIP_SCRAPE = False  # use uploaded scrape file instead of live scrape
+    if "E5_SKIP_SCRAPE" in os.environ and not IHMCL_INPUT_FILE:
+        SKIP_SCRAPE = _env_flag("E5_SKIP_SCRAPE", SKIP_SCRAPE)
+    if os.environ.get("E5_OUTPUT_DIR", "").strip():
+        MERGED_OUTPUT_HINT = Path(os.environ["E5_OUTPUT_DIR"].strip())
+    else:
+        MERGED_OUTPUT_HINT = OUTPUT_DIR
+
+    # Global scrape backend for all programs that need IHMCL.
+    if "EXCEPTION_USE_SELENIUM" in os.environ:
+        USE_SELENIUM = _env_flag("EXCEPTION_USE_SELENIUM", USE_SELENIUM)
+    elif "IHMCL_USE_SELENIUM" in os.environ:
+        USE_SELENIUM = _env_flag("IHMCL_USE_SELENIUM", USE_SELENIUM)
 
 CHARGED_CLASS_COLUMN = "Charged Vehicle Class"
 CORRECT_CLASS_COLUMN = "Correct Vehicle Class"
@@ -271,7 +320,10 @@ def resolve_column(df: pd.DataFrame, preferred: str, aliases: list[str]) -> str:
         if hit is not None:
             return hit
     raise KeyError(
-        f"Column not found. Tried: {candidates}. Available: {list(df.columns)}"
+        "Header keyword not found: "
+        + ", ".join(repr(c) for c in candidates)
+        + f". Available columns: {list(df.columns)}. "
+        "Job stopped — no column mapping is applied."
     )
 
 
@@ -610,6 +662,7 @@ def resolve_plaza_id(config: dict) -> str:
 
 
 def main() -> int:
+    apply_website_env_overrides()
     print("=" * 60)
     print("E5 — Invalid lookup query")
     print(f"INPUT_FILE = {INPUT_FILE}")
@@ -617,25 +670,31 @@ def main() -> int:
     print(f"USE_SELENIUM = {USE_SELENIUM}")
     print(f"USE_SELENIUM_GRID = {USE_SELENIUM_GRID}")
     print(f"SKIP_SCRAPE = {SKIP_SCRAPE}")
+    print(f"IHMCL_INPUT_FILE = {IHMCL_INPUT_FILE!r}")
     print("=" * 60)
 
     config = load_config()
     index_lookup = build_tc_class_index_lookup(config.get("tc_class_index_map") or {})
     cutover = parse_rate_cutover_date(config)
 
-    df = load_input(Path(INPUT_FILE))
-    charged_col = resolve_column(df, CHARGED_CLASS_COLUMN, [CHARGED_CLASS_COLUMN])
-    correct_col = resolve_column(
-        df,
-        CORRECT_CLASS_COLUMN,
-        [CORRECT_CLASS_COLUMN, "Correct Class", "Correct VC"],
-    )
-    npci_col = resolve_column(
-        df,
-        NPCI_CLASS_COLUMN,
-        [NPCI_CLASS_COLUMN, "NPCI Class", "NPCI Class Description"],
-    )
-    vehicle_col = resolve_column(df, VEHICLE_COLUMN_ALIASES[0], VEHICLE_COLUMN_ALIASES)
+    try:
+        df = load_input(Path(INPUT_FILE))
+        charged_col = resolve_column(df, CHARGED_CLASS_COLUMN, [CHARGED_CLASS_COLUMN])
+        correct_col = resolve_column(
+            df,
+            CORRECT_CLASS_COLUMN,
+            [CORRECT_CLASS_COLUMN, "Correct Class", "Correct VC"],
+        )
+        npci_col = resolve_column(
+            df,
+            NPCI_CLASS_COLUMN,
+            [NPCI_CLASS_COLUMN, "NPCI Class", "NPCI Class Description"],
+        )
+        vehicle_col = resolve_column(
+            df, VEHICLE_COLUMN_ALIASES[0], VEHICLE_COLUMN_ALIASES
+        )
+    except KeyError as exc:
+        raise RuntimeError(str(exc)) from exc
     try:
         date_col = resolve_column(df, DATE_COLUMN_ALIASES[0], DATE_COLUMN_ALIASES)
     except KeyError:
@@ -648,8 +707,12 @@ def main() -> int:
     print(f"Input rows: {len(df):,}")
 
     upto_df, above_df = split_by_charged_class(df, charged_col, UPTO_LCV_CLASSES)
+    out_dir = Path(MERGED_OUTPUT_HINT)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    if SKIP_SCRAPE:
+    ihmcl_path = Path(str(IHMCL_INPUT_FILE).strip()) if str(IHMCL_INPUT_FILE).strip() else None
+
+    if SKIP_SCRAPE and not ihmcl_path:
         print("SKIP_SCRAPE=True — writing split sheets without IHMCL.")
         above_df = above_df.copy()
         above_df["Matched"] = ""
@@ -657,6 +720,36 @@ def main() -> int:
         print("No rows on 2-axel sheet — nothing to scrape.")
         above_df = above_df.copy()
         above_df["Matched"] = ""
+    elif ihmcl_path is not None:
+        if not ihmcl_path.is_file():
+            raise RuntimeError(f"IHMCL input file not found: {ihmcl_path}")
+        print(f"Using uploaded IHMCL file (no live scrape): {ihmcl_path}")
+        scraped = load_input(ihmcl_path)
+        try:
+            # Ensure expected scrape columns exist (extra columns OK).
+            resolve_column(
+                scraped,
+                "Vehicle Number",
+                ["Vehicle Number", "Veh Reg No.", "Licence Plate No", *VEHICLE_COLUMN_ALIASES],
+            )
+            resolve_column(
+                scraped,
+                "Mapper Vehicle Class",
+                [
+                    "Mapper Vehicle Class",
+                    "IHMCL Mapper Vehicle Class",
+                    "Mapper Class",
+                ],
+            )
+        except KeyError as exc:
+            raise RuntimeError(str(exc)) from exc
+        above_df = mark_matches(
+            above_df,
+            scraped,
+            vehicle_col,
+            correct_col,
+            index_lookup,
+        )
     else:
         scrape_cfg = load_scrape_config()
         unique_df = unique_vehicle_frame(above_df, vehicle_col)
@@ -670,9 +763,8 @@ def main() -> int:
                 scraped = pd.DataFrame()
             print(f"Scraped rows: {len(scraped):,}")
 
-            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            scrape_path = OUTPUT_DIR / f"invalid_lookup_ihmcl_{stamp}.xlsx"
+            scrape_path = out_dir / f"invalid_lookup_ihmcl_{stamp}.xlsx"
             scraped.to_excel(scrape_path, index=False)
             print(f"IHMCL scrape saved: {scrape_path}")
 
@@ -705,7 +797,7 @@ def main() -> int:
         sheet_label=SHEET_TWO_AXLE,
     )
 
-    out_path = save_workbook(upto_df, above_df)
+    out_path = save_workbook(upto_df, above_df, output_dir=out_dir)
     print("=" * 60)
     print(f"Wrote: {out_path}")
     print(f"  {SHEET_UPTO_LCV}: {len(upto_df):,} rows")

@@ -280,6 +280,8 @@ class AuditExceptionOutputFile(db.Model):
     file_url = db.Column(db.String(2048), nullable=False)
     original_file_name = db.Column(db.String(512), nullable=True)
     file_size_bytes = db.Column(db.BigInteger, nullable=True)
+    # False = intermediate staging (e.g. E05 invalid_table); hidden from Audit downloads.
+    is_final_output = db.Column(db.Boolean, nullable=False, default=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = db.Column(
         db.DateTime(timezone=True),
@@ -306,6 +308,7 @@ class AuditExceptionOutputFile(db.Model):
             "file_size_bytes": (
                 int(self.file_size_bytes) if self.file_size_bytes is not None else None
             ),
+            "is_final_output": bool(self.is_final_output),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

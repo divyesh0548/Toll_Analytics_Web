@@ -10,18 +10,27 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
 PORTAL_ROOT = Path(__file__).resolve().parents[2]
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# Exeption Programs/ (sibling of E4/, Exemptio query…/)
+EXCEPTION_PROGRAMS_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+E4_DIR = EXCEPTION_PROGRAMS_ROOT / "E4"
+# Prefer E4/plaza_rates.py (canonical). Do not use Scripts/plaza_rates.py.
+if str(E4_DIR) not in sys.path:
+    sys.path.insert(0, str(E4_DIR))
 if str(PORTAL_ROOT) not in sys.path:
     sys.path.insert(0, str(PORTAL_ROOT))
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-load_dotenv(REPO_ROOT / ".env")
+load_dotenv(EXCEPTION_PROGRAMS_ROOT / ".env")
+load_dotenv(
+    EXCEPTION_PROGRAMS_ROOT.parent / "Website" / "backend" / ".env",
+    override=False,
+)
 
 from Header_Mapping.header_mapping import VALID_INVALID_LOOKUP_HEADER_MAPPING
 from header_matching import normalize_header_match
-from plaza_rates import (
+from plaza_rates import (  # noqa: E402  — E4/plaza_rates.py
     APR26_RATES_START_DATE,
     get_all_plaza_names,
     normalize_plaza_rate_key,
@@ -248,8 +257,9 @@ def load_lifecycle_dataframe(lifecycle_path, nrows=None) -> pd.DataFrame:
             )
             return df
         raise ValueError(
-            f"No header row found in Excel file '{path.name}'. "
-            "Expected columns such as Journey Type, Vehicle Reg. No., NPCI Class Desc."
+            f"Header keyword not found in Excel file '{path.name}'. "
+            "Expected columns such as Journey Type, Vehicle Reg. No., NPCI Class Desc. "
+            "Job stopped — no column mapping is applied."
         )
 
     raise ValueError(
