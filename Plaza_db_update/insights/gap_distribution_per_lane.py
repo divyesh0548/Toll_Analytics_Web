@@ -5,13 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from config import settings as cfg
 from config.excel_config import LANE_COLUMNS, LANE_LT2_COLUMNS
-from config.settings import (
-    GAP_DISTRIBUTION_PER_LANE_TABLE,
-    GAP_LT_2S_THRESHOLD,
-    PLAZA_IDENTIFIER,
-    PLAZA_NAME,
-)
 from insights.db_write import upsert_rows
 
 DATA_COLUMNS = [
@@ -53,8 +48,8 @@ def aggregate(df: pd.DataFrame) -> list[dict]:
     rows: list[dict] = []
     for record_date, hour_label in hour_keys:
         row: dict = {
-            "plaza_identifier": PLAZA_IDENTIFIER,
-            "plaza_name": PLAZA_NAME,
+            "plaza_identifier": cfg.PLAZA_IDENTIFIER,
+            "plaza_name": cfg.PLAZA_NAME,
             "date": record_date,
             "hour": hour_label,
         }
@@ -66,7 +61,11 @@ def aggregate(df: pd.DataFrame) -> list[dict]:
             row[avg_column] = _average_or_none(gap_values)
             lt2_column = LANE_LT2_COLUMNS[lane]
             row[lt2_column] = int(
-                sum(1 for value in gap_values if float(value) < GAP_LT_2S_THRESHOLD)
+                sum(
+                    1
+                    for value in gap_values
+                    if float(value) < cfg.GAP_LT_2S_THRESHOLD
+                )
             )
         rows.append(row)
     return rows
@@ -78,7 +77,7 @@ def write(conn, rows: list[dict], *, dry_run: bool = False) -> tuple[int, int]:
         return len(rows), 0
     return upsert_rows(
         conn,
-        GAP_DISTRIBUTION_PER_LANE_TABLE,
+        cfg.GAP_DISTRIBUTION_PER_LANE_TABLE,
         DATA_COLUMNS,
         KEY_COLUMNS,
         rows,

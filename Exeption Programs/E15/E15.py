@@ -1,5 +1,5 @@
 """
-E15 — From-To plaza merge + Applicable Rate + DB metrics.
+E15 — From-To plaza merge + Applicable Rate + DB metrics + S3.
 
 1) Read From-plaza exempt Excel files
 2) Merge To-plaza VRN from local VRN_INPUT_FOLDER (no download)
@@ -7,6 +7,7 @@ E15 — From-To plaza merge + Applicable Rate + DB metrics.
    and PAYMENT METHOD != EXEMPT
 4) Applicable Rate from TC Class + Journey Type via plaza_rates, uses to plaza rates
 5) Optionally upsert audit_exception_metrics (exception id 15) by Date & Time month
+6) Optionally upload from_to_combined.xlsx to S3 (month-year from Date & Time)
 
 Keywords / maps: E15_config.json
 """
@@ -27,6 +28,13 @@ import pandas as pd
 from e15_db_update import update_db_from_dataframe
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 E4_DIR = BASE_DIR.parent / "E4"
 E10_DIR = BASE_DIR.parent / "E10"
 CONFIG_PATH = BASE_DIR / "E15_config.json"
@@ -55,7 +63,7 @@ def _load_vehicle_class_module():
 _VEHICLE_CLASS_MOD = _load_vehicle_class_module()
 WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
-# --- Runtime inputs (edit these; not in config) ---
+# --- Runtime inputs / flags (Website overrides via E15_* env) ---
 FROM_PLAZA_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\from plaza"
 TO_PLAZA_ENTITY_NAME = "mohtara"  # used for rate lookup + merged VRN filename
 OUTPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\output"
@@ -66,13 +74,52 @@ VRN_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E15\t
 INDIVIDUAL_OUTPUT_PREFIX = "from_to"
 PRE_MATCH_OUTPUT_PREFIX = "from_to_pre_match"
 COMBINED_OUTPUT_FILENAME = "from_to_combined.xlsx"
-# plazas.plaza_identifier — required when UPDATE_DB is True
+# plazas.plaza_identifier — required for metrics DB and S3 upload
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 15
+# Date column on combined output used for S3 month/year label.
+DATE_TIME_COLUMN = "Date & Time"
 UPDATE_DB = False
 DB_DRY_RUN = False
+# Upload from_to_combined.xlsx to S3 + audit_exception_output_files row.
+UPLOAD_OUTPUT_TO_S3 = True
 
 _CONFIG: dict | None = None
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_website_env_overrides() -> None:
+    """Apply E15_* env from Website job runner."""
+    global FROM_PLAZA_FOLDER, VRN_INPUT_FOLDER, TO_PLAZA_ENTITY_NAME
+    global OUTPUT_FOLDER, PLAZA_IDENTIFIER, COMBINED_OUTPUT_FILENAME
+    global UPDATE_DB, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+
+    if os.environ.get("E15_FROM_PLAZA_FOLDER", "").strip():
+        FROM_PLAZA_FOLDER = os.environ["E15_FROM_PLAZA_FOLDER"].strip()
+    if os.environ.get("E15_VRN_INPUT_FOLDER", "").strip():
+        VRN_INPUT_FOLDER = os.environ["E15_VRN_INPUT_FOLDER"].strip()
+    if os.environ.get("E15_ENTITY_NAME", "").strip():
+        TO_PLAZA_ENTITY_NAME = os.environ["E15_ENTITY_NAME"].strip()
+    if os.environ.get("E15_OUTPUT_FOLDER", "").strip():
+        OUTPUT_FOLDER = os.environ["E15_OUTPUT_FOLDER"].strip()
+    if os.environ.get("E15_OUTPUT_FILE", "").strip():
+        out = Path(os.environ["E15_OUTPUT_FILE"].strip())
+        OUTPUT_FOLDER = str(out.parent)
+        COMBINED_OUTPUT_FILENAME = out.name
+    if os.environ.get("E15_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E15_PLAZA_IDENTIFIER"].strip()
+    if "E15_METRICS_DB_UPDATE" in os.environ:
+        UPDATE_DB = _env_flag("E15_METRICS_DB_UPDATE", UPDATE_DB)
+    if "E15_UPLOAD_OUTPUT_TO_S3" in os.environ:
+        UPLOAD_OUTPUT_TO_S3 = _env_flag("E15_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
+    if "E15_DB_DRY_RUN" in os.environ:
+        DB_DRY_RUN = _env_flag("E15_DB_DRY_RUN", DB_DRY_RUN)
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -117,13 +164,56 @@ def resolve_plaza_identifier() -> str:
         return value
     value = input("Enter plaza_identifier (plazas.plaza_identifier): ").strip()
     if not value:
-        raise RuntimeError("PLAZA_IDENTIFIER is required when UPDATE_DB is True.")
+        raise RuntimeError(
+            "PLAZA_IDENTIFIER is required for metrics DB and/or S3 upload."
+        )
     return value
 
 
 # =========================================================
 # HELPERS
 # =========================================================
+
+
+def month_periods_from_date_time(
+    path: Path,
+    column: str = DATE_TIME_COLUMN,
+) -> list[tuple[int, int]]:
+    """Unique (year, month) pairs from Date & Time on the combined output."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Output file not found: {path}")
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    else:
+        frame = pd.read_excel(path, dtype=str)
+    if column not in frame.columns:
+        # Case-insensitive fallback
+        by_key = {str(c).strip().casefold(): c for c in frame.columns}
+        resolved = by_key.get(str(column).strip().casefold())
+        if not resolved:
+            raise RuntimeError(
+                f"{path.name} is missing {column!r} for S3 month label. "
+                f"Available: {list(frame.columns)}"
+            )
+        column = resolved
+    parsed = pd.to_datetime(frame[column], errors="coerce", format="mixed", dayfirst=True)
+    periods: set[tuple[int, int]] = set()
+    for ts in parsed:
+        if pd.isna(ts):
+            continue
+        periods.add((int(ts.year), int(ts.month)))
+    print(
+        f"S3 months from {column!r}: {len(periods)} unique "
+        f"(unreadable: {int(parsed.isna().sum())})"
+    )
+    if not periods:
+        raise RuntimeError(
+            f"No parseable {column!r} values in {path.name} — "
+            "cannot build S3 month_label."
+        )
+    return sorted(periods)
 
 
 def read_excel_smart(file_path, config: dict | None = None):
@@ -1030,9 +1120,13 @@ def apply_applicable_rates(
 # =========================================================
 
 
-def main():
+def main() -> int:
+    apply_website_env_overrides()
     print("=" * 60)
     print("E15 — From-plaza exempt + local To-plaza VRN merge")
+    print(f"UPDATE_DB = {UPDATE_DB}")
+    print(f"DB_DRY_RUN = {DB_DRY_RUN}")
+    print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
     print("=" * 60)
 
     config = load_config()
@@ -1040,13 +1134,12 @@ def main():
     print(f"TO_PLAZA_ENTITY_NAME: {entity_name}")
     print(f"VRN_INPUT_FOLDER: {VRN_INPUT_FOLDER}")
     plaza_identifier = ""
-    if UPDATE_DB:
+    if UPDATE_DB or UPLOAD_OUTPUT_TO_S3:
         plaza_identifier = resolve_plaza_identifier()
         print(f"PLAZA_IDENTIFIER: {plaza_identifier}")
         print(f"EXCEPTION_TYPE_ID: {EXCEPTION_TYPE_ID}")
-        print(f"UPDATE_DB: {UPDATE_DB} (dry_run={DB_DRY_RUN})")
     else:
-        print("UPDATE_DB: False")
+        print("Metrics/S3: skipped (both flags off)")
 
     from_folder = str(FROM_PLAZA_FOLDER or "").strip()
     output_folder = str(OUTPUT_FOLDER or "").strip()
@@ -1076,7 +1169,7 @@ def main():
     ]
     if not from_files:
         print(f"No From-plaza files found in: {from_dir}")
-        return
+        return 1
 
     print("\nScanning From-plaza folder:")
     print(f" -> '{from_dir}': found {len(from_files)} files: {from_files}")
@@ -1175,10 +1268,13 @@ def main():
         except Exception as e:
             print(f"\nCould not write directly to {out_path}")
             print(f"Reason: {e}")
-            fallback_path = combined_filename
-            print(f"Exporting to current folder: {fallback_path}")
+            fallback_path = os.path.join(output_dir, combined_filename)
+            print(f"Exporting to: {fallback_path}")
             final_combined_df.to_excel(fallback_path, index=False)
+            out_path = fallback_path
             print("COMBINED FILE EXPORTED SUCCESSFULLY TO FALLBACK PATH")
+
+        dry_run = bool(DB_DRY_RUN)
 
         if UPDATE_DB:
             print("-" * 60)
@@ -1187,16 +1283,16 @@ def main():
                 f"(exception_type_id={EXCEPTION_TYPE_ID})…"
             )
             date_col_cfg = str(
-                (config.get("columns") or {}).get("date_time") or "Date & Time"
+                (config.get("columns") or {}).get("date_time") or DATE_TIME_COLUMN
             )
             update_db_from_dataframe(
                 final_combined_df,
                 plaza_identifier,
                 exception_type_id=int(EXCEPTION_TYPE_ID),
-                dry_run=bool(DB_DRY_RUN),
+                dry_run=dry_run,
                 date_aliases=[
                     date_col_cfg,
-                    "Date & Time",
+                    DATE_TIME_COLUMN,
                     "DATE_TIME_FROM",
                     "DATE_TIME_TO",
                 ],
@@ -1204,12 +1300,35 @@ def main():
             )
         else:
             print("UPDATE_DB=False — audit_exception_metrics not updated.")
+
+        if UPLOAD_OUTPUT_TO_S3:
+            print("-" * 60)
+            print(
+                f"Reading {DATE_TIME_COLUMN!r} from combined output for S3 month label…"
+            )
+            month_periods = month_periods_from_date_time(Path(out_path))
+            label = month_label_from_periods(month_periods)
+            print(
+                f"Uploading {Path(out_path).name} to S3 "
+                f"(month_label={label!r}, months={len(month_periods)})…"
+            )
+            upload_exception_output(
+                out_path,
+                plaza_identifier,
+                exception_type_id=int(EXCEPTION_TYPE_ID),
+                month_label=label,
+                dry_run=dry_run,
+            )
+        else:
+            print("UPLOAD_OUTPUT_TO_S3=False — combined output not uploaded.")
     else:
         print(
             "\nNo data was successfully merged. Combined file was not created."
         )
         if UPDATE_DB:
             print("UPDATE_DB skipped — no combined data.")
+        if UPLOAD_OUTPUT_TO_S3:
+            print("S3 upload skipped — no combined data.")
 
     print("\n====================================")
     print(
@@ -1222,11 +1341,12 @@ def main():
     print("MATCH = YES")
     print("PAYMENT METHOD != EXEMPT")
     print("====================================")
+    return 0 if success_count else 1
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except Exception as exc:  # noqa: BLE001
         print(f"\nERROR: {exc}")
         sys.exit(1)

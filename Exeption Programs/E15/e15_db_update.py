@@ -47,6 +47,7 @@ DRY_RUN = False
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR.parent / "E4" / ".env"
+WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 
 DATE_ALIASES = [
     "Date & Time",
@@ -64,15 +65,24 @@ RATE_ALIASES = [
 
 
 def load_env() -> None:
-    if not ENV_FILE.is_file():
-        raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    load_dotenv(ENV_FILE, override=True)
+    # Prefer Website analytics env when present; E4/.env fills gaps (no override).
+    if WEBSITE_ENV.is_file():
+        load_dotenv(WEBSITE_ENV, override=False)
+    if ENV_FILE.is_file():
+        load_dotenv(ENV_FILE, override=False)
+    if not WEBSITE_ENV.is_file() and not ENV_FILE.is_file():
+        raise FileNotFoundError(
+            f"Env file not found: tried {WEBSITE_ENV} and {ENV_FILE}"
+        )
 
 
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {ENV_FILE})")
+        raise RuntimeError(
+            f"Missing required env var: {name} "
+            f"(checked process env, {WEBSITE_ENV}, {ENV_FILE})"
+        )
     return value
 
 
@@ -80,17 +90,29 @@ def metrics_table_name() -> str:
     return (
         os.getenv("Plaza_analytics_Table_NAME", "").strip()
         or os.getenv("PLAZA_ANALYTICS_TABLE_NAME", "").strip()
+        or os.getenv("Exception_Metrics_Table", "").strip()
         or "audit_exception_metrics"
     )
 
 
 def connection_kwargs() -> dict:
+    database = (
+        os.getenv("Plaza_analytics_DB_NAME", "").strip()
+        or os.getenv("ANALYTICS_DB_NAME", "").strip()
+        or os.getenv("Toll_Analytics_DB", "").strip()
+        or os.getenv("DB_NAME", "").strip()
+    )
+    if not database:
+        raise RuntimeError(
+            "Missing analytics DB name "
+            "(Plaza_analytics_DB_NAME / ANALYTICS_DB_NAME / Toll_Analytics_DB / DB_NAME)"
+        )
     return {
         "host": require_env("DB_HOST"),
         "port": int(os.getenv("DB_PORT") or "5432"),
         "user": require_env("DB_USER"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("Plaza_analytics_DB_NAME"),
+        "database": database,
     }
 
 

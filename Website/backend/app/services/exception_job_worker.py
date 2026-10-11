@@ -25,13 +25,27 @@ from app.services.exception_job_s3 import (
     download_to_path,
     shorten_local_filename,
 )
+from app.services.analytics_program_catalog import (
+    ANALYTICS_VRN_ETC_PROGRAM,
+    plaza_db_update_root,
+)
 from app.services.exception_program_catalog import (
     E04_PROGRAM,
     E05_MAIN_PROCESS,
+    E06_PROGRAM,
+    E07_PROGRAM,
+    E09_PROGRAM,
+    E10_PROGRAM,
+    E15_PROGRAM,
     FULL_EXEMPT_PROGRAM,
     VALID_INVALID_PROGRAM,
     e4_program_root,
     e5_program_root,
+    e6_program_root,
+    e7_program_root,
+    e9_program_root,
+    e10_program_root,
+    e15_program_root,
     exempt_portal_root,
     valid_invalid_script_dir,
 )
@@ -49,7 +63,10 @@ _STAGING_CLEANUP_INTERVAL_SEC = 3600
 _SLOT_TO_FOLDER = {
     "lc_etc": "lc_etc",
     "vrn": "vrn",
+    "etc": "etc",
     "pass": "pass",
+    "permit": "permit",
+    "from_plaza": "from_plaza",
     "concessionaire": "concessionaire",
     "rates": "rates",
     "approved_exemption": "approved_exemption",
@@ -61,6 +78,28 @@ _SLOT_TO_FOLDER = {
 
 def _utc_now():
     return datetime.now(timezone.utc)
+
+
+def _format_runtime(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _print_job_runtime(job: ExceptionJob, elapsed_sec: float, *, ok: bool) -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    outcome = "succeeded" if ok else "failed"
+    print(
+        f"{stamp}  JOB {job.program_code} {job.job_uuid} {outcome} "
+        f"— total runtime {_format_runtime(elapsed_sec)} "
+        f"({elapsed_sec:.1f}s)",
+        flush=True,
+    )
 
 
 def _backend_env_path() -> Path:
@@ -307,6 +346,7 @@ def _process_one_queued_job() -> None:
     process_dir: Path | None = None
     child: subprocess.Popen | None = None
     failed = False
+    t0 = time.perf_counter()
     try:
         if job.program_code == FULL_EXEMPT_PROGRAM["code"]:
             process_dir, child = _run_full_exempt_job(job)
@@ -316,13 +356,32 @@ def _process_one_queued_job() -> None:
             process_dir, child = _run_valid_invalid_job(job)
         elif job.program_code == E05_MAIN_PROCESS["code"]:
             process_dir, child = _run_e5_job(job)
+        elif job.program_code == E06_PROGRAM["code"]:
+            process_dir, child = _run_e6_job(job)
+        elif job.program_code == E07_PROGRAM["code"]:
+            process_dir, child = _run_e7_job(job)
+        elif job.program_code == E09_PROGRAM["code"]:
+            process_dir, child = _run_e9_job(job)
+        elif job.program_code == E10_PROGRAM["code"]:
+            process_dir, child = _run_e10_job(job)
+        elif job.program_code == E15_PROGRAM["code"]:
+            process_dir, child = _run_e15_job(job)
+        elif job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
+            process_dir, child = _run_analytics_vrn_etc_job(job)
         else:
             raise RuntimeError(f"Program {job.program_code!r} is not wired yet.")
         job.status = "succeeded"
         job.progress_message = "Completed successfully."
         job.finished_at = _utc_now()
         db.session.commit()
+        _print_job_runtime(job, time.perf_counter() - t0, ok=True)
+        # Delete S3 inputs only after a fully successful run (retry keeps them).
         _cleanup_input_files(job)
+        # Analytics has no downloadable outputs — free local scratch.
+        if job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
+            _release_job_resources(process_dir, child)
+            process_dir = None
+            child = None
     except Exception as exc:  # noqa: BLE001
         failed = True
         logger.exception("Job %s failed", job.job_uuid)
@@ -331,9 +390,11 @@ def _process_one_queued_job() -> None:
         job.progress_message = "Failed."
         job.finished_at = _utc_now()
         db.session.commit()
+        _print_job_runtime(job, time.perf_counter() - t0, ok=False)
     finally:
         # Kill leftover children so Windows releases file locks.
         # Delete workspace only on failure (keep outputs after success).
+        # Analytics success already cleaned above; failed analytics also cleans.
         if failed:
             _release_job_resources(process_dir, child)
         else:
@@ -792,5 +853,637 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
             combined[-2000:]
             if combined
             else f"E5 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _download_slot_files(job: ExceptionJob, slot: str, dest_dir: Path) -> list[Path]:
+    """Download all job files for a slot into dest_dir; return local paths."""
+    files = (
+        ExceptionJobFile.query.filter_by(job_id=job.id, slot=slot)
+        .order_by(ExceptionJobFile.id.asc())
+        .all()
+    )
+    if not files:
+        return []
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    used_names: set[str] = set()
+    paths: list[Path] = []
+    for row in files:
+        base_name = shorten_local_filename(Path(row.original_file_name).name)
+        if base_name.lower() in used_names:
+            stem = Path(base_name).stem[:40]
+            suffix = Path(base_name).suffix
+            base_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+        used_names.add(base_name.lower())
+        dest = dest_dir / base_name
+        download_to_path(row.s3_key, dest)
+        paths.append(dest)
+    return paths
+
+
+def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    entity_name = require_entity_name(job.plaza_identifier)
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e6_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = f"Downloading E06 inputs (entity={entity_name})…"
+    db.session.commit()
+
+    e6_root = e6_program_root()
+    if not e6_root.is_dir():
+        raise RuntimeError(f"E6 program folder not found at {e6_root}")
+
+    jobs_root = e6_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    etc_dir = process_dir / "etc"
+    vrn_dir = process_dir / "vrn"
+    permit_dir = process_dir / "permit"
+    output_dir = process_dir / "output"
+    etc_dir.mkdir(parents=True, exist_ok=True)
+    vrn_dir.mkdir(parents=True, exist_ok=True)
+    permit_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    etc_paths = _download_slot_files(job, "etc", etc_dir)
+    if not etc_paths:
+        raise RuntimeError("No ETC files on this E06 job.")
+    vrn_paths = _download_slot_files(job, "vrn", vrn_dir)
+    if not vrn_paths:
+        raise RuntimeError("No VRN files on this E06 job.")
+    permit_paths = _download_slot_files(job, "permit", permit_dir)
+
+    if permit_paths:
+        job.progress_message = "Running E06 with uploaded permit files…"
+    else:
+        job.progress_message = (
+            "Running E06 (live permit scrape — see EXCEPTION_USE_SELENIUM in .env)…"
+        )
+    db.session.commit()
+
+    runner = e6_root / "run_website_e6_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E6 runner script missing: {runner}")
+
+    env = _build_e4_subprocess_env()
+    e6_env = e6_root / ".env"
+    if e6_env.is_file():
+        for key, value in dotenv_values(e6_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    output_file = output_dir / "etc_enriched.xlsx"
+    cmd = [
+        sys.executable,
+        str(runner),
+        "--etc-folder",
+        str(etc_dir),
+        "--vrn-folder",
+        str(vrn_dir),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--entity-name",
+        entity_name,
+        "--output-file",
+        str(output_file),
+        "--update-metrics",
+        "1",
+        "--upload-output",
+        "1",
+    ]
+    if permit_paths:
+        cmd.extend(["--permit-folder", str(permit_dir)])
+
+    global _active_child
+    child = subprocess.Popen(
+        cmd,
+        cwd=str(e6_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E6 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_e7_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    plaza = Plaza.query.filter_by(plaza_identifier=job.plaza_identifier).first()
+    if plaza is None:
+        raise RuntimeError(f"Plaza not found: {job.plaza_identifier}")
+
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e7_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = "Downloading E07 pass files from S3…"
+    db.session.commit()
+
+    e7_root = e7_program_root()
+    if not e7_root.is_dir():
+        raise RuntimeError(f"E7 program folder not found at {e7_root}")
+
+    jobs_root = e7_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    pass_dir = process_dir / "pass"
+    output_dir = process_dir / "output"
+    pass_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    files = (
+        ExceptionJobFile.query.filter_by(job_id=job.id, slot="pass")
+        .order_by(ExceptionJobFile.id.asc())
+        .all()
+    )
+    if not files:
+        raise RuntimeError("No pass files on this E07 job.")
+
+    used_names: set[str] = set()
+    for row in files:
+        base_name = shorten_local_filename(Path(row.original_file_name).name)
+        if base_name.lower() in used_names:
+            stem = Path(base_name).stem[:40]
+            suffix = Path(base_name).suffix
+            base_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+        used_names.add(base_name.lower())
+        dest = pass_dir / base_name
+        download_to_path(row.s3_key, dest)
+
+    job.progress_message = "Running E07 (VC4 pass Loss → metrics → S3)…"
+    db.session.commit()
+
+    runner = e7_root / "run_website_e7_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E7 runner script missing: {runner}")
+
+    output_file = output_dir / "e7_vc4_loss.csv"
+    env = _build_e4_subprocess_env()
+    e7_env = e7_root / ".env"
+    if e7_env.is_file():
+        for key, value in dotenv_values(e7_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    global _active_child
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--pass-folder",
+            str(pass_dir),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--output-file",
+            str(output_file),
+            "--update-metrics",
+            "1",
+            "--upload-output",
+            "1",
+        ],
+        cwd=str(e7_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E7 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    plaza = Plaza.query.filter_by(plaza_identifier=job.plaza_identifier).first()
+    if plaza is None:
+        raise RuntimeError(f"Plaza not found: {job.plaza_identifier}")
+
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e9_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = "Downloading E09 ETC files from S3…"
+    db.session.commit()
+
+    e9_root = e9_program_root()
+    if not e9_root.is_dir():
+        raise RuntimeError(f"E9 program folder not found at {e9_root}")
+
+    jobs_root = e9_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    etc_dir = process_dir / "etc"
+    output_dir = process_dir / "output"
+    etc_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    etc_paths = _download_slot_files(job, "etc", etc_dir)
+    if not etc_paths:
+        raise RuntimeError("No ETC files on this E09 job.")
+
+    job.progress_message = "Running E09 (UNSETTLED totals → metrics → S3)…"
+    db.session.commit()
+
+    runner = e9_root / "run_website_e9_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E9 runner script missing: {runner}")
+
+    output_file = output_dir / "e9_unsettled.csv"
+    env = _build_e4_subprocess_env()
+    e9_env = e9_root / ".env"
+    if e9_env.is_file():
+        for key, value in dotenv_values(e9_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    global _active_child
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--etc-folder",
+            str(etc_dir),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--output-file",
+            str(output_file),
+            "--update-metrics",
+            "1",
+            "--upload-output",
+            "1",
+        ],
+        cwd=str(e9_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E9 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    entity_name = require_entity_name(job.plaza_identifier)
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e10_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = f"Downloading E10 inputs (entity={entity_name})…"
+    db.session.commit()
+
+    e10_root = e10_program_root()
+    if not e10_root.is_dir():
+        raise RuntimeError(f"E10 program folder not found at {e10_root}")
+
+    jobs_root = e10_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    vrn_dir = process_dir / "vrn"
+    etc_dir = process_dir / "etc"
+    output_dir = process_dir / "output"
+    vrn_dir.mkdir(parents=True, exist_ok=True)
+    etc_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    vrn_paths = _download_slot_files(job, "vrn", vrn_dir)
+    if not vrn_paths:
+        raise RuntimeError("No VRN files on this E10 job.")
+    etc_paths = _download_slot_files(job, "etc", etc_dir)
+    if not etc_paths:
+        raise RuntimeError("No ETC files on this E10 job.")
+
+    job.progress_message = (
+        "Running E10 (VRN+weight+ETC → E10-A/B/C metrics + segment S3)…"
+    )
+    db.session.commit()
+
+    runner = e10_root / "run_website_e10_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E10 runner script missing: {runner}")
+
+    output_file = output_dir / "e10_vrn_etc_merged.csv"
+    env = _build_e4_subprocess_env()
+    e10_env = e10_root / ".env"
+    if e10_env.is_file():
+        for key, value in dotenv_values(e10_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    global _active_child
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--vrn-folder",
+            str(vrn_dir),
+            "--etc-folder",
+            str(etc_dir),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--entity-name",
+            entity_name,
+            "--output-file",
+            str(output_file),
+            "--update-metrics",
+            "1",
+            "--upload-output",
+            "1",
+        ],
+        cwd=str(e10_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E10 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_e15_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    entity_name = require_entity_name(job.plaza_identifier)
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e15_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = f"Downloading E15 inputs (entity={entity_name})…"
+    db.session.commit()
+
+    e15_root = e15_program_root()
+    if not e15_root.is_dir():
+        raise RuntimeError(f"E15 program folder not found at {e15_root}")
+
+    jobs_root = e15_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    from_dir = process_dir / "from_plaza"
+    vrn_dir = process_dir / "vrn"
+    output_dir = process_dir / "output"
+    from_dir.mkdir(parents=True, exist_ok=True)
+    vrn_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    from_paths = _download_slot_files(job, "from_plaza", from_dir)
+    if not from_paths:
+        raise RuntimeError("No From-plaza exempt files on this E15 job.")
+    vrn_paths = _download_slot_files(job, "vrn", vrn_dir)
+    if not vrn_paths:
+        raise RuntimeError("No To-plaza VRN files on this E15 job.")
+
+    job.progress_message = (
+        "Running E15 (From-To merge → rates → metrics → S3)…"
+    )
+    db.session.commit()
+
+    runner = e15_root / "run_website_e15_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E15 runner script missing: {runner}")
+
+    output_file = output_dir / "from_to_combined.xlsx"
+    env = _build_e4_subprocess_env()
+    e15_env = e15_root / ".env"
+    if e15_env.is_file():
+        for key, value in dotenv_values(e15_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    global _active_child
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            str(runner),
+            "--from-folder",
+            str(from_dir),
+            "--vrn-folder",
+            str(vrn_dir),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--entity-name",
+            entity_name,
+            "--output-file",
+            str(output_file),
+            "--update-metrics",
+            "1",
+            "--upload-output",
+            "1",
+        ],
+        cwd=str(e15_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E15 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_analytics_vrn_etc_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    plaza = Plaza.query.filter_by(plaza_identifier=job.plaza_identifier).first()
+    if plaza is None:
+        raise RuntimeError(f"Plaza not found: {job.plaza_identifier}")
+
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"an_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = "Downloading VRN/ETC inputs from S3…"
+    db.session.commit()
+
+    plaza_root = plaza_db_update_root()
+    if not plaza_root.is_dir():
+        raise RuntimeError(f"Plaza_db_update folder not found at {plaza_root}")
+
+    jobs_root = plaza_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    vrn_dir = process_dir / "vrn"
+    etc_dir = process_dir / "etc"
+    vrn_dir.mkdir(parents=True, exist_ok=True)
+    etc_dir.mkdir(parents=True, exist_ok=True)
+
+    vrn_paths = _download_slot_files(job, "vrn", vrn_dir)
+    if not vrn_paths:
+        raise RuntimeError("No VRN files on this analytics job.")
+    etc_paths = _download_slot_files(job, "etc", etc_dir)
+
+    job.progress_message = (
+        f"Running plaza ETL ({len(vrn_paths)} VRN"
+        + (f", {len(etc_paths)} ETC" if etc_paths else ", no ETC")
+        + ")…"
+    )
+    db.session.commit()
+
+    runner = plaza_root / "run_website_analytics_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"Analytics runner missing: {runner}")
+
+    env = _build_e4_subprocess_env()
+    plaza_env = plaza_root / ".env"
+    if plaza_env.is_file():
+        for key, value in dotenv_values(plaza_env).items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                env[str(key)] = text
+
+    cmd = [
+        sys.executable,
+        str(runner),
+        "--vrn-folder",
+        str(vrn_dir),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--plaza-name",
+        str(plaza.plaza_name or "").strip() or job.plaza_identifier,
+        "--start-date-limit",
+        "2000-01-01",
+    ]
+    if etc_paths:
+        cmd.extend(["--etc-folder", str(etc_dir)])
+
+    global _active_child
+    child = subprocess.Popen(
+        cmd,
+        cwd=str(plaza_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    with _active_child_lock:
+        _active_child = child
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"Analytics ETL failed with exit code {child.returncode}"
         )
     return process_dir, child

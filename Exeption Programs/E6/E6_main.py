@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import sys
 from datetime import date
@@ -44,6 +45,9 @@ from common.s3_output_upload import (  # noqa: E402
     month_label_from_periods,
     upload_exception_output,
 )
+from common.plaza_entity_map import (  # noqa: E402
+    resolve_entity_name as entity_name_from_plaza,
+)
 
 PERMIT_FIELDS = ["Permit Type", "Permit/Authorization No", "Permit Validity"]
 PERMIT_FILE_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
@@ -53,13 +57,14 @@ if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
-# --- Runtime inputs / flags (edit these; not in config) ---
+# --- Runtime inputs / flags (Website overrides via E6_* env) ---
 ENTITY_NAME = "mokha"
 # Local ETC Excel/CSV folder for the period. Required — ETC is not downloaded.
 ETC_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/etc_input"
 # Local VRN Excel/CSV folder for the same period. Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/vrn_input"
 # Folder of already-scraped permit Excel/CSV files (joined by vehicle number).
+# Empty / missing files → web scrape (Parivahan).
 PERMIT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/Permit Input"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_enriched.xlsx"
 PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
@@ -75,6 +80,45 @@ DB_DRY_RUN = False
 UPLOAD_OUTPUT_TO_S3 = True
 # Always use single-journey plaza rates (ignore journey type for Loss).
 RATE_JOURNEY_KEY = "single"
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_website_env_overrides() -> None:
+    """Apply E6_* env from Website job runner."""
+    global ENTITY_NAME, ETC_INPUT_FOLDER, VRN_INPUT_FOLDER, PERMIT_FOLDER
+    global OUTPUT_DIR, ETC_OUTPUT_FILE, PERMIT_OUTPUT_FILE
+    global PLAZA_IDENTIFIER, UPDATE_DB, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+
+    if os.environ.get("E6_ETC_INPUT_FOLDER", "").strip():
+        ETC_INPUT_FOLDER = os.environ["E6_ETC_INPUT_FOLDER"].strip()
+    if os.environ.get("E6_VRN_INPUT_FOLDER", "").strip():
+        VRN_INPUT_FOLDER = os.environ["E6_VRN_INPUT_FOLDER"].strip()
+    if "E6_PERMIT_FOLDER" in os.environ:
+        PERMIT_FOLDER = os.environ.get("E6_PERMIT_FOLDER", "").strip()
+    if os.environ.get("E6_OUTPUT_FILE", "").strip():
+        ETC_OUTPUT_FILE = Path(os.environ["E6_OUTPUT_FILE"].strip())
+        OUTPUT_DIR = ETC_OUTPUT_FILE.parent
+        PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
+    if os.environ.get("E6_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E6_PLAZA_IDENTIFIER"].strip()
+    if os.environ.get("E6_ENTITY_NAME", "").strip():
+        ENTITY_NAME = os.environ["E6_ENTITY_NAME"].strip()
+    elif PLAZA_IDENTIFIER and not str(ENTITY_NAME or "").strip():
+        mapped = entity_name_from_plaza(PLAZA_IDENTIFIER)
+        if mapped:
+            ENTITY_NAME = mapped
+    if "E6_METRICS_DB_UPDATE" in os.environ:
+        UPDATE_DB = _env_flag("E6_METRICS_DB_UPDATE", UPDATE_DB)
+    if "E6_UPLOAD_OUTPUT_TO_S3" in os.environ:
+        UPLOAD_OUTPUT_TO_S3 = _env_flag("E6_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
+    if "E6_DB_DRY_RUN" in os.environ:
+        DB_DRY_RUN = _env_flag("E6_DB_DRY_RUN", DB_DRY_RUN)
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -721,13 +765,14 @@ def normalize_journey_types(etc_df: pd.DataFrame, config: dict) -> pd.DataFrame:
 
 
 def resolve_permit_paths() -> list[Path]:
-    """Return all permit Excel/CSV files from PERMIT_FOLDER."""
+    """
+    Return permit Excel/CSV files from PERMIT_FOLDER.
+    Empty list when folder is unset/missing/empty → caller scrapes instead.
+    """
     raw = str(PERMIT_FOLDER or "").strip()
     if not raw:
-        raise RuntimeError(
-            "Set PERMIT_FOLDER at the top of E6_main.py to a folder of "
-            "permit Excel/CSV files. Scraping is not used."
-        )
+        print("PERMIT_FOLDER not set — will scrape permit data.")
+        return []
     path = Path(raw)
     if not path.is_absolute():
         path = BASE_DIR / path
@@ -737,7 +782,8 @@ def resolve_permit_paths() -> list[Path]:
             "Put the permit file(s) in a folder and point PERMIT_FOLDER at it."
         )
     if not path.is_dir():
-        raise FileNotFoundError(f"Permit folder not found: {path}")
+        print(f"Permit folder not found ({path}) — will scrape permit data.")
+        return []
 
     files = sorted(
         p
@@ -747,11 +793,54 @@ def resolve_permit_paths() -> list[Path]:
         and not p.name.startswith("~$")
     )
     if not files:
-        raise FileNotFoundError(
-            f"No permit Excel/CSV files found in folder: {path}"
-        )
+        print(f"No permit files in {path} — will scrape permit data.")
+        return []
     print(f"Permit folder: {path} ({len(files)} file(s))")
     return files
+
+
+def unique_vehicle_frame(df: pd.DataFrame, vehicle_col: str) -> pd.DataFrame:
+    work = df[[vehicle_col]].copy()
+    work["_key"] = work[vehicle_col].map(normalize_vehicle_number)
+    return (
+        work.loc[work["_key"].ne("")]
+        .drop_duplicates(subset=["_key"], keep="first")
+        .drop(columns=["_key"])
+        .reset_index(drop=True)
+    )
+
+
+def scrape_permit_for_etc(
+    etc_df: pd.DataFrame,
+    vehicle_col: str,
+    config: dict,
+) -> pd.DataFrame:
+    """Scrape Parivahan permit details for unique ETC VRNs."""
+    from web_scrap_for_permit import scrape_vehicle_details_for_permit
+
+    unique_df = unique_vehicle_frame(etc_df, vehicle_col)
+    if unique_df.empty:
+        print("No vehicle numbers to scrape for permits.")
+        return pd.DataFrame()
+
+    use_grid = _env_flag("EXCEPTION_USE_SELENIUM", True)
+    if "E6_USE_SELENIUM_GRID" in os.environ:
+        use_grid = _env_flag("E6_USE_SELENIUM_GRID", use_grid)
+
+    scrape_cfg = config.get("scrape") or {}
+    print(
+        f"Scraping permits for {len(unique_df):,} unique VRN(s) "
+        f"(selenium_grid={use_grid})…"
+    )
+    scraped = scrape_vehicle_details_for_permit(
+        unique_df,
+        use_selenium_grid=use_grid,
+        scrape_cfg=scrape_cfg,
+        vehicle_column=vehicle_col,
+    )
+    if scraped is None:
+        return pd.DataFrame()
+    return scraped
 
 
 def load_permit_file(path: Path, config: dict) -> pd.DataFrame:
@@ -788,8 +877,10 @@ def load_permit_file(path: Path, config: dict) -> pd.DataFrame:
     return body
 
 
-def load_permit_frames(config: dict) -> pd.DataFrame:
-    paths = resolve_permit_paths()
+def load_permit_frames(config: dict, paths: list[Path] | None = None) -> pd.DataFrame:
+    paths = list(paths) if paths is not None else resolve_permit_paths()
+    if not paths:
+        return pd.DataFrame()
     frames: list[pd.DataFrame] = []
     for path in paths:
         frame = load_permit_file(path, config)
@@ -908,8 +999,18 @@ def attach_permit_data(
     columns_cfg: dict,
     config: dict,
 ) -> pd.DataFrame:
-    """Join permits from all files in PERMIT_FOLDER onto ETC by vehicle number."""
-    scraped = load_permit_frames(config)
+    """
+    Join permits onto ETC by vehicle number.
+    Prefer PERMIT_FOLDER files; if none, scrape Parivahan.
+    """
+    paths = resolve_permit_paths()
+    if paths:
+        scraped = load_permit_frames(config, paths=paths)
+        print("Using uploaded / local permit files.")
+    else:
+        scraped = scrape_permit_for_etc(etc_df, vehicle_col, config)
+        print(f"Permit scrape rows: {len(scraped):,}")
+
     enriched = merge_permit_into_etc(etc_df, scraped, vehicle_col, columns_cfg)
     matched = 0
     permit_type = columns_cfg.get("permit_type") or PERMIT_FIELDS[0]
@@ -1154,6 +1255,7 @@ def month_periods_from_read_datetime(
 
 
 def main() -> int:
+    apply_website_env_overrides()
     print("=" * 60)
     print("E6 — local ETC + permit + VRN + single rates/Loss")
     print(f"ETC_INPUT_FOLDER = {ETC_INPUT_FOLDER!r}")
@@ -1176,7 +1278,7 @@ def main() -> int:
     print(f"Vehicle column: {vehicle_col}")
 
     print("-" * 60)
-    print("Joining permit data from PERMIT_FOLDER…")
+    print("Joining permit data (upload if present, else scrape)…")
     enriched = attach_permit_data(etc_df, vehicle_col, columns_cfg, config)
     enriched = filter_etc_by_permit_type(enriched, columns_cfg, config)
 

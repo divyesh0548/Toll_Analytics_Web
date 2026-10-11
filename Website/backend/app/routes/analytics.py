@@ -12,6 +12,7 @@ from app.services.numbers_analytics import (
     build_portfolio_rollup,
     build_portfolio_volume,
 )
+from app.services.analytics_program_catalog import list_analytics_programs
 from app.utils.api_log import log_fail, log_ok
 
 analytics_bp = Blueprint("analytics", __name__)
@@ -96,3 +97,10 @@ def portfolio_rollup():
 
     log_ok(f"portfolio rollup for {len(company_dicts)} companies ({payload.get('year')})")
     return jsonify(payload)
+
+
+@analytics_bp.get("/upload-programs")
+def analytics_upload_programs():
+    """Programs shown on the Analytics uploads page (not Exceptions)."""
+    log_ok("analytics upload programs catalog")
+    return jsonify({"programs": list_analytics_programs()})

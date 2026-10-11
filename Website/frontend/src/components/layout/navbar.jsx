@@ -18,6 +18,7 @@ export function Navbar() {
     : [
         { to: '/portfolio', label: 'Portfolio' },
         { to: '/exceptions/uploads', label: 'Exceptions' },
+        { to: '/analytics/uploads', label: 'Analytics upload', newTab: true },
       ]
 
   function handleConfirmLogout() {
@@ -38,22 +39,34 @@ export function Navbar() {
               Toll Analytics
             </Link>
             <nav className="hidden items-center gap-1 sm:flex">
-              {navItems.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={({ isActive }) =>
-                    cn(
-                      'rounded-sm px-3 py-1.5 text-body transition-colors',
-                      isActive
-                        ? 'bg-accent text-accent-foreground'
-                        : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-                    )
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              ))}
+              {navItems.map((item) =>
+                item.newTab ? (
+                  <a
+                    key={item.to}
+                    href={item.to}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-sm px-3 py-1.5 text-body text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                  >
+                    {item.label}
+                  </a>
+                ) : (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      cn(
+                        'rounded-sm px-3 py-1.5 text-body transition-colors',
+                        isActive
+                          ? 'bg-accent text-accent-foreground'
+                          : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+                      )
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                ),
+              )}
             </nav>
           </div>
 

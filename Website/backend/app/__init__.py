@@ -44,6 +44,16 @@ def create_app(config_name: str | None = None) -> Flask:
     app.register_blueprint(analytics_bp, url_prefix="/api/analytics")
     app.register_blueprint(exception_jobs_bp, url_prefix="/api/exception-jobs")
 
+    from flask import request
+    from app.utils.api_log import log_api
+
+    @app.after_request
+    def _log_api_call(response):
+        path = request.path or ""
+        if path.startswith("/api/"):
+            log_api(request.method, path, response.status_code)
+        return response
+
     @app.get("/api/health")
     def health():
         return {"status": "ok"}

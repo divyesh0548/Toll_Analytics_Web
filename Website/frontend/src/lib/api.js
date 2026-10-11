@@ -239,6 +239,10 @@ export function listExceptionPrograms() {
   return request('/api/exception-jobs/programs')
 }
 
+export function listAnalyticsUploadPrograms() {
+  return request('/api/analytics/upload-programs')
+}
+
 export function listExceptionJobs(plazaIdentifier, programCode) {
   const params = new URLSearchParams()
   if (plazaIdentifier) params.set('plaza_identifier', plazaIdentifier)
@@ -280,13 +284,58 @@ export function createExceptionJob(payload) {
   })
 }
 
-export function uploadExceptionJobFile(jobUuid, slot, file) {
-  const body = new FormData()
-  body.append('slot', slot)
-  body.append('file', file)
-  return request(`/api/exception-jobs/${jobUuid}/files`, {
+export async function uploadExceptionJobFile(jobUuid, slot, file) {
+  const fileName = file?.name || 'upload.bin'
+  const contentType = file?.type || 'application/octet-stream'
+  const fileSize = Number(file?.size || 0)
+  if (!fileSize) {
+    const error = new Error('Uploaded file is empty')
+    error.status = 400
+    throw error
+  }
+
+  // 1) Ask backend for a short-lived S3 PUT URL (auth + slot checks).
+  const signed = await request(`/api/exception-jobs/${jobUuid}/files/presign`, {
     method: 'POST',
-    body,
+    body: JSON.stringify({
+      slot,
+      file_name: fileName,
+      content_type: contentType,
+      file_size_bytes: fileSize,
+    }),
+  })
+
+  // 2) Browser uploads directly to S3 (does not go through Flask).
+  const putHeaders = {}
+  if (signed.content_type) {
+    putHeaders['Content-Type'] = signed.content_type
+  }
+  const putResponse = await fetch(signed.upload_url, {
+    method: 'PUT',
+    headers: putHeaders,
+    body: file,
+  })
+  if (!putResponse.ok) {
+    const detail = await putResponse.text().catch(() => '')
+    const error = new Error(
+      detail?.trim()
+        ? `S3 upload failed (${putResponse.status}): ${detail.trim().slice(0, 200)}`
+        : `S3 upload failed (${putResponse.status})`,
+    )
+    error.status = putResponse.status
+    throw error
+  }
+
+  // 3) Register the object on the job after a successful PUT.
+  return request(`/api/exception-jobs/${jobUuid}/files/complete`, {
+    method: 'POST',
+    body: JSON.stringify({
+      slot,
+      s3_key: signed.s3_key,
+      file_url: signed.file_url,
+      original_file_name: signed.original_file_name || fileName,
+      file_size_bytes: fileSize,
+    }),
   })
 }
 

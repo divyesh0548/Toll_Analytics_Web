@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
+import { formatMoneyCompact } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 
 const MONTH_NAMES = [
@@ -21,17 +22,16 @@ const MONTH_NAMES = [
   'Dec',
 ]
 
-function formatAmount(value) {
-  if (value == null) return '—'
-  return Number(value).toLocaleString('en-IN', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  })
-}
-
 function formatCount(value) {
   if (value == null) return '—'
   return Number(value).toLocaleString('en-IN')
+}
+
+function formatSharePct(amount, totalAmount) {
+  const a = Number(amount)
+  const t = Number(totalAmount)
+  if (!Number.isFinite(a) || !Number.isFinite(t) || t <= 0) return null
+  return (a / t) * 100
 }
 
 function formatBytes(value) {
@@ -189,6 +189,7 @@ export function AuditExceptionsPanel({
   )
   const exceptions = data?.exceptions || []
   const summary = data?.summary
+  const totalAmount = Number(summary?.total_amount) || 0
   const selectedYear = yearValue || (data?.selection?.year != null ? String(data.selection.year) : '')
   const selectedMonth =
     monthValue ||
@@ -202,7 +203,7 @@ export function AuditExceptionsPanel({
         <div>
           <h2 className="text-header">Audit exceptions</h2>
           <p className="text-body text-muted-foreground">
-            Standard findings for this plaza by month or full year.
+            Standard findings for this plaza by month or full year. Amounts in ₹ Lakh.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
@@ -213,10 +214,10 @@ export function AuditExceptionsPanel({
               disabled={loading}
               aria-label="Whole year"
             />
-            <span className="text-small text-muted-foreground">Whole year</span>
+            <span className="text-body text-foreground">Whole year</span>
           </label>
           <label className="space-y-1">
-            <span className="block text-small text-muted-foreground">Year</span>
+            <span className="block text-body text-foreground">Year</span>
             <select
               className="h-10 min-w-[7rem] rounded-sm border border-input bg-background px-2 text-body"
               value={selectedYear}
@@ -232,7 +233,7 @@ export function AuditExceptionsPanel({
           </label>
           {!wholeYear ? (
             <label className="space-y-1">
-              <span className="block text-small text-muted-foreground">Month</span>
+              <span className="block text-body text-foreground">Month</span>
               <select
                 className="h-10 min-w-[8rem] rounded-sm border border-input bg-background px-2 text-body"
                 value={selectedMonth}
@@ -265,32 +266,39 @@ export function AuditExceptionsPanel({
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <CardContent className="space-y-1 p-4">
-            <p className="text-small text-muted-foreground">Findings</p>
-            <p className="text-header">{formatCount(summary?.exception_types ?? 14)}</p>
+            <p className="text-body text-foreground">Findings</p>
+            <p className="text-display text-2xl font-semibold tracking-tight">
+              {formatCount(summary?.exception_types ?? 14)}
+            </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="space-y-1 p-4">
-            <p className="text-small text-muted-foreground">Total amount</p>
-            <p className="text-header">{formatAmount(summary?.total_amount)}</p>
+            <p className="text-body text-foreground">Total transactions</p>
+            <p className="text-display text-2xl font-semibold tracking-tight">
+              {formatCount(summary?.total_count)}
+            </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="space-y-1 p-4">
-            <p className="text-small text-muted-foreground">Total count</p>
-            <p className="text-header">{formatCount(summary?.total_count)}</p>
+            <p className="text-body text-foreground">Total amount</p>
+            <p className="text-display text-2xl font-semibold tracking-tight">
+              {formatMoneyCompact(summary?.total_amount)}
+            </p>
           </CardContent>
         </Card>
       </div>
 
       <Card className={cn(loading && 'opacity-70')}>
         <CardHeader>
-          <CardTitle>
+          <CardTitle className="text-header">
             {data?.selection?.label || 'Selected period'}
           </CardTitle>
-          <CardDescription>
-            Amount and count are plaza-specific for the selected period. Output downloads
-            match by month label (e.g. 2026-Apr-May shows for April and May).
+          <CardDescription className="text-body">
+            Transactions and amount (₹ Lakh) for this plaza. % of total is each exception’s
+            share of overall amount. Output downloads match by month label
+            (e.g. 2026-Apr-May shows for April and May).
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -298,14 +306,21 @@ export function AuditExceptionsPanel({
             <p className="text-body text-muted-foreground">Loading audit exceptions…</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[42rem] border-collapse text-left text-small">
+              <table className="w-full min-w-[48rem] border-collapse text-left text-body">
                 <thead>
-                  <tr className="border-b border-border text-muted-foreground">
-                    <th className="px-2 py-2 font-medium">Code</th>
-                    <th className="px-2 py-2 font-medium">Exception</th>
-                    <th className="px-2 py-2 font-medium text-right">Amount</th>
-                    <th className="px-2 py-2 font-medium text-right">Count</th>
-                    <th className="px-2 py-2 font-medium text-right">Output</th>
+                  <tr className="border-b border-border text-foreground">
+                    <th className="px-2 py-3 text-body font-semibold">Code</th>
+                    <th className="px-2 py-3 text-body font-semibold">Exception</th>
+                    <th className="px-2 py-3 text-body font-semibold text-right">
+                      Transactions
+                    </th>
+                    <th className="px-2 py-3 text-body font-semibold text-right">
+                      Amount
+                    </th>
+                    <th className="px-2 py-3 text-body font-semibold text-right">
+                      % of total
+                    </th>
+                    <th className="px-2 py-3 text-body font-semibold text-right">Output</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -313,6 +328,10 @@ export function AuditExceptionsPanel({
                     const segmentRows = row.segments || []
                     return [row, ...segmentRows].map((line, index) => {
                       const nested = index > 0
+                      const isPctMetric = line.percentage != null
+                      const sharePct = isPctMetric
+                        ? null
+                        : formatSharePct(line.total_amount, totalAmount)
                       return (
                         <tr
                           key={line.code}
@@ -323,22 +342,27 @@ export function AuditExceptionsPanel({
                         >
                           <td
                             className={cn(
-                              'px-2 py-2 font-medium whitespace-nowrap',
+                              'px-2 py-3 text-base font-semibold whitespace-nowrap',
                               nested && 'pl-8',
                             )}
                           >
                             {line.code}
                           </td>
-                          <td className="px-2 py-2 max-w-[28rem]">{line.label}</td>
-                          <td className="px-2 py-2 text-right whitespace-nowrap">
-                            {line.percentage != null
+                          <td className="max-w-[28rem] px-2 py-3 text-base leading-snug">
+                            {line.label}
+                          </td>
+                          <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
+                            {isPctMetric ? '—' : formatCount(line.total_count)}
+                          </td>
+                          <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
+                            {isPctMetric
                               ? `${Number(line.percentage).toFixed(2)}%`
-                              : formatAmount(line.total_amount)}
+                              : formatMoneyCompact(line.total_amount)}
                           </td>
-                          <td className="px-2 py-2 text-right whitespace-nowrap">
-                            {line.percentage != null ? '—' : formatCount(line.total_count)}
+                          <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
+                            {sharePct == null ? '—' : `${sharePct.toFixed(1)}%`}
                           </td>
-                          <td className="px-2 py-2 text-right whitespace-nowrap">
+                          <td className="px-2 py-3 text-right whitespace-nowrap">
                             <OutputCell line={line} wholeYear={Boolean(wholeYear)} />
                           </td>
                         </tr>

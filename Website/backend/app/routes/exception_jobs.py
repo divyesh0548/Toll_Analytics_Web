@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 
@@ -10,7 +12,15 @@ from app.models.audit_exception import AuditExceptionOutputFile
 from app.models.exception_job import ExceptionJob, ExceptionJobFile
 from app.models.plaza import Plaza
 from app.services.auth_tokens import deny_viewer_writes, get_current_user
-from app.services.exception_job_s3 import delete_object, upload_bytes
+from app.services.db_session import commit_with_retry
+from app.services.exception_job_s3 import (
+    bucket_name,
+    delete_object,
+    head_object_size,
+    job_input_key_prefix,
+    object_url,
+    presign_put_upload,
+)
 from app.services.exception_program_catalog import (
     get_program,
     job_list_codes_for_program,
@@ -20,6 +30,7 @@ from app.services.exception_program_catalog import (
 )
 from app.services.plaza_entity_map import resolve_entity_name
 from app.utils.api_log import log_fail, log_ok
+from config import Config
 
 exception_jobs_bp = Blueprint("exception_jobs", __name__)
 
@@ -215,36 +226,57 @@ def get_job(job_uuid: str):
     return jsonify({"job": job.to_dict()})
 
 
-@exception_jobs_bp.post("/<job_uuid>/files")
-def upload_job_file(job_uuid: str):
+def _editable_job_or_error(job_uuid: str):
     job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
     if job is None:
-        return jsonify({"error": "Job not found"}), 404
+        return None, (jsonify({"error": "Job not found"}), 404)
     if job.status not in EDITABLE_STATUSES:
-        return (
+        return None, (
             jsonify({"error": f"Cannot upload while job status is {job.status}."}),
             409,
         )
+    return job, None
 
+
+def _slot_cfg_or_error(job: ExceptionJob, slot: str):
     program = get_program(job.program_code)
     if program is None:
-        return jsonify({"error": "Program missing from catalog"}), 500
-
-    slot = (request.form.get("slot") or "").strip()
+        return None, (jsonify({"error": "Program missing from catalog"}), 500)
     slot_cfg = next((s for s in program["input_slots"] if s["key"] == slot), None)
     if slot_cfg is None:
-        return jsonify({"error": f"Invalid slot: {slot}"}), 400
+        return None, (jsonify({"error": f"Invalid slot: {slot}"}), 400)
+    return slot_cfg, None
 
-    upload = request.files.get("file")
-    if upload is None or not upload.filename:
-        return jsonify({"error": "file is required"}), 400
 
-    original_name = secure_filename(upload.filename) or "upload.bin"
-    body = upload.read()
-    if not body:
-        return jsonify({"error": "Uploaded file is empty"}), 400
+@exception_jobs_bp.post("/<job_uuid>/files/presign")
+def presign_job_file(job_uuid: str):
+    """Return a short-lived S3 PUT URL; browser uploads directly to S3."""
+    job, err = _editable_job_or_error(job_uuid)
+    if err:
+        return err
 
-    # Single-file slots: replace previous object(s)
+    body = request.get_json(silent=True) or {}
+    slot = str(body.get("slot") or "").strip()
+    slot_cfg, err = _slot_cfg_or_error(job, slot)
+    if err:
+        return err
+
+    original_name = secure_filename(str(body.get("file_name") or "")) or "upload.bin"
+    content_type = str(body.get("content_type") or "").strip() or "application/octet-stream"
+    try:
+        file_size = int(body.get("file_size_bytes") or 0)
+    except (TypeError, ValueError):
+        file_size = 0
+    if file_size <= 0:
+        return jsonify({"error": "file_size_bytes must be > 0"}), 400
+    max_bytes = int(getattr(Config, "MAX_CONTENT_LENGTH", 0) or 0)
+    if max_bytes and file_size > max_bytes:
+        return (
+            jsonify({"error": f"File too large (max {max_bytes} bytes)."}),
+            413,
+        )
+
+    # Single-file slots: replace previous object(s) before issuing a new key.
     if not slot_cfg.get("multiple"):
         existing = ExceptionJobFile.query.filter_by(job_id=job.id, slot=slot).all()
         for row in existing:
@@ -253,38 +285,117 @@ def upload_job_file(job_uuid: str):
             except Exception:  # noqa: BLE001
                 pass
             db.session.delete(row)
-        db.session.commit()
+        commit_with_retry()
 
     plaza = job.plaza
     plaza_name = plaza.plaza_name if plaza else job.pipeline_plaza_key
     try:
-        uploaded = upload_bytes(
-            body=body,
+        signed = presign_put_upload(
             plaza_name=plaza_name,
             job_uuid=job.job_uuid,
             slot=slot,
             original_file_name=original_name,
-            content_type=upload.mimetype,
+            content_type=content_type,
         )
     except Exception as exc:  # noqa: BLE001
-        log_fail(f"exception job upload failed: {exc}")
+        log_fail(f"exception job presign failed: {exc}")
         return jsonify({"error": str(exc)}), 500
+
+    log_ok(f"presign {original_name} for job {job.job_uuid} slot={slot}")
+    return jsonify(
+        {
+            "upload_url": signed["upload_url"],
+            "s3_key": signed["s3_key"],
+            "file_url": signed["file_url"],
+            "content_type": signed["content_type"],
+            "expires_in": signed["expires_in"],
+            "slot": slot,
+            "original_file_name": original_name,
+            "file_size_bytes": file_size,
+        }
+    ), 200
+
+
+@exception_jobs_bp.post("/<job_uuid>/files/complete")
+def complete_job_file(job_uuid: str):
+    """Register an ExceptionJobFile after a successful browser PUT to S3."""
+    job, err = _editable_job_or_error(job_uuid)
+    if err:
+        return err
+
+    body = request.get_json(silent=True) or {}
+    slot = str(body.get("slot") or "").strip()
+    slot_cfg, err = _slot_cfg_or_error(job, slot)
+    if err:
+        return err
+
+    s3_key = str(body.get("s3_key") or "").strip()
+    original_name = (
+        secure_filename(str(body.get("original_file_name") or body.get("file_name") or ""))
+        or "upload.bin"
+    )
+    try:
+        declared_size = int(body.get("file_size_bytes") or 0)
+    except (TypeError, ValueError):
+        declared_size = 0
+
+    if not s3_key:
+        return jsonify({"error": "s3_key is required"}), 400
+
+    plaza = job.plaza
+    plaza_name = plaza.plaza_name if plaza else job.pipeline_plaza_key
+    allowed_prefix = job_input_key_prefix(plaza_name=plaza_name, job_uuid=job.job_uuid)
+    if not s3_key.startswith(allowed_prefix):
+        return jsonify({"error": "s3_key does not belong to this job"}), 400
+
+    size = head_object_size(s3_key)
+    if size is None:
+        return jsonify({"error": "S3 object not found — upload may have failed."}), 400
+    if size <= 0:
+        try:
+            delete_object(s3_key)
+        except Exception:  # noqa: BLE001
+            pass
+        return jsonify({"error": "Uploaded file is empty"}), 400
+    if declared_size > 0 and abs(size - declared_size) > 0:
+        # Prefer actual S3 size; warn in logs only (browser size is advisory).
+        log_ok(
+            f"complete size mismatch job={job.job_uuid} declared={declared_size} "
+            f"s3={size} key={s3_key}"
+        )
+
+    # Single-file slots: ensure only one DB row (presign already deleted S3).
+    if not slot_cfg.get("multiple"):
+        existing = ExceptionJobFile.query.filter_by(job_id=job.id, slot=slot).all()
+        for row in existing:
+            if row.s3_key and row.s3_key != s3_key:
+                try:
+                    delete_object(row.s3_key)
+                except Exception:  # noqa: BLE001
+                    pass
+            db.session.delete(row)
+
+    region = os.getenv("AWS_REGION", "us-east-1")
+    file_url = str(body.get("file_url") or "").strip() or object_url(
+        bucket_name(), region, s3_key
+    )
 
     row = ExceptionJobFile(
         job_id=job.id,
         slot=slot,
         original_file_name=original_name,
-        s3_key=uploaded["s3_key"],
-        file_url=uploaded["file_url"],
-        file_size_bytes=uploaded["file_size_bytes"],
+        s3_key=s3_key,
+        file_url=file_url,
+        file_size_bytes=size,
     )
     db.session.add(row)
     if job.status == "failed":
         job.status = "draft"
         job.error_message = None
         job.progress_message = "Draft — files updated after failure."
-    db.session.commit()
-    log_ok(f"uploaded {original_name} to job {job.job_uuid} slot={slot}")
+    commit_with_retry()
+
+    log_ok(f"completed upload {original_name} to job {job.job_uuid} slot={slot}")
     return jsonify({"file": row.to_dict(), "job": job.to_dict()}), 201
 
 

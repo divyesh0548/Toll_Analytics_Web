@@ -156,38 +156,15 @@ export function monthAxisGroups(isoDates, labelStyle = {}) {
 }
 
 /**
- * Pick one revenue display unit for a series (never mix lac + crore on one axis).
- * crore only when every positive value is ≥ 1 crore; otherwise lac if max ≥ 1 lac.
+ * Revenue display unit for charts/KPIs.
+ * Site-wide: always show revenue in ₹ Lakh (transaction counts stay raw).
  */
-export function resolveRevenueScale(values) {
-  const nums = (values || [])
-    .map((v) => Number(v))
-    .filter((n) => Number.isFinite(n) && n >= 0)
-  const max = nums.length ? Math.max(...nums) : 0
-  const positive = nums.filter((n) => n > 0)
-  const minPositive = positive.length ? Math.min(...positive) : 0
-
-  if (max >= CRORE && minPositive >= CRORE) {
-    return {
-      divisor: CRORE,
-      unitKey: 'crore',
-      axisTitle: 'Revenue (₹ Crore)',
-      shortUnit: 'Cr',
-    }
-  }
-  if (max >= LAC) {
-    return {
-      divisor: LAC,
-      unitKey: 'lac',
-      axisTitle: 'Revenue (₹ Lakh)',
-      shortUnit: 'Lakh',
-    }
-  }
+export function resolveRevenueScale(_values) {
   return {
-    divisor: 1,
-    unitKey: 'rupee',
-    axisTitle: 'Revenue (₹)',
-    shortUnit: '₹',
+    divisor: LAC,
+    unitKey: 'lac',
+    axisTitle: 'Revenue (₹ Lakh)',
+    shortUnit: 'Lakh',
   }
 }
 
@@ -214,10 +191,26 @@ export function formatScaledRevenue(value, scale, { digits = 2 } = {}) {
   return `${formatted} ${scale.shortUnit}`
 }
 
-/** KPI / big-number formatting: ₹, Lakh, or Cr with one consistent unit. */
+/** Absolute rupees (for small per-txn figures like ARPT — not revenue totals). */
+export function formatRupees(value, { digits = 0 } = {}) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return `₹${Number(value).toLocaleString('en-IN', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  })}`
+}
+
+/** Revenue totals in ₹ Lakh (site-wide). Pass absolute rupees. */
 export function formatMoneyCompact(value, { digits = 2 } = {}) {
   if (value == null || Number.isNaN(Number(value))) return '—'
-  const n = Number(value)
-  const scale = resolveRevenueScale([n])
-  return formatScaledRevenue(n / scale.divisor, scale, { digits })
+  const n = Number(value) / LAC
+  return `${n.toLocaleString('en-IN', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  })} Lakh`
+}
+
+/** Alias used by tables — same as formatMoneyCompact (always Lakh). */
+export function formatMoney(value, { digits = 2 } = {}) {
+  return formatMoneyCompact(value, { digits })
 }

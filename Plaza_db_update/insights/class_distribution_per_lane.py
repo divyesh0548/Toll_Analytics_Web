@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from config.settings import (
-    CLASS_DISTRIBUTION_PER_LANE_TABLE,
-    PLAZA_IDENTIFIER,
-    PLAZA_NAME,
-)
+from config import settings as cfg
 from insights.db_write import upsert_rows
 
 DATA_COLUMNS = [
@@ -40,8 +36,8 @@ def aggregate(df: pd.DataFrame) -> list[dict]:
     for record in grouped.itertuples(index=False):
         rows.append(
             {
-                "plaza_identifier": PLAZA_IDENTIFIER,
-                "plaza_name": PLAZA_NAME,
+                "plaza_identifier": cfg.PLAZA_IDENTIFIER,
+                "plaza_name": cfg.PLAZA_NAME,
                 "date": record.date,
                 "hour": record.hour,
                 "lane": record.lane_no,
@@ -58,7 +54,7 @@ def write(conn, rows: list[dict], *, dry_run: bool = False) -> tuple[int, int]:
         return len(rows), 0
     return upsert_rows(
         conn,
-        CLASS_DISTRIBUTION_PER_LANE_TABLE,
+        cfg.CLASS_DISTRIBUTION_PER_LANE_TABLE,
         DATA_COLUMNS,
         KEY_COLUMNS,
         rows,

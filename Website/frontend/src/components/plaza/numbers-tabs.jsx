@@ -16,13 +16,7 @@ export function formatCount(value) {
   return Number(value).toLocaleString('en-IN')
 }
 
-export function formatMoney(value) {
-  if (value == null || Number.isNaN(Number(value))) return '—'
-  return Number(value).toLocaleString('en-IN', {
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-  })
-}
+export { formatMoney, formatMoneyCompact, formatRupees } from '@/lib/chart-axis'
 
 export function formatPct(value) {
   if (value == null) return '—'

@@ -192,53 +192,163 @@ E05_PROGRAM = {
 # Keep aliases for worker imports.
 VALID_INVALID_PROGRAM = VALID_INVALID_PROCESS
 
-_PLACEHOLDER_PROGRAMS = [
-    {
-        "code": "e06",
-        "label": "E06 — Discounted passes / national permit",
-        "description": "Coming soon.",
-        "group_exception_codes": ["E06"],
-        "group_exception_type_ids": [6],
-        "enabled": False,
-        **_PLACEHOLDER_DEFAULTS,
-    },
-    {
-        "code": "e07",
-        "label": "E07 — Local passes at lower or zero charge",
-        "description": "Coming soon.",
-        "group_exception_codes": ["E07"],
-        "group_exception_type_ids": [7],
-        "enabled": False,
-        **_PLACEHOLDER_DEFAULTS,
-    },
-    {
-        "code": "e09",
-        "label": "E09 — Unsettled transactions",
-        "description": "Coming soon.",
-        "group_exception_codes": ["E09"],
-        "group_exception_type_ids": [9],
-        "enabled": False,
-        **_PLACEHOLDER_DEFAULTS,
-    },
-    {
-        "code": "e10",
-        "label": "E10 — Overloading penalty (incl. E10-A/B/C)",
-        "description": "Coming soon.",
-        "group_exception_codes": ["E10", "E10-A", "E10-B", "E10-C"],
-        "group_exception_type_ids": [10],
-        "enabled": False,
-        **_PLACEHOLDER_DEFAULTS,
-    },
-    {
-        "code": "e15",
-        "label": "E15 — Exempt vs subsequent plaza",
-        "description": "Coming soon.",
-        "group_exception_codes": ["E15"],
-        "group_exception_type_ids": [15],
-        "enabled": False,
-        **_PLACEHOLDER_DEFAULTS,
-    },
-]
+E06_PROGRAM = {
+    "code": "e06",
+    "label": "E06 — Discounted passes / national permit",
+    "description": (
+        "Upload ETC and VRN for the period. Optionally upload permit files; "
+        "if omitted, Parivahan is scraped (EXCEPTION_USE_SELENIUM in .env). "
+        "Updates E06 metrics and uploads enriched output to S3. "
+        "Plaza only — entity_name from plaza_entity_map.json."
+    ),
+    "group_exception_codes": ["E06"],
+    "group_exception_type_ids": [6],
+    "enabled": True,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": True,
+    "updates_metrics": True,
+    "input_slots": [
+        {
+            "key": "etc",
+            "label": "ETC files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+        {
+            "key": "vrn",
+            "label": "VRN files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+        {
+            "key": "permit",
+            "label": "Permit files (optional — skips live scrape)",
+            "required": False,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
+E07_PROGRAM = {
+    "code": "e07",
+    "label": "E07 — Local passes at lower or zero charge",
+    "description": (
+        "Upload pass files. Keeps VC4 rows, drops IHMCL_Exemption, computes "
+        "Loss from months × rate vs issuance fees. Updates E07 metrics "
+        "(existing months neglected) and uploads output CSV to S3. Plaza only."
+    ),
+    "group_exception_codes": ["E07"],
+    "group_exception_type_ids": [7],
+    "enabled": True,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": False,
+    "updates_metrics": True,
+    "input_slots": [
+        {
+            "key": "pass",
+            "label": "Pass files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
+E09_PROGRAM = {
+    "code": "e09",
+    "label": "E09 — Unsettled transactions",
+    "description": (
+        "Upload ETC files. Keeps UNSETTLED settlement rows, totals Amount by "
+        "Reader Read Time month, updates E09 metrics, and uploads unsettled "
+        "CSV to S3. Plaza only."
+    ),
+    "group_exception_codes": ["E09"],
+    "group_exception_type_ids": [9],
+    "enabled": True,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": False,
+    "updates_metrics": True,
+    "input_slots": [
+        {
+            "key": "etc",
+            "label": "ETC files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
+E10_PROGRAM = {
+    "code": "e10",
+    "label": "E10 — Overloading penalty (incl. E10-A/B/C)",
+    "description": (
+        "Upload VRN and ETC for the same period. Attaches checkpost weight, "
+        "computes overweight segments E10-A/B/C, updates metrics for E10 and "
+        "segments, and uploads three segment CSVs to S3 (not one combined file). "
+        "Plaza only — entity_name from plaza_entity_map.json."
+    ),
+    "group_exception_codes": ["E10", "E10-A", "E10-B", "E10-C"],
+    "group_exception_type_ids": [10],
+    "enabled": True,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": True,
+    "updates_metrics": True,
+    "input_slots": [
+        {
+            "key": "vrn",
+            "label": "VRN files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+        {
+            "key": "etc",
+            "label": "ETC files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
+E15_PROGRAM = {
+    "code": "e15",
+    "label": "E15 — Exempt vs subsequent plaza",
+    "description": (
+        "Upload From-plaza exempt files and To-plaza VRN. Merges on vehicle + "
+        "side, keeps MATCH=Yes and non-EXEMPT payment, applies To-plaza rates, "
+        "updates E15 metrics, and uploads from_to_combined.xlsx to S3 "
+        "(month from Date & Time). Plaza only — entity_name from plaza_entity_map."
+    ),
+    "group_exception_codes": ["E15"],
+    "group_exception_type_ids": [15],
+    "enabled": True,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": True,
+    "updates_metrics": True,
+    "input_slots": [
+        {
+            "key": "from_plaza",
+            "label": "From-plaza exempt files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+        {
+            "key": "vrn",
+            "label": "To-plaza VRN files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
+_PLACEHOLDER_PROGRAMS: list[dict] = []
 
 
 def list_programs() -> list[dict]:
@@ -247,6 +357,11 @@ def list_programs() -> list[dict]:
         FULL_EXEMPT_PROGRAM,
         E04_PROGRAM,
         E05_PROGRAM,
+        E06_PROGRAM,
+        E07_PROGRAM,
+        E09_PROGRAM,
+        E10_PROGRAM,
+        E15_PROGRAM,
         *_PLACEHOLDER_PROGRAMS,
     ]
 
@@ -272,7 +387,10 @@ def get_program(code: str) -> dict | None:
     for program in list_programs():
         if program["code"] == key:
             return program
-    return None
+    # Analytics ETL programs share the same job table / worker.
+    from app.services.analytics_program_catalog import get_analytics_program
+
+    return get_analytics_program(key)
 
 
 def job_list_codes_for_program(code: str) -> list[str]:
@@ -315,6 +433,31 @@ def e4_program_root() -> Path:
 def e5_program_root() -> Path:
     """Path to the E5 exception program folder."""
     return _repo_root() / "Exeption Programs" / "E5"
+
+
+def e6_program_root() -> Path:
+    """Path to the E6 exception program folder."""
+    return _repo_root() / "Exeption Programs" / "E6"
+
+
+def e7_program_root() -> Path:
+    """Path to the E7 exception program folder."""
+    return _repo_root() / "Exeption Programs" / "E7"
+
+
+def e9_program_root() -> Path:
+    """Path to the E9 exception program folder."""
+    return _repo_root() / "Exeption Programs" / "E9"
+
+
+def e10_program_root() -> Path:
+    """Path to the E10 exception program folder."""
+    return _repo_root() / "Exeption Programs" / "E10"
+
+
+def e15_program_root() -> Path:
+    """Path to the E15 exception program folder."""
+    return _repo_root() / "Exeption Programs" / "E15"
 
 
 def valid_invalid_script_dir() -> Path:

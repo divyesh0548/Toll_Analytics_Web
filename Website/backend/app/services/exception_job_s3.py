@@ -11,6 +11,12 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import BinaryIO
+
+try:
+    from boto3.s3.transfer import TransferConfig
+except ImportError:  # pragma: no cover
+    TransferConfig = None  # type: ignore[misc, assignment]
 
 try:
     import boto3
@@ -93,15 +99,107 @@ def build_input_key(
     return f"{S3_ROOT_PREFIX}/{plaza_folder}/{job_folder}/{slot_folder}/{file_name}"
 
 
-def upload_bytes(
+def job_input_key_prefix(*, plaza_name: str, job_uuid: str) -> str:
+    """Prefix for all input objects belonging to one job (used to validate completes)."""
+    plaza_folder = _safe_folder(plaza_name)
+    job_folder = _safe_folder(job_uuid)
+    return f"{S3_ROOT_PREFIX}/{plaza_folder}/{job_folder}/"
+
+
+def presign_put_upload(
     *,
-    body: bytes,
     plaza_name: str,
     job_uuid: str,
     slot: str,
     original_file_name: str,
     content_type: str | None = None,
+    expires_in: int = 7200,
 ) -> dict:
+    """
+    Create a browser-direct PUT URL for an exception-job input object.
+    Client must send the same Content-Type header that was signed (if any).
+    """
+    bucket = bucket_name()
+    region = _require_env("AWS_REGION")
+    key = build_input_key(
+        plaza_name=plaza_name,
+        job_uuid=job_uuid,
+        slot=slot,
+        original_file_name=original_file_name,
+    )
+    params: dict = {"Bucket": bucket, "Key": key}
+    ctype = str(content_type or "").strip()
+    if ctype:
+        params["ContentType"] = ctype
+
+    client = s3_client()
+    upload_url = client.generate_presigned_url(
+        "put_object",
+        Params=params,
+        ExpiresIn=max(60, int(expires_in)),
+        HttpMethod="PUT",
+    )
+    return {
+        "bucket": bucket,
+        "s3_key": key,
+        "file_url": object_url(bucket, region, key),
+        "upload_url": upload_url,
+        "content_type": ctype or None,
+        "expires_in": max(60, int(expires_in)),
+    }
+
+
+def head_object_size(s3_key: str) -> int | None:
+    """Return object size in bytes, or None if missing."""
+    client = s3_client()
+    try:
+        meta = client.head_object(Bucket=bucket_name(), Key=s3_key)
+    except Exception:  # noqa: BLE001
+        return None
+    size = meta.get("ContentLength")
+    return int(size) if size is not None else None
+
+
+class _CountingReader:
+    """Wrap a file-like object and track total bytes read for S3 uploads."""
+
+    def __init__(self, raw: BinaryIO) -> None:
+        self._raw = raw
+        self.bytes_read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._raw.read(size)
+        if chunk:
+            self.bytes_read += len(chunk)
+        return chunk
+
+    def __getattr__(self, name: str):
+        return getattr(self._raw, name)
+
+
+def _multipart_transfer_config() -> TransferConfig | None:
+    if TransferConfig is None:
+        return None
+    chunk = 8 * 1024 * 1024
+    return TransferConfig(
+        multipart_threshold=chunk,
+        multipart_chunksize=chunk,
+        max_concurrency=4,
+        use_threads=True,
+    )
+
+
+def upload_stream(
+    *,
+    fileobj: BinaryIO,
+    plaza_name: str,
+    job_uuid: str,
+    slot: str,
+    original_file_name: str,
+    content_type: str | None = None,
+    content_length: int | None = None,
+) -> dict:
+    """Stream upload to S3 (multipart for large files). Does not load whole file in RAM."""
     bucket = bucket_name()
     region = _require_env("AWS_REGION")
     key = build_input_key(
@@ -113,14 +211,56 @@ def upload_bytes(
     extra: dict = {}
     if content_type:
         extra["ContentType"] = content_type
+
+    if hasattr(fileobj, "seek"):
+        fileobj.seek(0)
+
+    counter = _CountingReader(fileobj)
     client = s3_client()
-    client.put_object(Bucket=bucket, Key=key, Body=body, **extra)
+    transfer_cfg = _multipart_transfer_config()
+    if transfer_cfg is not None:
+        client.upload_fileobj(
+            counter,
+            bucket,
+            key,
+            ExtraArgs=extra or None,
+            Config=transfer_cfg,
+        )
+    else:
+        client.upload_fileobj(counter, bucket, key, ExtraArgs=extra or None)
+
+    size = counter.bytes_read
+    if size <= 0 and content_length is not None and content_length > 0:
+        size = int(content_length)
+
     return {
         "bucket": bucket,
         "s3_key": key,
         "file_url": object_url(bucket, region, key),
-        "file_size_bytes": len(body),
+        "file_size_bytes": size,
     }
+
+
+def upload_bytes(
+    *,
+    body: bytes,
+    plaza_name: str,
+    job_uuid: str,
+    slot: str,
+    original_file_name: str,
+    content_type: str | None = None,
+) -> dict:
+    import io
+
+    return upload_stream(
+        fileobj=io.BytesIO(body),
+        plaza_name=plaza_name,
+        job_uuid=job_uuid,
+        slot=slot,
+        original_file_name=original_file_name,
+        content_type=content_type,
+        content_length=len(body),
+    )
 
 
 def _unique_sibling(path: Path) -> Path:

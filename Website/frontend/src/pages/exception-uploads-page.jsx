@@ -27,11 +27,11 @@ const PROGRAM_SHORT = {
   e05_group: 'E05',
   valid_invalid_lookup: 'Valid/Invalid',
   e05: 'Incorrect FASTag',
-  e06: 'E06',
-  e07: 'E07',
-  e09: 'E09',
-  e10: 'E10',
-  e15: 'E15',
+  e06: 'E06 Permit',
+  e07: 'E07 Pass Loss',
+  e09: 'E09 Unsettled',
+  e10: 'E10 Overload',
+  e15: 'E15 From-To',
 }
 
 function jobFilterCode(program) {

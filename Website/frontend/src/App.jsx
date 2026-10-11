@@ -16,6 +16,7 @@ import { PlazaMasterPage } from '@/pages/plaza-master-page'
 import { PlazaDetailPage } from '@/pages/plaza-detail-page'
 import { CreateUserPage } from '@/pages/create-user-page'
 import { ExceptionUploadsPage } from '@/pages/exception-uploads-page'
+import { AnalyticsUploadsPage } from '@/pages/analytics-uploads-page'
 
 function LegacyPlazaDetailRedirect() {
   const { plazaIdentifier } = useParams()
@@ -49,6 +50,7 @@ export default function App() {
                       element={<OverallTollAnalysisPage />}
                     />
                     <Route path="exceptions/uploads" element={<ExceptionUploadsPage />} />
+                    <Route path="analytics/uploads" element={<AnalyticsUploadsPage />} />
 
                     <Route element={<WriteProtectedRoute />}>
                       <Route path="companies/new" element={<CompanyMasterPage />} />

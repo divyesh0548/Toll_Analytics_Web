@@ -9,9 +9,16 @@ import {
   formatMoney,
 } from '@/components/plaza/numbers-tabs'
 import {
+  LAC,
   formatMoneyCompact,
   categoryXAxis,
 } from '@/lib/chart-axis'
+
+function revenueInLakhs(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.round((n / LAC) * 100) / 100
+}
 import { cn } from '@/lib/utils'
 
 /** Inclusive days of prior calendar year required before YoY is shown (year interval only). */
@@ -214,10 +221,11 @@ function MonthlyTrendChart({ rows, dark }) {
       },
       {
         opposite: true,
-        title: { text: 'Revenue (₹)', style: { color: lineColor } },
+        title: { text: 'Revenue (₹ Lakh)', style: { color: lineColor } },
         labels: {
           style: { colors: lineColor },
-          formatter: (v) => formatMoneyCompact(v),
+          formatter: (v) =>
+            `${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })} Lakh`,
         },
       },
     ],
@@ -230,7 +238,7 @@ function MonthlyTrendChart({ rows, dark }) {
       y: {
         formatter: (v, opts) =>
           opts.seriesIndex === 1
-            ? formatMoney(v)
+            ? `${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })} Lakh`
             : Number(v).toLocaleString('en-IN'),
       },
     },
@@ -240,7 +248,7 @@ function MonthlyTrendChart({ rows, dark }) {
       options={options}
       series={[
         { name: 'Transactions', type: 'column', data: rows.map((r) => r.traffic) },
-        { name: 'Revenue', type: 'line', data: rows.map((r) => Math.round(r.revenue)) },
+        { name: 'Revenue', type: 'line', data: rows.map((r) => revenueInLakhs(r.revenue)) },
       ]}
       type="line"
       height={320}
@@ -282,10 +290,11 @@ function CategoryComparisonChart({ rows, dark }) {
       {
         seriesName: 'Revenue',
         opposite: true,
-        title: { text: 'Revenue (₹)', style: { color: revenueColor } },
+        title: { text: 'Revenue (₹ Lakh)', style: { color: revenueColor } },
         labels: {
           style: { colors: revenueColor },
-          formatter: (v) => formatMoneyCompact(v),
+          formatter: (v) =>
+            `${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })} Lakh`,
         },
       },
     ],
@@ -299,7 +308,7 @@ function CategoryComparisonChart({ rows, dark }) {
       y: {
         formatter: (v, opts) =>
           opts.seriesIndex === 1
-            ? formatMoney(v)
+            ? `${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })} Lakh`
             : Number(v).toLocaleString('en-IN'),
       },
     },
@@ -309,7 +318,7 @@ function CategoryComparisonChart({ rows, dark }) {
       options={options}
       series={[
         { name: 'Transactions', data: rows.map((r) => r.count) },
-        { name: 'Revenue', data: rows.map((r) => Math.round(r.revenue)) },
+        { name: 'Revenue', data: rows.map((r) => revenueInLakhs(r.revenue)) },
       ]}
       type="bar"
       height={340}

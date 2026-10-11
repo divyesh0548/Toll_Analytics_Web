@@ -817,8 +817,6 @@ export function TrafficStudyPanel({
         ))}
       </div>
 
-      <EventFilters enabledTypes={enabledTypes} onToggleType={toggleType} />
-
       {error ? (
         <Card>
           <CardHeader>
@@ -866,6 +864,8 @@ export function TrafficStudyPanel({
         </div>
       ) : (
         <div className="space-y-4">
+          <EventFilters enabledTypes={enabledTypes} onToggleType={toggleType} />
+
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
               <div>

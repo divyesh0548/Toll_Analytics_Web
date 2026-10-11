@@ -13,7 +13,7 @@ import {
   chartColors,
   chartTheme,
   formatCount,
-  formatMoney,
+  formatRupees,
 } from '@/components/plaza/numbers-tabs'
 import {
   MAX_X_AXIS_LABELS,
@@ -665,7 +665,7 @@ function LayoutOverview({ data, dark }) {
         />
         <Kpi
           label="ARPT ₹/veh"
-          value={kpis.arpt == null ? 'N/A' : formatMoney(kpis.arpt)}
+          value={kpis.arpt == null ? 'N/A' : formatRupees(kpis.arpt)}
           hint="Selected-period revenue ÷ transactions on the revenue table"
         />
         <Kpi
@@ -770,7 +770,7 @@ function LayoutRevenue({ data, dark }) {
         />
         <Kpi
           label="ARPT ₹/veh"
-          value={kpis.arpt == null ? 'N/A' : formatMoney(kpis.arpt)}
+          value={kpis.arpt == null ? 'N/A' : formatRupees(kpis.arpt)}
           hint="Period revenue ÷ transactions on the revenue table"
         />
         <Kpi

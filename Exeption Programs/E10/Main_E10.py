@@ -9,7 +9,8 @@ E10 — Local VRN folder + checkpost Weight + local ETC merge + overweight.
 6) Overweight / Overweight %; keep Overweight > 0 (blank SWB treated as 0)
 7) OW Status (OW At WIM / Not Charged At SWB / Altered at WIM/SWB)
 8) Update E10 / E10-A / E10-B / E10-C monthly metrics from the merged CSV
-9) Optionally upload e10_vrn_etc_merged.csv to S3 (month-year from read_datetime)
+9) Optionally upload three segment CSVs to S3 (E10-A / E10-B / E10-C;
+   month-year from read_datetime). No single combined S3 upload.
 
 Run:
   1. Set ENTITY_NAME, VRN_INPUT_FOLDER, ETC_INPUT_FOLDER, and PLAZA_IDENTIFIER
@@ -74,14 +75,14 @@ def _load_vehicle_class_module():
 _VEHICLE_CLASS_MOD = _load_vehicle_class_module()
 WEIGHT_RANGE_INDEXES = _VEHICLE_CLASS_MOD.WEIGHT_RANGE_INDEXES
 
-# --- Runtime inputs / flags (edit these; not in e10_config.json) ---
+# --- Runtime inputs / flags (Website overrides via E10_* env) ---
 ENTITY_NAME = "bassi"
 # Plaza UUID in the analytics DB. Required for metrics DB and S3 upload.
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
-# Parent exception code for S3 / audit_exception_output_files.
-EXCEPTION_CODE = "E10"
 # Date column on the merged output used for S3 month/year label.
 READ_DATETIME_COLUMN = "read_datetime"
+# Segment exception codes uploaded to S3 (no single combined E10 file).
+SEGMENT_UPLOAD_CODES = ("E10-A", "E10-B", "E10-C")
 
 # Local VRN folder (Excel/CSV). Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E10\Combined VRNs"
@@ -95,8 +96,42 @@ MERGED_VRN_ETC_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_etc_merged.csv"
 Metrics_DB_Update = True
 # When True, S3 put + output-files DB insert are skipped (still prints the plan).
 DB_DRY_RUN = False
-# Upload e10_vrn_etc_merged.csv to S3 + audit_exception_output_files row.
+# Upload E10-A / E10-B / E10-C segment CSVs to S3 + audit_exception_output_files.
 UPLOAD_OUTPUT_TO_S3 = True
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_website_env_overrides() -> None:
+    """Apply E10_* env from Website job runner."""
+    global ENTITY_NAME, PLAZA_IDENTIFIER, VRN_INPUT_FOLDER, ETC_INPUT_FOLDER
+    global OUTPUT_DIR, VRN_OUTPUT_FILE, ETC_OUTPUT_FILE, MERGED_VRN_ETC_OUTPUT_FILE
+    global Metrics_DB_Update, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+
+    if os.environ.get("E10_VRN_INPUT_FOLDER", "").strip():
+        VRN_INPUT_FOLDER = os.environ["E10_VRN_INPUT_FOLDER"].strip()
+    if os.environ.get("E10_ETC_INPUT_FOLDER", "").strip():
+        ETC_INPUT_FOLDER = os.environ["E10_ETC_INPUT_FOLDER"].strip()
+    if os.environ.get("E10_OUTPUT_FILE", "").strip():
+        MERGED_VRN_ETC_OUTPUT_FILE = Path(os.environ["E10_OUTPUT_FILE"].strip())
+        OUTPUT_DIR = MERGED_VRN_ETC_OUTPUT_FILE.parent
+        VRN_OUTPUT_FILE = OUTPUT_DIR / "e10_vrn_with_weight.csv"
+        ETC_OUTPUT_FILE = OUTPUT_DIR / "e10_merged_etc.csv"
+    if os.environ.get("E10_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E10_PLAZA_IDENTIFIER"].strip()
+    if os.environ.get("E10_ENTITY_NAME", "").strip():
+        ENTITY_NAME = os.environ["E10_ENTITY_NAME"].strip()
+    if "E10_METRICS_DB_UPDATE" in os.environ:
+        Metrics_DB_Update = _env_flag("E10_METRICS_DB_UPDATE", Metrics_DB_Update)
+    if "E10_UPLOAD_OUTPUT_TO_S3" in os.environ:
+        UPLOAD_OUTPUT_TO_S3 = _env_flag("E10_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
+    if "E10_DB_DRY_RUN" in os.environ:
+        DB_DRY_RUN = _env_flag("E10_DB_DRY_RUN", DB_DRY_RUN)
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -1597,6 +1632,76 @@ def save_output(df: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def write_segment_output_files(merged_path: Path) -> dict[str, Path]:
+    """
+    Split merged overweight rows into E10-A / E10-B / E10-C CSVs
+    using the same classify_segment rules as Update_DB_E10.
+    Empty segments are omitted.
+    """
+    updater = _load_module_from_path(BASE_DIR / "Update_DB_E10.py", "update_db_e10")
+    path = Path(merged_path)
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    required = (
+        updater.SWB_COLUMN,
+        updater.LANE_STD_COLUMN,
+        updater.STD_COLUMN,
+    )
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
+        raise RuntimeError(
+            f"{path.name} is missing column(s) for segment split: {', '.join(missing)}"
+        )
+
+    buckets: dict[str, list[int]] = {"A": [], "B": [], "C": []}
+    for idx, record in enumerate(frame.to_dict(orient="records")):
+        segment = updater.classify_segment(
+            updater.parse_number(record.get(updater.LANE_STD_COLUMN)),
+            updater.parse_number(record.get(updater.STD_COLUMN)),
+            updater.parse_number(record.get(updater.SWB_COLUMN)),
+        )
+        if segment in buckets:
+            buckets[segment].append(idx)
+
+    out_paths: dict[str, Path] = {}
+    out_dir = path.parent
+    for letter, code in updater.SEGMENT_CODES.items():
+        rows = buckets.get(letter) or []
+        if not rows:
+            print(f"Segment {code}: 0 rows — skip file/upload.")
+            continue
+        segment_df = frame.iloc[rows].copy().reset_index(drop=True)
+        out_path = out_dir / f"e10{letter.lower()}_overweight.csv"
+        segment_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+        print(f"Segment {code}: wrote {out_path.name} ({len(segment_df):,} rows)")
+        out_paths[code] = out_path
+    return out_paths
+
+
+def upload_segment_outputs(
+    segment_paths: dict[str, Path],
+    plaza_identifier: str,
+    *,
+    month_label: str,
+    dry_run: bool,
+) -> None:
+    """Upload each non-empty E10-A/B/C CSV under its own exception_code."""
+    for code in SEGMENT_UPLOAD_CODES:
+        path = segment_paths.get(code)
+        if path is None:
+            continue
+        print(
+            f"Uploading {path.name} to S3 "
+            f"(exception_code={code!r}, month_label={month_label!r})…"
+        )
+        upload_exception_output(
+            path,
+            plaza_identifier,
+            exception_code=code,
+            month_label=month_label,
+            dry_run=dry_run,
+        )
+
+
 def month_periods_from_read_datetime(
     csv_path: Path,
     column: str = READ_DATETIME_COLUMN,
@@ -1635,6 +1740,7 @@ def month_periods_from_read_datetime(
 
 
 def main() -> int:
+    apply_website_env_overrides()
     print("=" * 60)
     print("E10 — Local VRN + Weight + ETC + Overweight + Applicable Rate")
     print(f"Metrics_DB_Update = {Metrics_DB_Update}")
@@ -1740,21 +1846,26 @@ def main() -> int:
         print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
 
     if not UPLOAD_OUTPUT_TO_S3:
-        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
+        print("UPLOAD_OUTPUT_TO_S3=False — segment outputs not uploaded.")
         return 0
 
     print("-" * 60)
-    print(f"Reading {READ_DATETIME_COLUMN!r} from output for S3 month label…")
+    print("Splitting merged output into E10-A / E10-B / E10-C…")
+    segment_paths = write_segment_output_files(merged_out)
+    if not segment_paths:
+        print("No segment rows to upload — S3 skipped.")
+        return 0
+
+    print(f"Reading {READ_DATETIME_COLUMN!r} from merged output for S3 month label…")
     month_periods = month_periods_from_read_datetime(merged_out)
     label = month_label_from_periods(month_periods)
     print(
-        f"Uploading {Path(merged_out).name} to S3 "
+        f"Uploading {len(segment_paths)} segment file(s) to S3 "
         f"(month_label={label!r}, months={len(month_periods)})…"
     )
-    upload_exception_output(
-        merged_out,
+    upload_segment_outputs(
+        segment_paths,
         plaza_identifier,
-        exception_code=str(EXCEPTION_CODE),
         month_label=label,
         dry_run=dry_run,
     )

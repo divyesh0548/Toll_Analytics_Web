@@ -23,6 +23,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -45,7 +46,7 @@ from common.s3_output_upload import (  # noqa: E402
 CONFIG_PATH = BASE_DIR / "e7_config.json"
 WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 
-# --- Runtime inputs / flags (edit these) ---
+# --- Runtime inputs / flags (Website overrides via E7_* env) ---
 PASS_INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Exeption Programs\E7\pass-files"
 PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 7
@@ -55,6 +56,32 @@ Metrics_DB_Update = True
 DB_DRY_RUN = False
 # Upload e7_vc4_loss.csv to S3 + audit_exception_output_files row.
 UPLOAD_OUTPUT_TO_S3 = True
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_website_env_overrides() -> None:
+    """Apply E7_* env from Website job runner."""
+    global PASS_INPUT_FOLDER, PLAZA_IDENTIFIER, OUTPUT_FILE
+    global Metrics_DB_Update, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+
+    if os.environ.get("E7_PASS_INPUT_FOLDER", "").strip():
+        PASS_INPUT_FOLDER = os.environ["E7_PASS_INPUT_FOLDER"].strip()
+    if os.environ.get("E7_OUTPUT_FILE", "").strip():
+        OUTPUT_FILE = Path(os.environ["E7_OUTPUT_FILE"].strip())
+    if os.environ.get("E7_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E7_PLAZA_IDENTIFIER"].strip()
+    if "E7_METRICS_DB_UPDATE" in os.environ:
+        Metrics_DB_Update = _env_flag("E7_METRICS_DB_UPDATE", Metrics_DB_Update)
+    if "E7_UPLOAD_OUTPUT_TO_S3" in os.environ:
+        UPLOAD_OUTPUT_TO_S3 = _env_flag("E7_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
+    if "E7_DB_DRY_RUN" in os.environ:
+        DB_DRY_RUN = _env_flag("E7_DB_DRY_RUN", DB_DRY_RUN)
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
 HEADER_SCAN_ROWS = 25
@@ -599,6 +626,7 @@ def update_exception_metrics(
 
 
 def main() -> int:
+    apply_website_env_overrides()
     print("=" * 60)
     print("E7 — VC4 pass Loss (Issuance Date rate 350/360)")
     print(f"PASS_INPUT_FOLDER = {PASS_INPUT_FOLDER!r}")

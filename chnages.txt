@@ -30,3 +30,4 @@ In compare section display how much volumn is reduced or increaed based on compa
 
 6. In exception reuslt, display the percentage of each compared to total.
 
+

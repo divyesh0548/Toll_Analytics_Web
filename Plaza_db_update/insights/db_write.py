@@ -29,12 +29,12 @@ def upsert_rows(
     rows: list[dict],
     *,
     label: str,
+    always_replace_columns: list[str] | None = None,
 ) -> tuple[int, int]:
     """
-    Insert new rows; on natural-key conflict, update non-key columns.
-
-    Guarantees at most one row per key combo (enforced by UNIQUE + ON CONFLICT).
-    Re-running ETL refreshes metrics instead of skipping or duplicating.
+    Insert new rows; on natural-key conflict, update metric columns only when
+    the new value is greater (otherwise keep existing). Text/name columns listed
+    in always_replace_columns are always refreshed.
     """
     if not rows:
         return 0, 0
@@ -44,6 +44,33 @@ def upsert_rows(
     if not update_columns:
         raise ValueError(
             f"{label}: no non-key columns to update for table '{table_name}'."
+        )
+
+    always = {
+        str(column).strip()
+        for column in (always_replace_columns or ["plaza_name"])
+        if str(column).strip()
+    }
+    assignments = []
+    for column in update_columns:
+        col_id = sql.Identifier(column)
+        if column in always:
+            assignments.append(
+                sql.SQL("{col} = EXCLUDED.{col}").format(col=col_id)
+            )
+            continue
+        # Greater-only for metrics; fill when existing is NULL.
+        assignments.append(
+            sql.SQL(
+                """
+                {col} = CASE
+                    WHEN EXCLUDED.{col} IS NULL THEN {table}.{col}
+                    WHEN {table}.{col} IS NULL THEN EXCLUDED.{col}
+                    WHEN EXCLUDED.{col} > {table}.{col} THEN EXCLUDED.{col}
+                    ELSE {table}.{col}
+                END
+                """
+            ).format(col=col_id, table=sql.Identifier(table_name))
         )
 
     insert_sql = sql.SQL(
@@ -57,10 +84,7 @@ def upsert_rows(
         conflict_keys=sql.SQL(", ").join(
             sql.Identifier(column) for column in key_columns
         ),
-        assignments=sql.SQL(", ").join(
-            sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(column))
-            for column in update_columns
-        ),
+        assignments=sql.SQL(", ").join(assignments),
     )
 
     values = [tuple(row[column] for column in data_columns) for row in rows]
@@ -76,7 +100,8 @@ def upsert_rows(
     inserted = len(rows) - updated
     print(
         f"  {label}: upserted {len(rows)} row(s) "
-        f"(inserted={inserted}, updated={updated})"
+        f"(inserted={inserted}, conflict_keys={updated}; "
+        f"metrics update only when new > existing)"
     )
     return inserted, updated
 
@@ -90,7 +115,7 @@ def insert_new_rows(
     *,
     label: str,
 ) -> tuple[int, int]:
-    """Deprecated alias — use upsert_rows (updates on conflict instead of skipping)."""
+    """Deprecated alias — use upsert_rows (greater-only updates on conflict)."""
     return upsert_rows(
         conn,
         table_name,

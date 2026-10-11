@@ -5,21 +5,17 @@ import Chart from 'react-apexcharts'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { getPortfolioRollup, getPortfolioVolume, listCompanies } from '@/lib/api'
-import { categoryTooltipXFormatter, categoryXAxis } from '@/lib/chart-axis'
+import {
+  categoryTooltipXFormatter,
+  categoryXAxis,
+  formatMoney,
+} from '@/lib/chart-axis'
 import { cn, formatLocalDateTime } from '@/lib/utils'
 import { useTheme } from '@/components/theme-provider'
 
 function formatCount(value) {
   if (value == null) return '—'
   return Number(value).toLocaleString('en-IN')
-}
-
-function formatMoney(value) {
-  if (value == null || Number.isNaN(Number(value))) return '—'
-  return Number(value).toLocaleString('en-IN', {
-    maximumFractionDigits: 0,
-    minimumFractionDigits: 0,
-  })
 }
 
 function CompanyVolumeChart({ series, dark }) {
@@ -350,6 +346,11 @@ export function PortfolioPage() {
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
             <Link to="/exceptions/uploads">Exception uploads</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <a href="/analytics/uploads" target="_blank" rel="noopener noreferrer">
+              Analytics upload
+            </a>
           </Button>
           <Button asChild variant="outline">
             <Link to="/companies/spvs/new">

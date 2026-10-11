@@ -51,10 +51,12 @@ from config.excel_config import (  # noqa: E402
     normalize_key,
 )
 from config.settings import (  # noqa: E402
+    ETC_INPUT_FOLDER,
     PLAZA_IDENTIFIER,
     PLAZA_NAME,
     REVENUE_DISTRIBUTION_PER_CLASS_TABLE,
     START_DATE_LIMIT_DATE,
+    apply_website_env_overrides,
 )
 from excel_common import (  # noqa: E402
     UnmappedValueError,
@@ -64,6 +66,7 @@ from excel_common import (  # noqa: E402
     is_blank,
     is_excluded_vehicle_class,
     is_skippable_excel_read_error,
+    list_excel_files,
     read_excel_file,
     safe_parse_datetime,
     try_normalize_vehicle_class,
@@ -75,7 +78,7 @@ from excel_common import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 ENTITY_NAME = "aroli"  # submissions.entity_name (usually same as plaza folder name)
-FROM_DATE = "2026-04-15"  # inclusive YYYY-MM-DD
+FROM_DATE = "2026-07-30"  # inclusive YYYY-MM-DD
 TO_DATE = "2026-08-31"  # inclusive YYYY-MM-DD
 
 DOWNLOAD_FOLDER = ROOT_DIR / "etc_downloads"
@@ -113,7 +116,20 @@ E4_ENV = ROOT_DIR.parent / "Exeption Programs" / "E4" / ".env"
 WEBSITE_ENV = ROOT_DIR.parent / "Website" / "backend" / ".env"
 
 
+def _refresh_plaza_settings_from_config() -> None:
+    """Re-bind plaza globals after apply_website_env_overrides()."""
+    global PLAZA_IDENTIFIER, PLAZA_NAME, START_DATE_LIMIT_DATE, ETC_INPUT_FOLDER
+    from config import settings as s
+
+    PLAZA_IDENTIFIER = s.PLAZA_IDENTIFIER
+    PLAZA_NAME = s.PLAZA_NAME
+    START_DATE_LIMIT_DATE = s.START_DATE_LIMIT_DATE
+    ETC_INPUT_FOLDER = s.ETC_INPUT_FOLDER
+
+
 def require_plaza_settings() -> None:
+    apply_website_env_overrides()
+    _refresh_plaza_settings_from_config()
     if not PLAZA_IDENTIFIER or PLAZA_IDENTIFIER == "REPLACE_WITH_PLAZA_UUID":
         raise RuntimeError(
             "Set PLAZA_IDENTIFIER in Plaza_db_update/config/settings.py "
@@ -622,8 +638,101 @@ def process_etc_file(path: Path) -> list[dict]:
     return rows
 
 
+def run_local_etc_folder(
+    folder_path: str | Path,
+    *,
+    dry_run: bool = DRY_RUN,
+) -> None:
+    """Process ETC Excel/CSV files already on disk (Website analytics jobs)."""
+    require_plaza_settings()
+    folder = Path(folder_path).expanduser().resolve()
+    if not folder.is_dir():
+        raise FileNotFoundError(f"ETC input folder not found: {folder}")
+
+    files = list_excel_files(folder)
+    if not files:
+        print(f"No Excel/CSV files found under: {folder}")
+        return
+
+    print("Module 4 — local ETC revenue by vehicle class (hourly)")
+    print(f"Plaza: {PLAZA_NAME} ({PLAZA_IDENTIFIER})")
+    print(f"ETC folder: {folder}")
+    print(f"Files found: {len(files)}")
+    print(f"Dry run: {dry_run}\n")
+
+    analytics_conn = None
+    if not dry_run:
+        analytics_conn = psycopg2.connect(**get_analytics_db_connection_kwargs())
+        ensure_revenue_distribution_per_class_table(analytics_conn)
+
+    acc: dict[tuple, dict] = {}
+    stats = {
+        "processed": 0,
+        "read_errors": 0,
+        "column_skips": 0,
+        "inserted": 0,
+        "updated": 0,
+    }
+    try:
+        for index, local_path in enumerate(files, start=1):
+            prefix = f"[{index}/{len(files)}]"
+            print(f"{prefix} {local_path.name}")
+            try:
+                file_rows = process_etc_file(local_path)
+            except SkipEtcFile as exc:
+                print(f"{prefix} SKIP FILE: {exc}")
+                stats["column_skips"] += 1
+                continue
+            except UnmappedValueError:
+                raise
+            except Exception as exc:
+                if is_skippable_excel_read_error(exc):
+                    print(f"{prefix} READ SKIP: {exc}")
+                    stats["read_errors"] += 1
+                    continue
+                raise
+
+            touched = merge_into_accumulator(acc, file_rows)
+            stats["processed"] += 1
+            if not touched:
+                continue
+
+            batch = []
+            for key in touched:
+                row = dict(acc[key])
+                row["revenue"] = round(row["revenue"], 2)
+                batch.append(row)
+
+            if dry_run:
+                print(f"  DRY RUN upsert {len(batch)} cumulative key(s)")
+                continue
+
+            inserted, updated = upsert_revenue_if_greater(analytics_conn, batch)
+            stats["inserted"] += inserted
+            stats["updated"] += updated
+            print(f"  DB upsert: inserted={inserted}, updated={updated}")
+    finally:
+        if analytics_conn is not None:
+            analytics_conn.close()
+
+    print("\nLocal ETC summary")
+    print(f"  Processed:   {stats['processed']}")
+    print(f"  Read errors: {stats['read_errors']}")
+    print(f"  Column skips:{stats['column_skips']}")
+    if not dry_run:
+        print(f"  Inserted:    {stats['inserted']}")
+        print(f"  Updated:     {stats['updated']}")
+    print(f"  Unique keys in run: {len(acc)}")
+
+
 def run() -> None:
     require_plaza_settings()
+    # Website / env: process a local ETC folder instead of submissions download.
+    local_etc = str(ETC_INPUT_FOLDER or "").strip()
+    if local_etc:
+        run_local_etc_folder(local_etc, dry_run=DRY_RUN)
+        return
+
     load_all_env()
     start, end = validate_interval(FROM_DATE, TO_DATE)
     download_folder = Path(DOWNLOAD_FOLDER)

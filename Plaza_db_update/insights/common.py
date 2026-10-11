@@ -10,7 +10,7 @@ from config.excel_config import (
     VEHICLE_CLASS_COLUMN_ALIASES,
     VOLUME_REQUIRED_FIELDS,
 )
-from config.settings import PLAZA_IDENTIFIER, PLAZA_NAME, START_DATE_LIMIT_DATE
+from config import settings as cfg
 from excel_common import (
     DatetimeResolution,
     find_column_by_aliases,
@@ -34,12 +34,13 @@ REQUIRED_FIELDS = VOLUME_REQUIRED_FIELDS
 
 
 def require_plaza_settings() -> None:
-    if not PLAZA_IDENTIFIER or PLAZA_IDENTIFIER == "REPLACE_WITH_PLAZA_UUID":
+    cfg.apply_website_env_overrides()
+    if not cfg.PLAZA_IDENTIFIER or cfg.PLAZA_IDENTIFIER == "REPLACE_WITH_PLAZA_UUID":
         raise RuntimeError(
             "Set PLAZA_IDENTIFIER in Plaza_db_update/config/settings.py "
             "to the plaza UUID from the website."
         )
-    if not PLAZA_NAME or not str(PLAZA_NAME).strip():
+    if not cfg.PLAZA_NAME or not str(cfg.PLAZA_NAME).strip():
         raise RuntimeError("Set PLAZA_NAME in Plaza_db_update/config/settings.py.")
 
 
@@ -191,5 +192,5 @@ def prepare_dataframe(
     prepared = prepared[prepared["event_dt"].notna()].copy()
     prepared["hour"] = prepared["event_dt"].map(hour_bucket_label)
     prepared["date"] = prepared["event_dt"].dt.date
-    prepared = prepared[prepared["date"] >= START_DATE_LIMIT_DATE].copy()
+    prepared = prepared[prepared["date"] >= cfg.START_DATE_LIMIT_DATE].copy()
     return prepared
