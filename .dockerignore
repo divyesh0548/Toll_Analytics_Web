@@ -1,0 +1,29 @@
+**/__pycache__
+**/*.pyc
+**/.git
+**/.venv
+**/venv
+**/node_modules
+**/dist
+**/.pytest_cache
+**/jobs/**
+**/etc_downloads/**
+**/vrn_downloads/**
+**/output/**
+Input/**
+**/*.xlsx
+**/*.xls
+**/*.xlsm
+**/*.csv
+# Required E10 reference workbook (not job input)
+!Exeption Programs/E10/OW multiple LSW std weights.xlsx
+!**/.env.example
+Website/frontend/.env
+Website/backend/.env
+Exeption Programs/.env
+Exeption Programs/**/.env
+**/.cursor
+**/agent-transcripts
+_tmp_*
+*.md
+!Website/DOCKER.md

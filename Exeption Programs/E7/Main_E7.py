@@ -12,7 +12,7 @@ E7 — Local passes issued at a lower or zero charge (VC4 only).
    Else Loss = Receivable Amt − Issuance Fees (positive).
 8. Write those rows (Receivable Amt left of Loss) as the output CSV.
 9. Monthly metrics / S3 month label use Issuance Date year+month.
-   Existing audit_exception_metrics rows are left unchanged (neglected).
+   Existing audit_exception_metrics rows are always overwritten.
 10. Optionally upload the output file to S3.
 
 Run:
@@ -42,6 +42,17 @@ from common.s3_output_upload import (  # noqa: E402
     month_label_from_periods,
     upload_exception_output,
 )
+
+
+def _metrics_table_name() -> str:
+    name = (
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
+        or "audit_exception_metrics"
+    )
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise RuntimeError(f"Invalid Exception_Metrics_Table: {name!r}")
+    return name
 
 CONFIG_PATH = BASE_DIR / "e7_config.json"
 WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
@@ -489,18 +500,26 @@ def resolve_plaza_identifier() -> str:
 
 
 def _analytics_connection_kwargs() -> dict:
-    if not WEBSITE_ENV.is_file():
-        raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
-    values = dotenv_values(WEBSITE_ENV)
-    host = str(values.get("DB_HOST") or "").strip()
-    port = str(values.get("DB_PORT") or "5432").strip()
-    user = str(values.get("DB_USER") or "").strip()
-    password = str(values.get("DB_PASSWORD") or "")
+    # Docker: Compose injects Website/backend/.env into the process (file absent).
+    values = dotenv_values(WEBSITE_ENV) if WEBSITE_ENV.is_file() else {}
+    host = str(values.get("DB_HOST") or os.getenv("DB_HOST") or "").strip()
+    port = str(values.get("DB_PORT") or os.getenv("DB_PORT") or "5432").strip()
+    user = str(values.get("DB_USER") or os.getenv("DB_USER") or "").strip()
+    password = str(
+        values.get("DB_PASSWORD")
+        if values.get("DB_PASSWORD") is not None
+        else os.getenv("DB_PASSWORD", "")
+    )
     database = (
         str(values.get("NHIT_DB") or "").strip()
-        or str(values.get("ANALYTICS_DB_NAME") or "").strip()
-        or str(values.get("DB_NAME") or "").strip()
+        or str(values.get("ANALYTICS_DB_NAME") or os.getenv("ANALYTICS_DB_NAME") or "").strip()
+        or str(values.get("Toll_Analytics_DB") or os.getenv("Toll_Analytics_DB") or "").strip()
+        or str(values.get("DB_NAME") or os.getenv("DB_NAME") or "").strip()
     )
+    if not host and not WEBSITE_ENV.is_file():
+        raise FileNotFoundError(
+            f"Env file not found: {WEBSITE_ENV} (and DB_HOST not in process env)"
+        )
     missing = [
         name
         for name, value in (
@@ -529,8 +548,8 @@ def update_exception_metrics(
     dry_run: bool = False,
 ) -> None:
     """
-    Insert monthly totals. If a plaza+type+year+month row already exists, neglect it
-    (do not overwrite).
+    Insert monthly totals. If a plaza+type+year+month row already exists,
+    overwrite total_count and total_amount with the new values.
     """
     plaza = str(plaza_identifier or "").strip()
     if not plaza:
@@ -543,17 +562,28 @@ def update_exception_metrics(
         return
 
     kwargs = _analytics_connection_kwargs()
-    print(f"Target DB: {kwargs['database']}.audit_exception_metrics")
+    metrics_table = _metrics_table_name()
+    print(f"Target DB: {kwargs['database']}.{metrics_table}")
     print(f"plaza_identifier: {plaza}")
     print(f"exception_type_id: {EXCEPTION_TYPE_ID}")
     print(f"Months to sync: {len(rows)}" + (" (dry run)" if dry_run else ""))
 
-    insert_sql = """
-        INSERT INTO audit_exception_metrics (
+    insert_sql = f"""
+        INSERT INTO {metrics_table} (
             plaza_identifier, exception_type_id, year, month,
             total_amount, total_count, created_at, updated_at
         )
         VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+    """
+    update_sql = f"""
+        UPDATE {metrics_table}
+        SET total_amount = %s,
+            total_count = %s,
+            updated_at = NOW()
+        WHERE plaza_identifier = %s
+          AND exception_type_id = %s
+          AND year = %s
+          AND month = %s
     """
     with psycopg2.connect(**kwargs) as conn:
         with conn.cursor() as cursor:
@@ -575,17 +605,20 @@ def update_exception_metrics(
                 raise RuntimeError(f"plaza_identifier {plaza!r} was not found in plazas.")
 
             cursor.execute(
-                """
-                SELECT year, month
-                FROM audit_exception_metrics
+                f"""
+                SELECT year, month, total_count, total_amount
+                FROM {metrics_table}
                 WHERE plaza_identifier = %s AND exception_type_id = %s
                 """,
                 (plaza, EXCEPTION_TYPE_ID),
             )
-            existing = {(int(year), int(month)) for year, month in cursor.fetchall()}
+            existing = {
+                (int(year), int(month)): (int(count or 0), Decimal(str(amount or 0)))
+                for year, month, count, amount in cursor.fetchall()
+            }
 
             inserted = 0
-            neglected = 0
+            updated = 0
             for row in rows:
                 year = int(row["year"])
                 month = int(row["month"])
@@ -593,12 +626,28 @@ def update_exception_metrics(
                 new_amount = Decimal(str(row["total_amount"])).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
-                if (year, month) in existing:
+                current = existing.get((year, month))
+                if current is not None:
+                    old_count, old_amount = current
                     print(
-                        f"  {year}-{month:02d}: NEGLECT (already exists) "
-                        f"count={new_count:,}, amount={new_amount:,.2f}"
+                        f"  {year}-{month:02d}: UPDATE "
+                        f"count {old_count:,} -> {new_count:,}, "
+                        f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+                        + (" [dry-run]" if dry_run else "")
                     )
-                    neglected += 1
+                    if not dry_run:
+                        cursor.execute(
+                            update_sql,
+                            (
+                                new_amount,
+                                new_count,
+                                plaza,
+                                EXCEPTION_TYPE_ID,
+                                year,
+                                month,
+                            ),
+                        )
+                    updated += 1
                     continue
                 print(
                     f"  {year}-{month:02d}: INSERT count={new_count:,}, "
@@ -622,7 +671,7 @@ def update_exception_metrics(
             conn.rollback()
         else:
             conn.commit()
-    print(f"Metrics: inserted={inserted}, neglected(existing)={neglected}")
+    print(f"Metrics: inserted={inserted}, updated={updated}")
 
 
 def main() -> int:

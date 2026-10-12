@@ -56,30 +56,82 @@ REPO_ROOT = COMMON_DIR.parent.parent
 ENV_FILE = REPO_ROOT / "Website" / "backend" / ".env"
 
 S3_ROOT_PREFIX = "Toll Analytics Dashboard Output"
-OUTPUT_TABLE = "audit_exception_output_files"
+_DEFAULT_OUTPUT_TABLE = "audit_exception_output_files"
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def output_files_table_name() -> str:
+    """
+    Target table for output-file history rows.
+    One-click pipeline sets EXCEPTION_OUTPUT_FILES_TABLE to
+    pipeline_audit_exception_output_files; single-run keeps the default.
+    """
+    name = (
+        os.getenv("EXCEPTION_OUTPUT_FILES_TABLE", "").strip()
+        or os.getenv("Exception_Output_Files_Table", "").strip()
+        or _DEFAULT_OUTPUT_TABLE
+    )
+    if not _TABLE_NAME_RE.match(name):
+        raise RuntimeError(f"Invalid EXCEPTION_OUTPUT_FILES_TABLE: {name!r}")
+    return name
+
+
+# Back-compat for callers that read the module constant at import time.
+OUTPUT_TABLE = _DEFAULT_OUTPUT_TABLE
+
+
+def _website_env_path() -> Path:
+    backend_root = os.environ.get("WEBSITE_BACKEND_ROOT", "").strip()
+    if backend_root:
+        return Path(backend_root).expanduser() / ".env"
+    return ENV_FILE
 
 
 def load_env() -> None:
-    if not ENV_FILE.is_file():
-        raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    # override=True so E4/other .env DB_NAME (submissions) does not stick.
-    load_dotenv(ENV_FILE, override=True)
+    """
+    Load Website/backend/.env when present on disk.
+
+    In Docker the file is not copied into the image — Compose injects the same
+    keys into the process environment. Do not require the file in that case.
+    """
+    path = _website_env_path()
+    if path.is_file():
+        # override=True so E4/other .env DB_NAME (submissions) does not stick.
+        load_dotenv(path, override=True)
+        return
+    if os.getenv("DB_HOST", "").strip() and os.getenv("AWS_ACCESS_KEY_ID", "").strip():
+        # Align DB_NAME with analytics when only Toll_Analytics_DB was set.
+        if not os.getenv("DB_NAME", "").strip():
+            alt = (
+                os.getenv("Toll_Analytics_DB", "").strip()
+                or os.getenv("ANALYTICS_DB_NAME", "").strip()
+            )
+            if alt:
+                os.environ["DB_NAME"] = alt
+        return
+    raise FileNotFoundError(
+        f"Env file not found: {path} (and DB_HOST/AWS_ACCESS_KEY_ID not in process env)"
+    )
 
 
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {ENV_FILE})")
+        raise RuntimeError(
+            f"Missing required env var: {name} "
+            f"(checked process env and {_website_env_path()})"
+        )
     return value
 
 
 def toll_analytics_db_name() -> str:
     """
     Database that holds plazas (and output-file history).
-    Prefer ANALYTICS_DB_NAME, else Website DB_NAME (toll_analytics).
+    Prefer ANALYTICS_DB_NAME / Toll_Analytics_DB, else Website DB_NAME.
     """
     return (
         os.getenv("ANALYTICS_DB_NAME", "").strip()
+        or os.getenv("Toll_Analytics_DB", "").strip()
         or require_env("DB_NAME")
     )
 
@@ -375,10 +427,11 @@ def upload_exception_output(
             upload_kwargs["ExtraArgs"] = {"ContentType": "text/csv"}
         client.upload_file(str(path), bucket, s3_key, **upload_kwargs)
 
+        out_table = output_files_table_name()
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 f"""
-                INSERT INTO {OUTPUT_TABLE} (
+                INSERT INTO {out_table} (
                     plaza_identifier,
                     exception_type_id,
                     month_label,

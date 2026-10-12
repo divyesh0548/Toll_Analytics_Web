@@ -663,7 +663,9 @@ def run_local_etc_folder(
     analytics_conn = None
     if not dry_run:
         analytics_conn = psycopg2.connect(**get_analytics_db_connection_kwargs())
-        ensure_revenue_distribution_per_class_table(analytics_conn)
+        ensure_revenue_distribution_per_class_table(
+            analytics_conn, REVENUE_DISTRIBUTION_PER_CLASS_TABLE
+        )
 
     acc: dict[tuple, dict] = {}
     stats = {

@@ -203,23 +203,35 @@ def process_folder(folder_path: str, *, dry_run: bool = DRY_RUN) -> None:
 
 
 def process_vrn_and_optional_etc(
-    vrn_folder: str,
+    vrn_folder: str = "",
     *,
     etc_folder: str = "",
     dry_run: bool = DRY_RUN,
 ) -> None:
-    """VRN insights, then optional local ETC revenue (Website analytics jobs)."""
-    process_folder(vrn_folder, dry_run=dry_run)
+    """VRN insights and/or local ETC revenue (Website analytics jobs).
+
+    At least one of vrn_folder / etc_folder should be set.
+    """
+    vrn = str(vrn_folder or "").strip()
     etc = str(etc_folder or "").strip()
     if not etc:
         _, _, _, etc_from_settings, _ = _refresh_settings()
         etc = str(etc_from_settings or "").strip()
-    if not etc:
-        print("No ETC folder set — skipping module4 revenue load.")
-        return
-    import module4  # noqa: WPS433
 
-    module4.run_local_etc_folder(etc, dry_run=dry_run)
+    if vrn:
+        process_folder(vrn, dry_run=dry_run)
+    else:
+        print("No VRN folder set — skipping VRN insight tables.")
+
+    if etc:
+        import module4  # noqa: WPS433
+
+        module4.run_local_etc_folder(etc, dry_run=dry_run)
+    else:
+        print("No ETC folder set — skipping module4 revenue load.")
+
+    if not vrn and not etc:
+        raise RuntimeError("Nothing to process: provide a VRN folder and/or an ETC folder.")
 
 
 if __name__ == "__main__":

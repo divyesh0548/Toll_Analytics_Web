@@ -143,9 +143,12 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 def load_env() -> None:
     """Load Website + E4 .env files and map names used by downloads / checkpost."""
-    if not WEBSITE_ENV.is_file():
-        raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
-    load_dotenv(WEBSITE_ENV, override=True)
+    if WEBSITE_ENV.is_file():
+        load_dotenv(WEBSITE_ENV, override=True)
+    elif not os.getenv("DB_HOST", "").strip():
+        raise FileNotFoundError(
+            f"Env file not found: {WEBSITE_ENV} (and DB_HOST not in process env)"
+        )
 
     # ETC / submissions (E4 etc-download-merge expects DB_NAME + Table_NAME)
     source_db = os.getenv("Source_DB_NAME", "").strip()

@@ -15,7 +15,7 @@ Rules:
   - Exclude Applicable Rate that is empty, zero, or negative
   - total_count = number of included rows; total_amount = sum(Applicable Rate)
   - Insert if plaza+exception+year+month missing
-  - If row exists, update only when new count OR new amount is greater
+  - If row exists, always overwrite total_count and total_amount
 """
 
 from __future__ import annotations
@@ -65,12 +65,28 @@ RATE_ALIASES = [
 
 
 def load_env() -> None:
-    # Prefer Website analytics env when present; E4/.env fills gaps (no override).
+    # Prefer process env (Docker); Website/backend/.env; E4/.env fills gaps.
+    backend_root = os.environ.get("WEBSITE_BACKEND_ROOT", "").strip()
+    if backend_root:
+        backend_env = Path(backend_root).expanduser() / ".env"
+        if backend_env.is_file():
+            load_dotenv(backend_env, override=False)
     if WEBSITE_ENV.is_file():
         load_dotenv(WEBSITE_ENV, override=False)
     if ENV_FILE.is_file():
         load_dotenv(ENV_FILE, override=False)
-    if not WEBSITE_ENV.is_file() and not ENV_FILE.is_file():
+    if (
+        not WEBSITE_ENV.is_file()
+        and not ENV_FILE.is_file()
+        and not (
+            os.getenv("DB_HOST", "").strip()
+            and (
+                os.getenv("Plaza_analytics_DB_NAME", "").strip()
+                or os.getenv("DB_NAME", "").strip()
+                or os.getenv("Toll_Analytics_DB", "").strip()
+            )
+        )
+    ):
         raise FileNotFoundError(
             f"Env file not found: tried {WEBSITE_ENV} and {ENV_FILE}"
         )
@@ -257,7 +273,7 @@ def upsert_monthly_metrics(
     dry_run: bool = False,
     table_name: str | None = None,
 ) -> dict[str, int]:
-    """Insert if missing; update only when new count or amount is greater."""
+    """Insert if missing; always overwrite when a row already exists."""
     stats = {"inserted": 0, "updated": 0, "unchanged": 0}
     if not rows:
         return stats
@@ -330,32 +346,24 @@ def upsert_monthly_metrics(
 
             old_count = int(current["total_count"])
             old_amount = Decimal(str(current["total_amount"]))
-            if new_count > old_count or new_amount > old_amount:
-                print(
-                    f"  {year}-{month:02d}: UPDATE "
-                    f"count {old_count:,} -> {new_count:,}, "
-                    f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+            print(
+                f"  {year}-{month:02d}: UPDATE "
+                f"count {old_count:,} -> {new_count:,}, "
+                f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+            )
+            if not dry_run:
+                cursor.execute(
+                    update_sql,
+                    (
+                        new_amount,
+                        new_count,
+                        plaza_identifier,
+                        exception_type_id,
+                        year,
+                        month,
+                    ),
                 )
-                if not dry_run:
-                    cursor.execute(
-                        update_sql,
-                        (
-                            new_amount,
-                            new_count,
-                            plaza_identifier,
-                            exception_type_id,
-                            year,
-                            month,
-                        ),
-                    )
-                stats["updated"] += 1
-            else:
-                print(
-                    f"  {year}-{month:02d}: KEEP "
-                    f"stored count={old_count:,}, amount={old_amount:,.2f} "
-                    f"(new count={new_count:,}, amount={new_amount:,.2f})"
-                )
-                stats["unchanged"] += 1
+            stats["updated"] += 1
 
     if not dry_run:
         conn.commit()

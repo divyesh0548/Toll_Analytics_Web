@@ -7,8 +7,7 @@ Standalone usage:
 
 Upsert rule:
   - Insert when no row exists for (plaza_identifier, exception_type_id, year, month)
-  - Update total_amount + total_count only when the new count is greater than the existing count
-  - Otherwise leave the existing row unchanged
+  - Always overwrite total_amount + total_count when a row already exists
 
 Env (.env at repo root):
   RDS_HOST, RDS_PORT, RDS_USER, RDS_PASSWORD
@@ -294,8 +293,9 @@ def upsert_exception_metrics(
     """
     Returns (inserted, updated, skipped).
 
-    Default: update only when new count > existing count.
-    force_update=True: always overwrite amount/count (Website Full Exempt runs).
+    Always overwrite amount/count when a row already exists for the same
+    plaza + exception_type + year + month. force_update is kept for callers
+    but no longer changes behavior.
     """
     plaza_identifier = str(plaza_identifier or "").strip()
     if not plaza_identifier:
@@ -373,20 +373,16 @@ def upsert_exception_metrics(
                     inserted += 1
                     continue
 
-                existing_count = int(existing["total_count"] or 0)
-                if force_update or new_count > existing_count:
-                    conn.execute(
-                        update_sql,
-                        {
-                            "id": existing["id"],
-                            "total_amount": new_amount,
-                            "total_count": new_count,
-                            "updated_at": now,
-                        },
-                    )
-                    updated += 1
-                else:
-                    skipped += 1
+                conn.execute(
+                    update_sql,
+                    {
+                        "id": existing["id"],
+                        "total_amount": new_amount,
+                        "total_count": new_count,
+                        "updated_at": now,
+                    },
+                )
+                updated += 1
 
     return inserted, updated, skipped
 
@@ -492,7 +488,7 @@ def sync_exception_metrics_from_folder(
     Public entry used by the Full Exempt Pipeline and CLI.
     Provide plaza_identifier directly, or plaza_name to resolve from config.
 
-    force_update: always overwrite metrics rows (Website jobs).
+    force_update: kept for callers; metrics are always overwritten now.
     upload_outputs: also upload EXCEPTION_FILE_MAP workbooks to S3 + output_files table.
     """
     try:

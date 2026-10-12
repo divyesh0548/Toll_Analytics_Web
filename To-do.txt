@@ -1,11 +1,7 @@
-Need to wire two seperate process in E05 query.
-
 Re-run the "run_plaza_etl" from bassi plaza due to 0 transactions in Truck-7-axcel.
 
-Testing of E06, E07, E10, E15 is pending on the website. (Re-run E6 with both permit files uploaded)
-
-Enable VRN and ETC upload for analytics.
-
-Also change the Name to Swastik Dashboard, and add that person logo.
+Testing of E10, E15 is pending on the website.
 
 Remove the vehicles with 0 transactions and some revenue. For now. Will decide the solution later.
+
+Develop a script to delete montly data of a plaza, to test user uploaded ETC/VRN file updation.

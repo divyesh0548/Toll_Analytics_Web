@@ -10,12 +10,13 @@ Full pipeline:
   Called automatically from E5_main.py after matched Excel is written.
 
 Update rule when a row already exists for plaza + exception_type_id + year + month:
-  update BOTH total_count and total_amount if either new count OR new amount is greater.
+  always overwrite total_count and total_amount with the new values.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
 # ---------------------------------------------------------------------------
@@ -48,16 +50,36 @@ ENV_FILE = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 
 
 def load_env() -> None:
-    if not ENV_FILE.is_file():
-        raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    # override=True so E4/submissions DB_NAME from the job env does not stick.
-    load_dotenv(ENV_FILE, override=True)
+    """Process env (Docker) first; Website/backend/.env when present on disk."""
+    backend_root = os.environ.get("WEBSITE_BACKEND_ROOT", "").strip()
+    candidates = []
+    if backend_root:
+        candidates.append(Path(backend_root).expanduser() / ".env")
+    candidates.append(ENV_FILE)
+    loaded_any = False
+    for path in candidates:
+        if path.is_file():
+            # Prefer file over stale child overrides, but keep Compose-injected
+            # keys that are already set (override=False).
+            load_dotenv(path, override=False)
+            loaded_any = True
+    if loaded_any:
+        return
+    if os.getenv("DB_HOST", "").strip() and (
+        os.getenv("Toll_Analytics_DB", "").strip()
+        or os.getenv("DB_NAME", "").strip()
+    ):
+        return
+    raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
 
 
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {ENV_FILE})")
+        raise RuntimeError(
+            f"Missing required env var: {name} "
+            "(checked process env and Website/backend/.env)"
+        )
     return value
 
 
@@ -73,6 +95,17 @@ def toll_analytics_db_name() -> str:
         or os.getenv("ANALYTICS_DB_NAME", "").strip()
         or require_env("DB_NAME")
     )
+
+
+def metrics_table_name() -> str:
+    name = (
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
+        or "audit_exception_metrics"
+    )
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise RuntimeError(f"Invalid Exception_Metrics_Table: {name!r}")
+    return name
 
 
 def connection_kwargs() -> dict:
@@ -149,14 +182,17 @@ def fetch_existing_metrics(
     plaza_identifier: str,
     exception_type_id: int,
 ) -> dict[tuple[int, int], dict]:
+    table = sql.Identifier(metrics_table_name())
     with conn.cursor(cursor_factory=RealDictCursor) as cursor:
         cursor.execute(
-            """
-            SELECT year, month, total_count, total_amount
-            FROM audit_exception_metrics
-            WHERE plaza_identifier = %s
-              AND exception_type_id = %s
-            """,
+            sql.SQL(
+                """
+                SELECT year, month, total_count, total_amount
+                FROM {table}
+                WHERE plaza_identifier = %s
+                  AND exception_type_id = %s
+                """
+            ).format(table=table),
             (plaza_identifier, exception_type_id),
         )
         rows = cursor.fetchall()
@@ -180,7 +216,7 @@ def upsert_monthly_metrics(
 ) -> dict[str, int]:
     """
     Insert missing months.
-    Update both total_count and total_amount when either new value is greater.
+    Always overwrite total_count and total_amount when a row already exists.
     """
     stats = {"inserted": 0, "updated": 0, "unchanged": 0}
     if not rows:
@@ -192,8 +228,10 @@ def upsert_monthly_metrics(
         exception_type_id=exception_type_id,
     )
 
-    insert_sql = """
-        INSERT INTO audit_exception_metrics (
+    table = sql.Identifier(metrics_table_name())
+    insert_sql = sql.SQL(
+        """
+        INSERT INTO {table} (
             plaza_identifier,
             exception_type_id,
             year,
@@ -204,9 +242,11 @@ def upsert_monthly_metrics(
             updated_at
         )
         VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-    """
-    update_sql = """
-        UPDATE audit_exception_metrics
+        """
+    ).format(table=table)
+    update_sql = sql.SQL(
+        """
+        UPDATE {table}
         SET total_amount = %s,
             total_count = %s,
             updated_at = NOW()
@@ -214,7 +254,8 @@ def upsert_monthly_metrics(
           AND exception_type_id = %s
           AND year = %s
           AND month = %s
-    """
+        """
+    ).format(table=table)
 
     with conn.cursor() as cursor:
         for row in rows:
@@ -247,32 +288,24 @@ def upsert_monthly_metrics(
 
             old_count = int(current["total_count"])
             old_amount = Decimal(str(current["total_amount"]))
-            if new_count > old_count or new_amount > old_amount:
-                print(
-                    f"  {year}-{month:02d}: UPDATE "
-                    f"count {old_count:,} -> {new_count:,}, "
-                    f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+            print(
+                f"  {year}-{month:02d}: UPDATE "
+                f"count {old_count:,} -> {new_count:,}, "
+                f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+            )
+            if not dry_run:
+                cursor.execute(
+                    update_sql,
+                    (
+                        new_amount,
+                        new_count,
+                        plaza_identifier,
+                        exception_type_id,
+                        year,
+                        month,
+                    ),
                 )
-                if not dry_run:
-                    cursor.execute(
-                        update_sql,
-                        (
-                            new_amount,
-                            new_count,
-                            plaza_identifier,
-                            exception_type_id,
-                            year,
-                            month,
-                        ),
-                    )
-                stats["updated"] += 1
-            else:
-                print(
-                    f"  {year}-{month:02d}: KEEP "
-                    f"stored count={old_count:,}, amount={old_amount:,.2f} "
-                    f"(new count={new_count:,}, amount={new_amount:,.2f})"
-                )
-                stats["unchanged"] += 1
+            stats["updated"] += 1
 
     if not dry_run:
         conn.commit()

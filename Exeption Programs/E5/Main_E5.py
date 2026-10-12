@@ -14,7 +14,7 @@ E5 — Invalid lookup query (IHMCL class check for 2-axle and above).
 7) Optionally upsert audit_exception_metrics (exception id 5) for all months:
      - Upto Lcv: all rows, Impact by Reader Read Time month
      - 2-axel and above: Matched=yes only, same aggregation
-     - Update existing month when new count OR amount is greater
+     - Always overwrite existing month with the new count and amount
 8) Optional S3 upload of the workbook when UPLOAD_OUTPUT_TO_S3=True:
      - Before upload, drop 2-axel rows where Matched is empty or No
      - S3 file name includes exception code, plaza, month-year label

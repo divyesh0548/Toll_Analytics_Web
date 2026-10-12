@@ -7,7 +7,7 @@ Rules:
   - Sheet "2-axel and above": only Matched = yes (case-insensitive),
     same date/Impact aggregation
   - Combine both sheets per year+month, then upsert exception_type_id = 5
-  - Existing month is updated when new count OR new amount is greater
+  - Existing month is always overwritten with the new count and amount
 
 Standalone (DB update only):
   1. Set DB_UPDATE_ONLY = True

@@ -10,7 +10,7 @@ Full pipeline:
   Called from E4_main.py after Loss is computed.
 
 Update rule when a row already exists for plaza + exception_type_id + year + month:
-  update BOTH total_count and total_amount if either new count OR new amount is greater.
+  always overwrite total_count and total_amount with the new values.
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ DRY_RUN = False
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
+WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 
 # Column alias lists (kept local so this module can run standalone)
 START_DATE_ALIASES = [
@@ -67,15 +68,37 @@ TRIPS_ALIASES = ["Trips taken", "Trip taken"]
 
 
 def load_env() -> None:
-    if not ENV_FILE.is_file():
-        raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    load_dotenv(ENV_FILE, override=True)
+    """Prefer process env (Docker) / Website/backend/.env; E4/.env is optional."""
+    loaded_any = False
+    backend_root = os.environ.get("WEBSITE_BACKEND_ROOT", "").strip()
+    candidates = []
+    if backend_root:
+        candidates.append(Path(backend_root).expanduser() / ".env")
+    candidates.extend([WEBSITE_ENV, ENV_FILE])
+    for path in candidates:
+        if path.is_file():
+            load_dotenv(path, override=False)
+            loaded_any = True
+    if loaded_any:
+        return
+    if os.getenv("DB_HOST", "").strip() and (
+        os.getenv("Plaza_analytics_DB_NAME", "").strip()
+        or os.getenv("DB_NAME", "").strip()
+        or os.getenv("Toll_Analytics_DB", "").strip()
+    ):
+        return
+    raise FileNotFoundError(
+        f"Env file not found: tried {WEBSITE_ENV} and {ENV_FILE}"
+    )
 
 
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {ENV_FILE})")
+        raise RuntimeError(
+            f"Missing required env var: {name} "
+            "(checked process env, Website/backend/.env, E4/.env)"
+        )
     return value
 
 
@@ -83,18 +106,28 @@ def metrics_table_name() -> str:
     return (
         os.getenv("Plaza_analytics_Table_NAME", "").strip()
         or os.getenv("PLAZA_ANALYTICS_TABLE_NAME", "").strip()
+        or os.getenv("Exception_Metrics_Table", "").strip()
         or "audit_exception_metrics"
     )
 
 
 def connection_kwargs() -> dict:
     """Connect to Plaza analytics DB (Plaza_analytics_DB_NAME), not submissions."""
+    database = (
+        os.getenv("Plaza_analytics_DB_NAME", "").strip()
+        or os.getenv("Toll_Analytics_DB", "").strip()
+        or os.getenv("DB_NAME", "").strip()
+    )
+    if not database:
+        raise RuntimeError(
+            "Missing Plaza_analytics_DB_NAME / Toll_Analytics_DB / DB_NAME"
+        )
     return {
         "host": require_env("DB_HOST"),
         "port": int(os.getenv("DB_PORT") or "5432"),
         "user": require_env("DB_USER"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("Plaza_analytics_DB_NAME"),
+        "database": database,
     }
 
 
@@ -308,7 +341,7 @@ def upsert_monthly_metrics(
 ) -> dict[str, int]:
     """
     Insert missing months.
-    Update both total_count and total_amount when either new value is greater.
+    Always overwrite total_count and total_amount when a row already exists.
     """
     stats = {"inserted": 0, "updated": 0, "unchanged": 0}
     if not rows:
@@ -383,32 +416,24 @@ def upsert_monthly_metrics(
 
             old_count = int(current["total_count"])
             old_amount = Decimal(str(current["total_amount"]))
-            if new_count > old_count or new_amount > old_amount:
-                print(
-                    f"  {year}-{month:02d}: UPDATE "
-                    f"count {old_count:,} -> {new_count:,}, "
-                    f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+            print(
+                f"  {year}-{month:02d}: UPDATE "
+                f"count {old_count:,} -> {new_count:,}, "
+                f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+            )
+            if not dry_run:
+                cursor.execute(
+                    update_sql,
+                    (
+                        new_amount,
+                        new_count,
+                        plaza_identifier,
+                        exception_type_id,
+                        year,
+                        month,
+                    ),
                 )
-                if not dry_run:
-                    cursor.execute(
-                        update_sql,
-                        (
-                            new_amount,
-                            new_count,
-                            plaza_identifier,
-                            exception_type_id,
-                            year,
-                            month,
-                        ),
-                    )
-                stats["updated"] += 1
-            else:
-                print(
-                    f"  {year}-{month:02d}: KEEP "
-                    f"stored count={old_count:,}, amount={old_amount:,.2f} "
-                    f"(new count={new_count:,}, amount={new_amount:,.2f})"
-                )
-                stats["unchanged"] += 1
+            stats["updated"] += 1
 
     if not dry_run:
         conn.commit()

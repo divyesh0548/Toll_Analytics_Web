@@ -7,7 +7,7 @@ E9 — Unsettled ETC amounts by month.
 4. Read dates from the output file → year/month buckets.
 5. Count rows and sum Amount. Skip amount 0, empty, or NA.
 6. Optionally upsert audit_exception_metrics (exception id 9).
-   An existing year+month is updated only when the new count or amount is greater.
+   An existing year+month is always overwritten with the new count and amount.
 7. Optionally upload the output file to S3 (month-year label from those dates).
 
 Run:
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import zipfile
 from collections import defaultdict
@@ -37,6 +38,17 @@ from common.s3_output_upload import (  # noqa: E402
     month_label_from_periods,
     upload_exception_output,
 )
+
+
+def _metrics_table_name() -> str:
+    name = (
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
+        or "audit_exception_metrics"
+    )
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise RuntimeError(f"Invalid Exception_Metrics_Table: {name!r}")
+    return name
 
 CONFIG_PATH = BASE_DIR / "e9_config.json"
 WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
@@ -308,18 +320,26 @@ def load_output_file(path: Path = OUTPUT_FILE) -> pd.DataFrame:
 
 
 def _analytics_connection_kwargs() -> dict:
-    if not WEBSITE_ENV.is_file():
-        raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
-    values = dotenv_values(WEBSITE_ENV)
-    host = str(values.get("DB_HOST") or "").strip()
-    port = str(values.get("DB_PORT") or "5432").strip()
-    user = str(values.get("DB_USER") or "").strip()
-    password = str(values.get("DB_PASSWORD") or "")
+    # Docker: Compose injects Website/backend/.env into the process (file absent).
+    values = dotenv_values(WEBSITE_ENV) if WEBSITE_ENV.is_file() else {}
+    host = str(values.get("DB_HOST") or os.getenv("DB_HOST") or "").strip()
+    port = str(values.get("DB_PORT") or os.getenv("DB_PORT") or "5432").strip()
+    user = str(values.get("DB_USER") or os.getenv("DB_USER") or "").strip()
+    password = str(
+        values.get("DB_PASSWORD")
+        if values.get("DB_PASSWORD") is not None
+        else os.getenv("DB_PASSWORD", "")
+    )
     database = (
         str(values.get("NHIT_DB") or "").strip()
-        or str(values.get("ANALYTICS_DB_NAME") or "").strip()
-        or str(values.get("DB_NAME") or "").strip()
+        or str(values.get("ANALYTICS_DB_NAME") or os.getenv("ANALYTICS_DB_NAME") or "").strip()
+        or str(values.get("Toll_Analytics_DB") or os.getenv("Toll_Analytics_DB") or "").strip()
+        or str(values.get("DB_NAME") or os.getenv("DB_NAME") or "").strip()
     )
+    if not host and not WEBSITE_ENV.is_file():
+        raise FileNotFoundError(
+            f"Env file not found: {WEBSITE_ENV} (and DB_HOST not in process env)"
+        )
     missing = [
         name
         for name, value in (
@@ -368,20 +388,21 @@ def update_exception_metrics(
         return
 
     kwargs = _analytics_connection_kwargs()
-    print(f"Target DB: {kwargs['database']}.audit_exception_metrics")
+    metrics_table = _metrics_table_name()
+    print(f"Target DB: {kwargs['database']}.{metrics_table}")
     print(f"plaza_identifier: {plaza}")
     print(f"exception_type_id: {EXCEPTION_TYPE_ID}")
     print(f"Months to sync: {len(rows)}" + (" (dry run)" if dry_run else ""))
 
-    insert_sql = """
-        INSERT INTO audit_exception_metrics (
+    insert_sql = f"""
+        INSERT INTO {metrics_table} (
             plaza_identifier, exception_type_id, year, month,
             total_amount, total_count, created_at, updated_at
         )
         VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
     """
-    update_sql = """
-        UPDATE audit_exception_metrics
+    update_sql = f"""
+        UPDATE {metrics_table}
         SET total_amount = %s,
             total_count = %s,
             updated_at = NOW()
@@ -409,9 +430,9 @@ def update_exception_metrics(
             if cursor.fetchone() is None:
                 raise RuntimeError(f"plaza_identifier {plaza!r} was not found in plazas.")
             cursor.execute(
-                """
+                f"""
                 SELECT year, month, total_count, total_amount
-                FROM audit_exception_metrics
+                FROM {metrics_table}
                 WHERE plaza_identifier = %s AND exception_type_id = %s
                 """,
                 (plaza, EXCEPTION_TYPE_ID),
@@ -448,30 +469,24 @@ def update_exception_metrics(
                         )
                     continue
                 old_count, old_amount = current
-                if new_count > old_count or new_amount > old_amount:
-                    print(
-                        f"  {year}-{month:02d}: UPDATE "
-                        f"count {old_count:,} -> {new_count:,}, "
-                        f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
-                        + (" [dry-run]" if dry_run else "")
-                    )
-                    if not dry_run:
-                        cursor.execute(
-                            update_sql,
-                            (
-                                new_amount,
-                                new_count,
-                                plaza,
-                                EXCEPTION_TYPE_ID,
-                                year,
-                                month,
-                            ),
-                        )
-                    continue
                 print(
-                    f"  {year}-{month:02d}: KEEP "
-                    f"stored count={old_count:,}, amount={old_amount:,.2f}"
+                    f"  {year}-{month:02d}: UPDATE "
+                    f"count {old_count:,} -> {new_count:,}, "
+                    f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+                    + (" [dry-run]" if dry_run else "")
                 )
+                if not dry_run:
+                    cursor.execute(
+                        update_sql,
+                        (
+                            new_amount,
+                            new_count,
+                            plaza,
+                            EXCEPTION_TYPE_ID,
+                            year,
+                            month,
+                        ),
+                    )
         if dry_run:
             conn.rollback()
         else:

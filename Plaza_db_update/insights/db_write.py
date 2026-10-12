@@ -5,6 +5,10 @@ from __future__ import annotations
 from psycopg2 import sql
 from psycopg2.extras import execute_values
 
+# Large VRN months can produce 25k+ hourly keys; one giant IN (...) hits PG stack limits.
+_KEY_LOOKUP_BATCH = 1500
+_UPSERT_BATCH = 1500
+
 
 def fetch_existing_keys(conn, table_name: str, key_columns: list[str], rows: list[dict]) -> set[tuple]:
     if not rows:
@@ -16,9 +20,13 @@ def fetch_existing_keys(conn, table_name: str, key_columns: list[str], rows: lis
         "SELECT {columns} FROM {table} WHERE ({columns}) IN %s"
     ).format(columns=columns_sql, table=sql.Identifier(table_name))
 
+    existing: set[tuple] = set()
     with conn.cursor() as cursor:
-        cursor.execute(query.as_string(conn), (tuple(keys),))
-        return {tuple(record) for record in cursor.fetchall()}
+        for start in range(0, len(keys), _KEY_LOOKUP_BATCH):
+            chunk = tuple(keys[start : start + _KEY_LOOKUP_BATCH])
+            cursor.execute(query.as_string(conn), (chunk,))
+            existing.update(tuple(record) for record in cursor.fetchall())
+    return existing
 
 
 def upsert_rows(
@@ -39,7 +47,6 @@ def upsert_rows(
     if not rows:
         return 0, 0
 
-    existing_keys = fetch_existing_keys(conn, table_name, key_columns, rows)
     update_columns = [column for column in data_columns if column not in key_columns]
     if not update_columns:
         raise ValueError(
@@ -87,23 +94,29 @@ def upsert_rows(
         assignments=sql.SQL(", ").join(assignments),
     )
 
-    values = [tuple(row[column] for column in data_columns) for row in rows]
+    inserted_total = 0
+    updated_total = 0
     with conn.cursor() as cursor:
-        execute_values(cursor, insert_sql.as_string(conn), values)
+        for start in range(0, len(rows), _UPSERT_BATCH):
+            batch = rows[start : start + _UPSERT_BATCH]
+            existing_keys = fetch_existing_keys(conn, table_name, key_columns, batch)
+            values = [tuple(row[column] for column in data_columns) for row in batch]
+            execute_values(cursor, insert_sql.as_string(conn), values)
+            updated = sum(
+                1
+                for row in batch
+                if tuple(row[column] for column in key_columns) in existing_keys
+            )
+            inserted_total += len(batch) - updated
+            updated_total += updated
     conn.commit()
 
-    updated = sum(
-        1
-        for row in rows
-        if tuple(row[column] for column in key_columns) in existing_keys
-    )
-    inserted = len(rows) - updated
     print(
         f"  {label}: upserted {len(rows)} row(s) "
-        f"(inserted={inserted}, conflict_keys={updated}; "
+        f"(inserted={inserted_total}, conflict_keys={updated_total}; "
         f"metrics update only when new > existing)"
     )
-    return inserted, updated
+    return inserted_total, updated_total
 
 
 def insert_new_rows(

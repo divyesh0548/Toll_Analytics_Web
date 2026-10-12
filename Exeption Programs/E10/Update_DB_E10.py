@@ -3,14 +3,17 @@ Write E10 segment totals from the merged output into audit_exception_metrics.
 
 Segments:
   E10-A  Lane/Chg Standard Weight is less than Std Weight
+         (also used when Lane/Chg Standard Weight is blank/non-numeric)
   E10-B  Lane/Chg Standard Weight is greater than or equal to Std Weight,
-         and SWB Wt/Std. Weight is zero
+         and SWB Wt/Std. Weight is zero (blank SWB counts as zero)
   E10-C  Lane/Chg Standard Weight is greater than or equal to Std Weight,
          and SWB Wt/Std. Weight is not zero
-  Rows with a blank or non-numeric weight needed for that test are not counted.
+  Every overweight merged row is placed in A, B, or C when Std Weight is present.
 
 Each read_datetime month is one year+month row. Amount is the sum of
 Applicable Rate. E10 itself is stored as the sum of A, B, and C for that month.
+
+Existing plaza+type+year+month rows are always overwritten (no greater-only gate).
 
 Standalone:
   Set PLAZA_IDENTIFIER (and CSV_PATH if not the default output), then:
@@ -26,6 +29,7 @@ not from a DB_NAME that Main_E10 remaps to the submissions database.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from collections import defaultdict
@@ -59,7 +63,11 @@ SEGMENT_CODES = {
 }
 PARENT_CODE = "E10"
 SEGMENT_LABELS = {
-    "E10-A": ("Lane/Chg standard weight less than standard weight", 1),
+    "E10-A": (
+        "Lane/Chg standard weight less than standard weight "
+        "(or lane standard missing)",
+        1,
+    ),
     "E10-B": (
         "Lane/Chg standard weight at or above standard weight and SWB weight is zero",
         2,
@@ -76,10 +84,17 @@ _DATETIME_FORMATS = (
     "%d-%m-%Y %H:%M",
     "%d/%m/%Y %H:%M:%S",
     "%d/%m/%Y %H:%M",
+    "%d/%m/%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M %p",
+    "%d-%m-%Y %I:%M:%S %p",
+    "%d-%m-%Y %I:%M %p",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
+    "%Y-%m-%d %I:%M:%S %p",
+    "%Y-%m-%d %I:%M %p",
 )
 _WEIGHT_EPS = 1e-6
+_ISO_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
 def parse_number(value) -> float | None:
@@ -93,6 +108,10 @@ def parse_number(value) -> float | None:
 
 
 def parse_read_datetime(value) -> datetime | None:
+    """
+    Parse VRN-style DD/MM timestamps (incl. 12-hour AM/PM) and ISO stamps.
+    Examples: 01/08/2026 12:05:56 AM, 01-08-2026 00:05:56, 2026-08-01 00:05:56
+    """
     text = re.sub(r"\s+", " ", str(value if value is not None else "").strip())
     if not text or text.lower() in _NUMBER_BLANK:
         return None
@@ -101,7 +120,12 @@ def parse_read_datetime(value) -> datetime | None:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
-    return None
+    # Fallback: same dayfirst rule as Main_E10 join parsing
+    dayfirst = not bool(_ISO_DATETIME_RE.match(text))
+    ts = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return pd.Timestamp(ts).to_pydatetime()
 
 
 def classify_segment(
@@ -109,14 +133,20 @@ def classify_segment(
     std: float | None,
     swb: float | None,
 ) -> str | None:
-    """Return A, B, C, or None when the row must not be counted."""
-    if lane_std is None or std is None:
+    """
+    Return A, B, C, or None when Std Weight is missing.
+
+    Blank / null SWB is treated as 0 (same as the overweight step), so those
+    rows become E10-B when lane standard is at/above Std Weight.
+    Missing Lane/Chg Standard Weight (with Std Weight present) → E10-A.
+    """
+    if std is None:
         return None
-    if lane_std + _WEIGHT_EPS < std:
+    # Blank SWB → 0 (aligned with Main_E10 apply_overweight_and_filters).
+    swb_v = 0.0 if swb is None else float(swb)
+    if lane_std is None or lane_std + _WEIGHT_EPS < std:
         return "A"
-    if swb is None:
-        return None
-    if abs(swb) <= _WEIGHT_EPS:
+    if abs(swb_v) <= _WEIGHT_EPS:
         return "B"
     return "C"
 
@@ -215,18 +245,25 @@ def aggregate_segments(csv_path: Path) -> tuple[list[dict], dict[str, int]]:
 
 
 def _analytics_connection_kwargs() -> dict:
-    if not WEBSITE_ENV.is_file():
-        raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
-    values = dotenv_values(WEBSITE_ENV)
-    host = str(values.get("DB_HOST") or "").strip()
-    port = str(values.get("DB_PORT") or "5432").strip()
-    user = str(values.get("DB_USER") or "").strip()
-    password = str(values.get("DB_PASSWORD") or "")
+    values = dotenv_values(WEBSITE_ENV) if WEBSITE_ENV.is_file() else {}
+    host = str(values.get("DB_HOST") or os.getenv("DB_HOST") or "").strip()
+    port = str(values.get("DB_PORT") or os.getenv("DB_PORT") or "5432").strip()
+    user = str(values.get("DB_USER") or os.getenv("DB_USER") or "").strip()
+    password = str(
+        values.get("DB_PASSWORD")
+        if values.get("DB_PASSWORD") is not None
+        else os.getenv("DB_PASSWORD", "")
+    )
     database = (
         str(values.get("NHIT_DB") or "").strip()
-        or str(values.get("ANALYTICS_DB_NAME") or "").strip()
-        or str(values.get("DB_NAME") or "").strip()
+        or str(values.get("ANALYTICS_DB_NAME") or os.getenv("ANALYTICS_DB_NAME") or "").strip()
+        or str(values.get("Toll_Analytics_DB") or os.getenv("Toll_Analytics_DB") or "").strip()
+        or str(values.get("DB_NAME") or os.getenv("DB_NAME") or "").strip()
     )
+    if not host and not WEBSITE_ENV.is_file():
+        raise FileNotFoundError(
+            f"Env file not found: {WEBSITE_ENV} (and DB_HOST not in process env)"
+        )
     missing = [
         name
         for name, value in (
@@ -325,9 +362,21 @@ def _require_plaza(conn, plaza_identifier: str) -> None:
             )
 
 
+def _metrics_table_name() -> str:
+    name = (
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
+        or "audit_exception_metrics"
+    )
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise RuntimeError(f"Invalid Exception_Metrics_Table: {name!r}")
+    return name
+
+
 def _upsert_metrics(conn, plaza_identifier: str, type_ids: dict[str, int], rows: list[dict]) -> None:
-    sql = """
-        INSERT INTO audit_exception_metrics (
+    table = _metrics_table_name()
+    sql = f"""
+        INSERT INTO {table} (
             plaza_identifier,
             exception_type_id,
             year,
@@ -338,7 +387,7 @@ def _upsert_metrics(conn, plaza_identifier: str, type_ids: dict[str, int], rows:
             updated_at
         )
         VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-        ON CONFLICT ON CONSTRAINT uq_audit_exception_metrics_plaza_type_period
+        ON CONFLICT (plaza_identifier, exception_type_id, year, month)
         DO UPDATE SET
             total_amount = EXCLUDED.total_amount,
             total_count = EXCLUDED.total_count,
@@ -371,6 +420,11 @@ def update_e10_metrics(csv_path: Path | str, plaza_identifier: str) -> list[dict
         f"skipped datetime={stats['skipped_datetime']:,}"
     )
     if not rows:
+        if stats["rows"] and stats["skipped_datetime"] == stats["rows"]:
+            raise RuntimeError(
+                "No E10 metrics written: every row failed read_datetime parse. "
+                "Expected formats like '01/08/2026 12:05:56 AM' or '2026-08-01 00:05:56'."
+            )
         print("No E10 segment rows to write.")
         return []
 

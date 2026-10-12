@@ -69,6 +69,8 @@ pnpm-debug.log*
 *.xlsb
 *.csv
 *.ods
+# Required E10 reference workbook (ship with image / repo)
+!Exeption Programs/E10/OW multiple LSW std weights.xlsx
 
 # Large / generated data folders (not source)
 Input/
