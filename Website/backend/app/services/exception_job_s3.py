@@ -66,11 +66,20 @@ def s3_client():
             "boto3 is required for S3. "
             f"Install it in this environment. ({_BOTO3_IMPORT_ERROR})"
         )
+    from botocore.config import Config
+
+    region = _require_env("AWS_REGION")
+    # Regional endpoint + SigV4 so browser PUTs match the signed host/region.
     return boto3.client(
         "s3",
-        region_name=_require_env("AWS_REGION"),
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
         aws_access_key_id=_require_env("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=_require_env("AWS_SECRET_ACCESS_KEY"),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "virtual"},
+        ),
     )
 
 
@@ -104,6 +113,75 @@ def job_input_key_prefix(*, plaza_name: str, job_uuid: str) -> str:
     plaza_folder = _safe_folder(plaza_name)
     job_folder = _safe_folder(job_uuid)
     return f"{S3_ROOT_PREFIX}/{plaza_folder}/{job_folder}/"
+
+
+def build_monthly_input_key(
+    *,
+    plaza_name: str,
+    year: int,
+    month: int,
+    slot: str,
+    original_file_name: str,
+) -> str:
+    """
+    Toll Analytics Files/{plaza}/monthly/{YYYY-MM}/{slot}/{unique}_{filename}
+    Shared across one-click pipeline programs for that period.
+    """
+    plaza_folder = _safe_folder(plaza_name)
+    period = f"{int(year):04d}-{int(month):02d}"
+    slot_folder = _safe_folder(slot)
+    unique = uuid.uuid4().hex[:8]
+    file_name = _safe_filename(original_file_name)
+    return (
+        f"{S3_ROOT_PREFIX}/{plaza_folder}/monthly/{period}/"
+        f"{slot_folder}/{unique}_{file_name}"
+    )
+
+
+def monthly_input_key_prefix(*, plaza_name: str, year: int, month: int) -> str:
+    plaza_folder = _safe_folder(plaza_name)
+    period = f"{int(year):04d}-{int(month):02d}"
+    return f"{S3_ROOT_PREFIX}/{plaza_folder}/monthly/{period}/"
+
+
+def presign_monthly_put_upload(
+    *,
+    plaza_name: str,
+    year: int,
+    month: int,
+    slot: str,
+    original_file_name: str,
+    content_type: str | None = None,
+    expires_in: int = 7200,
+) -> dict:
+    bucket = bucket_name()
+    region = _require_env("AWS_REGION")
+    key = build_monthly_input_key(
+        plaza_name=plaza_name,
+        year=year,
+        month=month,
+        slot=slot,
+        original_file_name=original_file_name,
+    )
+    params: dict = {"Bucket": bucket, "Key": key}
+    ctype = str(content_type or "").strip()
+    if ctype:
+        params["ContentType"] = ctype
+    client = s3_client()
+    upload_url = client.generate_presigned_url(
+        "put_object",
+        Params=params,
+        ExpiresIn=max(60, int(expires_in)),
+        HttpMethod="PUT",
+    )
+    return {
+        "bucket": bucket,
+        "s3_key": key,
+        "file_url": object_url(bucket, region, key),
+        "upload_url": upload_url,
+        "content_type": ctype or None,
+        "expires_in": max(60, int(expires_in)),
+    }
 
 
 def presign_put_upload(

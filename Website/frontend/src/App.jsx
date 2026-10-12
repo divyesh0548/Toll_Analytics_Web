@@ -16,6 +16,7 @@ import { PlazaMasterPage } from '@/pages/plaza-master-page'
 import { PlazaDetailPage } from '@/pages/plaza-detail-page'
 import { CreateUserPage } from '@/pages/create-user-page'
 import { ExceptionUploadsPage } from '@/pages/exception-uploads-page'
+import { ExceptionPipelinePage } from '@/pages/exception-pipeline-page'
 import { AnalyticsUploadsPage } from '@/pages/analytics-uploads-page'
 
 function LegacyPlazaDetailRedirect() {
@@ -50,6 +51,7 @@ export default function App() {
                       element={<OverallTollAnalysisPage />}
                     />
                     <Route path="exceptions/uploads" element={<ExceptionUploadsPage />} />
+                    <Route path="exceptions/pipeline" element={<ExceptionPipelinePage />} />
                     <Route path="analytics/uploads" element={<AnalyticsUploadsPage />} />
 
                     <Route element={<WriteProtectedRoute />}>

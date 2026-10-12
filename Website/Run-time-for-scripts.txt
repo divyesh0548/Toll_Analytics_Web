@@ -1,0 +1,7 @@
+1 month ETC + VRN upload = 30 Min.
+
+E6 = 9 min for 1 month bassi data
+
+E7 = 20 seconds for 2 month bassi pass fiels.
+
+E10 = 10 Mins for one month of bassi

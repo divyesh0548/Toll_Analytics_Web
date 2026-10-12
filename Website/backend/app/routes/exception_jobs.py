@@ -533,9 +533,12 @@ def mark_job_failed(job_uuid: str):
     from datetime import datetime, timezone
 
     job.status = "failed"
+    payload = request.get_json(silent=True)
+    reason = payload.get("reason") if isinstance(payload, dict) else None
     job.error_message = (
-        str(request.get_json(silent=True) or {}).get("reason")
-        or "Marked failed manually (process was not actually running)."
+        str(reason).strip()
+        if reason
+        else "Marked failed manually (process was not actually running)."
     )
     job.progress_message = "Marked failed — you can Retry."
     job.finished_at = datetime.now(timezone.utc)
@@ -570,6 +573,29 @@ def start_job(job_uuid: str):
     if missing:
         return (
             jsonify({"error": "Missing required uploads: " + ", ".join(missing)}),
+            400,
+        )
+
+    # Analytics (and similar): at least one of several slots must have files.
+    any_slots = [
+        str(key).strip()
+        for key in (program.get("require_any_slots") or [])
+        if str(key).strip()
+    ]
+    if any_slots and not any(files_by_slot.get(key) for key in any_slots):
+        labels = []
+        for slot in program.get("input_slots") or []:
+            if slot.get("key") in any_slots:
+                labels.append(slot.get("label") or slot.get("key"))
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Upload at least one of: "
+                        + ", ".join(labels or any_slots)
+                    ),
+                }
+            ),
             400,
         )
 

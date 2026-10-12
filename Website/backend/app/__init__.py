@@ -20,7 +20,18 @@ def create_app(config_name: str | None = None) -> Flask:
     # Keep terminal clean: hide default request access lines.
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # Browser may hit /api via nginx (same origin) or direct backend.
+    # Ngrok demo origin must be listed for any cross-origin API calls.
+    cors_origins = [
+        o.strip()
+        for o in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,"
+            "https://mariah-pernickety-phraseologically.ngrok-free.dev",
+        ).split(",")
+        if o.strip()
+    ]
+    CORS(app, resources={r"/api/*": {"origins": cors_origins or "*"}})
 
     db.init_app(app)
     migrate.init_app(app, db)
@@ -36,6 +47,7 @@ def create_app(config_name: str | None = None) -> Flask:
         plazas_bp,
         spvs_bp,
     )
+    from app.routes.exception_pipeline import exception_pipeline_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(companies_bp, url_prefix="/api/companies")
@@ -43,6 +55,7 @@ def create_app(config_name: str | None = None) -> Flask:
     app.register_blueprint(plazas_bp, url_prefix="/api/plazas")
     app.register_blueprint(analytics_bp, url_prefix="/api/analytics")
     app.register_blueprint(exception_jobs_bp, url_prefix="/api/exception-jobs")
+    app.register_blueprint(exception_pipeline_bp, url_prefix="/api/exception-pipeline")
 
     from flask import request
     from app.utils.api_log import log_api

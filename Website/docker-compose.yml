@@ -1,0 +1,62 @@
+# Run from Website/:
+#   docker compose up --build
+#
+# Requires Website/backend/.env (see backend/.env.example + DOCKER.md).
+
+name: toll-analytics
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: Website/docker/Dockerfile.backend
+    env_file:
+      - backend/.env
+    environment:
+      TOLL_REPO_ROOT: /app
+      WEBSITE_BACKEND_ROOT: /app/Website/backend
+      EXCEPTION_PROGRAMS_ROOT: "/app/Exeption Programs"
+      PLAZA_DB_UPDATE_ROOT: /app/Plaza_db_update
+      FLASK_ENV: production
+      # Local Chrome in this image — not Selenium Grid
+      EXCEPTION_USE_SELENIUM: "0"
+      E6_USE_SELENIUM_GRID: "0"
+    volumes:
+      # Only scratch dirs — do NOT mount over program source trees
+      - e4_jobs:/app/Exeption Programs/E4/jobs
+      - e5_jobs:/app/Exeption Programs/E5/jobs
+      - e6_jobs:/app/Exeption Programs/E6/jobs
+      - e7_jobs:/app/Exeption Programs/E7/jobs
+      - e9_jobs:/app/Exeption Programs/E9/jobs
+      - e10_jobs:/app/Exeption Programs/E10/jobs
+      - e15_jobs:/app/Exeption Programs/E15/jobs
+      - plaza_jobs:/app/Plaza_db_update/jobs
+      # Full Exempt writes process folders under File_Process/.../4_Full_Exempt_Pipeline
+      # (same tree as portal assets) — leave on container FS; do not volume-mount over it.
+      - vil_jobs:/app/Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/valid_invalid_lookup/jobs
+    shm_size: "2gb"
+    mem_limit: 16g
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: Website/docker/Dockerfile.frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  e4_jobs:
+  e5_jobs:
+  e6_jobs:
+  e7_jobs:
+  e9_jobs:
+  e10_jobs:
+  e15_jobs:
+  plaza_jobs:
+  vil_jobs:

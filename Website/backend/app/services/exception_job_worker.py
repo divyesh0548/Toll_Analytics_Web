@@ -103,30 +103,30 @@ def _print_job_runtime(job: ExceptionJob, elapsed_sec: float, *, ok: bool) -> No
 
 
 def _backend_env_path() -> Path:
-    # .../Website/backend/app/services/this_file.py → Website/backend/.env
-    return Path(__file__).resolve().parents[2] / ".env"
+    from app.services.repo_paths import backend_env_path
+
+    return backend_env_path()
 
 
-def _build_full_exempt_subprocess_env() -> dict[str, str]:
+def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
     """
-    Build env for the Full Exempt subprocess.
+    Single source of truth: Website/backend/.env (+ process env).
 
-    Header keywords load from RDS_DB_NAME=nhit (nhit_file_process).
-    Metrics use Toll_Analytics_DB. Do not map DB_NAME → RDS_DB_NAME.
-
-    Always re-read Website/backend/.env so a long-lived Flask process still
-    picks up RDS_* even if it was started before those keys were added.
+    Do not load Exeption Programs/.env or E4/.env — merge those keys into
+    backend/.env instead (see backend/.env.example).
     """
+    from app.services.repo_paths import (
+        backend_root,
+        exception_programs_root,
+        plaza_db_update_root,
+        repo_root,
+    )
+
     env: dict[str, str] = {
         str(k): str(v) for k, v in os.environ.items() if v is not None
     }
-
-    for env_path in (
-        _backend_env_path(),
-        exempt_portal_root().parent / ".env",  # Exeption Programs/.env
-    ):
-        if not env_path.is_file():
-            continue
+    env_path = _backend_env_path()
+    if env_path.is_file():
         for key, value in dotenv_values(env_path).items():
             if value is None:
                 continue
@@ -146,61 +146,52 @@ def _build_full_exempt_subprocess_env() -> dict[str, str]:
     if env.get("DB_NAME") and not env.get("Toll_Analytics_DB"):
         env["Toll_Analytics_DB"] = env["DB_NAME"]
     env.setdefault("Exception_Metrics_Table", "audit_exception_metrics")
+    # Path roots for scripts inside the container / local checkout.
+    env.setdefault("TOLL_REPO_ROOT", str(repo_root()))
+    env.setdefault("EXCEPTION_PROGRAMS_ROOT", str(exception_programs_root()))
+    env.setdefault("PLAZA_DB_UPDATE_ROOT", str(plaza_db_update_root()))
+    env.setdefault("WEBSITE_BACKEND_ROOT", str(backend_root()))
     # Avoid Windows cp1252 crashes when child scripts print Unicode (e.g. →).
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
 
-    missing_rds = [
-        key
-        for key in ("RDS_HOST", "RDS_DB_NAME", "RDS_USER", "RDS_PASSWORD")
-        if not str(env.get(key) or "").strip()
-    ]
-    if missing_rds:
-        raise RuntimeError(
-            "Missing Exempt Query DB settings (need nhit DB for header keywords): "
-            + ", ".join(missing_rds)
-            + f". Expected in {_backend_env_path()}"
-        )
+    if require_rds:
+        missing_rds = [
+            key
+            for key in ("RDS_HOST", "RDS_DB_NAME", "RDS_USER", "RDS_PASSWORD")
+            if not str(env.get(key) or "").strip()
+        ]
+        if missing_rds:
+            raise RuntimeError(
+                "Missing Exempt Query DB settings (need nhit DB for header keywords): "
+                + ", ".join(missing_rds)
+                + f". Expected in {env_path}"
+            )
     return env
+
+
+def _build_full_exempt_subprocess_env() -> dict[str, str]:
+    """Full Exempt: RDS nhit for headers + Toll_Analytics_DB for metrics."""
+    return _build_job_subprocess_env(require_rds=True)
 
 
 def _build_e4_subprocess_env() -> dict[str, str]:
-    """
-    Env for E4: submissions DB (ETC/VRN download) + toll_analytics (metrics/S3).
+    """Shared env for E4–E15 / analytics job subprocesses."""
+    return _build_job_subprocess_env(require_rds=False)
 
-    Loads Website/backend/.env, Exeption Programs/.env, and E4/.env.
-    """
-    env: dict[str, str] = {
-        str(k): str(v) for k, v in os.environ.items() if v is not None
+
+def _popen_job(cmd: list[str], *, cwd: str, env: dict[str, str]) -> subprocess.Popen:
+    """Start a job child; new session on Linux so we can kill the process group."""
+    kwargs: dict = {
+        "cwd": cwd,
+        "env": env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
     }
-    for env_path in (
-        _backend_env_path(),
-        exempt_portal_root().parent / ".env",
-        e4_program_root() / ".env",
-    ):
-        if not env_path.is_file():
-            continue
-        for key, value in dotenv_values(env_path).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
-
-    if env.get("DB_HOST") and not env.get("RDS_HOST"):
-        env["RDS_HOST"] = env["DB_HOST"]
-    if env.get("DB_PORT") and not env.get("RDS_PORT"):
-        env["RDS_PORT"] = env["DB_PORT"]
-    if env.get("DB_USER") and not env.get("RDS_USER"):
-        env["RDS_USER"] = env["DB_USER"]
-    if env.get("DB_PASSWORD") and not env.get("RDS_PASSWORD"):
-        env["RDS_PASSWORD"] = env["DB_PASSWORD"]
-    if env.get("DB_NAME") and not env.get("Toll_Analytics_DB"):
-        env["Toll_Analytics_DB"] = env["DB_NAME"]
-    env.setdefault("Exception_Metrics_Table", "audit_exception_metrics")
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
-    return env
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(cmd, **kwargs)
 
 
 def recover_orphaned_running_jobs() -> int:
@@ -282,7 +273,7 @@ def start_exception_job_worker(app) -> None:
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
-    """Force-kill child and grandchildren so Windows releases file locks."""
+    """Force-kill child and grandchildren (file locks / Chrome leftovers)."""
     if proc.poll() is not None:
         return
     pid = proc.pid
@@ -295,11 +286,19 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
                 check=False,
             )
         else:
-            proc.terminate()
+            import signal
+
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
     except Exception:  # noqa: BLE001
         logger.exception("Failed to kill process tree for pid=%s", pid)
     try:
@@ -343,6 +342,14 @@ def _process_one_queued_job() -> None:
     job.error_message = None
     db.session.commit()
 
+    from app.services.exception_pipeline_service import (
+        apply_pipeline_env_for_job,
+        clear_pipeline_env,
+        on_pipeline_child_finished,
+        register_full_exempt_final_local,
+    )
+
+    pipeline_mode = apply_pipeline_env_for_job(job)
     process_dir: Path | None = None
     child: subprocess.Popen | None = None
     failed = False
@@ -374,9 +381,20 @@ def _process_one_queued_job() -> None:
         job.progress_message = "Completed successfully."
         job.finished_at = _utc_now()
         db.session.commit()
+        if (
+            pipeline_mode
+            and job.program_code == FULL_EXEMPT_PROGRAM["code"]
+            and process_dir is not None
+        ):
+            try:
+                register_full_exempt_final_local(job, process_dir)
+            except Exception:  # noqa: BLE001
+                logger.exception("Pipeline full_exempt_final register failed")
         _print_job_runtime(job, time.perf_counter() - t0, ok=True)
         # Delete S3 inputs only after a fully successful run (retry keeps them).
-        _cleanup_input_files(job)
+        # Pipeline children re-use monthly S3 keys — do not delete those objects.
+        if not pipeline_mode:
+            _cleanup_input_files(job)
         # Analytics has no downloadable outputs — free local scratch.
         if job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
             _release_job_resources(process_dir, child)
@@ -392,6 +410,12 @@ def _process_one_queued_job() -> None:
         db.session.commit()
         _print_job_runtime(job, time.perf_counter() - t0, ok=False)
     finally:
+        if pipeline_mode:
+            try:
+                on_pipeline_child_finished(job)
+            except Exception:  # noqa: BLE001
+                logger.exception("Pipeline batch advance failed for %s", job.job_uuid)
+            clear_pipeline_env()
         # Kill leftover children so Windows releases file locks.
         # Delete workspace only on failure (keep outputs after success).
         # Analytics success already cleaned above; failed analytics also cleans.
@@ -475,7 +499,7 @@ def _run_full_exempt_job(
 
     env = _build_full_exempt_subprocess_env()
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -490,9 +514,6 @@ def _run_full_exempt_job(
         ],
         cwd=str(portal),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -574,7 +595,7 @@ def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     output_file = output_dir / "merged_pass_files.xlsx"
     env = _build_e4_subprocess_env()
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -591,9 +612,6 @@ def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         ],
         cwd=str(e4_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -692,7 +710,7 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
     # Entity / plaza rates key from shared map (not Scripts plaza_rates).
     env["VALID_INVALID_PLAZA_NAME"] = entity_name
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -709,9 +727,6 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
         ],
         cwd=str(script_dir),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -736,6 +751,12 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
 
 
 def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    """
+    Single E05 pipeline:
+      1) lifecycle/ETC → Valid/Invalid Lookup → invalid_table.csv
+      2) invalid_table + uploaded IHMCL scrape → Main_E5 (metrics + S3)
+    Live scrape is not used.
+    """
     entity_name = require_entity_name(job.plaza_identifier)
     previous_process_name = str(job.process_name or "").strip()
     process_name = f"e5_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
@@ -747,93 +768,122 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     if not e5_root.is_dir():
         raise RuntimeError(f"E5 program folder not found at {e5_root}")
 
+    script_dir = valid_invalid_script_dir()
+    if not script_dir.is_dir():
+        raise RuntimeError(f"Valid/Invalid script folder not found: {script_dir}")
+
     jobs_root = e5_root / "jobs"
     jobs_root.mkdir(parents=True, exist_ok=True)
     if previous_process_name and previous_process_name != process_name:
         _safe_rmtree(jobs_root / previous_process_name)
 
     process_dir = jobs_root / process_name
-    invalid_dir = process_dir / "invalid_table"
+    lifecycle_dir = process_dir / "lifecycle"
     ihmcl_dir = process_dir / "ihmcl"
-    output_dir = process_dir / "output"
-    invalid_dir.mkdir(parents=True, exist_ok=True)
-    ihmcl_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    vil_output_dir = process_dir / "valid_invalid_output"
+    e5_output_dir = process_dir / "output"
+    for folder in (lifecycle_dir, ihmcl_dir, vil_output_dir, e5_output_dir):
+        folder.mkdir(parents=True, exist_ok=True)
 
-    invalid_files = (
-        ExceptionJobFile.query.filter_by(job_id=job.id, slot="invalid_table")
-        .order_by(ExceptionJobFile.id.asc())
-        .all()
-    )
-    if not invalid_files:
+    lifecycle_paths = _download_slot_files(job, "lifecycle", lifecycle_dir)
+    if not lifecycle_paths:
+        raise RuntimeError("No lifecycle / ETC file on this E05 job.")
+    lifecycle_dest = lifecycle_paths[0]
+
+    ihmcl_paths = _download_slot_files(job, "ihmcl", ihmcl_dir)
+    if not ihmcl_paths:
         raise RuntimeError(
-            "No invalid table on this E05 job. Upload one or attach a staging file."
+            "No scraped IHMCL vehicle file on this E05 job. Upload is required."
         )
-    invalid_dest = invalid_dir / shorten_local_filename(
-        Path(invalid_files[0].original_file_name).name
-    )
-    download_to_path(invalid_files[0].s3_key, invalid_dest)
+    ihmcl_dest = ihmcl_paths[0]
 
-    ihmcl_files = (
-        ExceptionJobFile.query.filter_by(job_id=job.id, slot="ihmcl")
-        .order_by(ExceptionJobFile.id.asc())
-        .all()
-    )
-    ihmcl_dest: Path | None = None
-    if ihmcl_files:
-        ihmcl_dest = ihmcl_dir / shorten_local_filename(
-            Path(ihmcl_files[0].original_file_name).name
-        )
-        download_to_path(ihmcl_files[0].s3_key, ihmcl_dest)
-        job.progress_message = "Running E05 with uploaded IHMCL file…"
-    else:
-        job.progress_message = (
-            "Running E05 (live IHMCL scrape — see EXCEPTION_USE_SELENIUM in .env)…"
-        )
+    # --- Step 1: Valid / Invalid Lookup ---
+    job.progress_message = "Running Valid/Invalid Lookup (checkpostmaster + rates)…"
     db.session.commit()
 
-    runner = e5_root / "run_website_e5_job.py"
-    if not runner.is_file():
-        raise RuntimeError(f"E5 runner script missing: {runner}")
+    vil_runner = script_dir / "run_website_valid_invalid_job.py"
+    if not vil_runner.is_file():
+        raise RuntimeError(f"Valid/Invalid runner missing: {vil_runner}")
 
-    env = _build_e4_subprocess_env()
-    # Also load E5/.env for scrape credentials if present.
-    e5_env = e5_root / ".env"
-    if e5_env.is_file():
-        for key, value in dotenv_values(e5_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
-
-    cmd = [
-        sys.executable,
-        str(runner),
-        "--invalid-table",
-        str(invalid_dest),
-        "--plaza-identifier",
-        job.plaza_identifier,
-        "--entity-name",
-        entity_name,
-        "--output-dir",
-        str(output_dir),
-        "--update-metrics",
-        "1",
-        "--upload-output",
-        "1",
-    ]
-    if ihmcl_dest is not None:
-        cmd.extend(["--ihmcl-file", str(ihmcl_dest)])
+    # Full-exempt env for RDS checkpostmaster / header keywords.
+    vil_env = _build_full_exempt_subprocess_env()
+    vil_env["VALID_INVALID_PLAZA_NAME"] = entity_name
 
     global _active_child
-    child = subprocess.Popen(
-        cmd,
+    vil_child = _popen_job(
+        [
+            sys.executable,
+            str(vil_runner),
+            "--lifecycle-file",
+            str(lifecycle_dest),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--entity-name",
+            entity_name,
+            "--output-dir",
+            str(vil_output_dir),
+            "--upload-staging",
+            "0",
+        ],
+        cwd=str(script_dir),
+        env=vil_env,
+    )
+    with _active_child_lock:
+        _active_child = vil_child
+
+    try:
+        vil_stdout, _ = vil_child.communicate()
+    except Exception:
+        _kill_process_tree(vil_child)
+        raise
+
+    vil_combined = (vil_stdout or "").strip()
+    if vil_combined:
+        job.progress_message = vil_combined[-4000:]
+        db.session.commit()
+    if vil_child.returncode != 0:
+        raise RuntimeError(
+            vil_combined[-2000:]
+            if vil_combined
+            else f"Valid/Invalid Lookup failed with exit code {vil_child.returncode}"
+        )
+
+    invalid_dest = vil_output_dir / "invalid_table.csv"
+    if not invalid_dest.is_file():
+        raise RuntimeError(
+            f"Valid/Invalid did not produce invalid_table.csv at {invalid_dest}"
+        )
+
+    # --- Step 2: Incorrect FASTag with uploaded scrape ---
+    job.progress_message = "Running E05 with uploaded IHMCL scrape file…"
+    db.session.commit()
+
+    e5_runner = e5_root / "run_website_e5_job.py"
+    if not e5_runner.is_file():
+        raise RuntimeError(f"E5 runner script missing: {e5_runner}")
+
+    e5_env = _build_e4_subprocess_env()
+    child = _popen_job(
+        [
+            sys.executable,
+            str(e5_runner),
+            "--invalid-table",
+            str(invalid_dest),
+            "--plaza-identifier",
+            job.plaza_identifier,
+            "--entity-name",
+            entity_name,
+            "--output-dir",
+            str(e5_output_dir),
+            "--ihmcl-file",
+            str(ihmcl_dest),
+            "--update-metrics",
+            "1",
+            "--upload-output",
+            "1",
+        ],
         cwd=str(e5_root),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        env=e5_env,
     )
     with _active_child_lock:
         _active_child = child
@@ -846,7 +896,11 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     combined = (stdout or "").strip()
     if combined:
-        job.progress_message = combined[-4000:]
+        # Keep a bit of Valid/Invalid context + E5 tail.
+        merged = ((vil_combined[-1500:] + "\n---\n" if vil_combined else "") + combined)[
+            -4000:
+        ]
+        job.progress_message = merged
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
@@ -930,14 +984,6 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         raise RuntimeError(f"E6 runner script missing: {runner}")
 
     env = _build_e4_subprocess_env()
-    e6_env = e6_root / ".env"
-    if e6_env.is_file():
-        for key, value in dotenv_values(e6_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
 
     output_file = output_dir / "etc_enriched.xlsx"
     cmd = [
@@ -962,13 +1008,10 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         cmd.extend(["--permit-folder", str(permit_dir)])
 
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         cmd,
         cwd=str(e6_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -1046,17 +1089,9 @@ def _run_e7_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     output_file = output_dir / "e7_vc4_loss.csv"
     env = _build_e4_subprocess_env()
-    e7_env = e7_root / ".env"
-    if e7_env.is_file():
-        for key, value in dotenv_values(e7_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
 
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -1073,9 +1108,6 @@ def _run_e7_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         ],
         cwd=str(e7_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -1138,17 +1170,9 @@ def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     output_file = output_dir / "e9_unsettled.csv"
     env = _build_e4_subprocess_env()
-    e9_env = e9_root / ".env"
-    if e9_env.is_file():
-        for key, value in dotenv_values(e9_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
 
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -1165,9 +1189,6 @@ def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         ],
         cwd=str(e9_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -1234,17 +1255,9 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     output_file = output_dir / "e10_vrn_etc_merged.csv"
     env = _build_e4_subprocess_env()
-    e10_env = e10_root / ".env"
-    if e10_env.is_file():
-        for key, value in dotenv_values(e10_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
 
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -1265,9 +1278,6 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         ],
         cwd=str(e10_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -1334,17 +1344,9 @@ def _run_e15_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     output_file = output_dir / "from_to_combined.xlsx"
     env = _build_e4_subprocess_env()
-    e15_env = e15_root / ".env"
-    if e15_env.is_file():
-        for key, value in dotenv_values(e15_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
 
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         [
             sys.executable,
             str(runner),
@@ -1365,9 +1367,6 @@ def _run_e15_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         ],
         cwd=str(e15_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child
@@ -1418,14 +1417,13 @@ def _run_analytics_vrn_etc_job(job: ExceptionJob) -> tuple[Path, subprocess.Pope
     etc_dir.mkdir(parents=True, exist_ok=True)
 
     vrn_paths = _download_slot_files(job, "vrn", vrn_dir)
-    if not vrn_paths:
-        raise RuntimeError("No VRN files on this analytics job.")
     etc_paths = _download_slot_files(job, "etc", etc_dir)
+    if not vrn_paths and not etc_paths:
+        raise RuntimeError("No VRN or ETC files on this analytics job.")
 
     job.progress_message = (
-        f"Running plaza ETL ({len(vrn_paths)} VRN"
-        + (f", {len(etc_paths)} ETC" if etc_paths else ", no ETC")
-        + ")…"
+        "Running plaza ETL ("
+        f"{len(vrn_paths)} VRN, {len(etc_paths)} ETC)…"
     )
     db.session.commit()
 
@@ -1434,20 +1432,10 @@ def _run_analytics_vrn_etc_job(job: ExceptionJob) -> tuple[Path, subprocess.Pope
         raise RuntimeError(f"Analytics runner missing: {runner}")
 
     env = _build_e4_subprocess_env()
-    plaza_env = plaza_root / ".env"
-    if plaza_env.is_file():
-        for key, value in dotenv_values(plaza_env).items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                env[str(key)] = text
 
     cmd = [
         sys.executable,
         str(runner),
-        "--vrn-folder",
-        str(vrn_dir),
         "--plaza-identifier",
         job.plaza_identifier,
         "--plaza-name",
@@ -1455,17 +1443,16 @@ def _run_analytics_vrn_etc_job(job: ExceptionJob) -> tuple[Path, subprocess.Pope
         "--start-date-limit",
         "2000-01-01",
     ]
+    if vrn_paths:
+        cmd.extend(["--vrn-folder", str(vrn_dir)])
     if etc_paths:
         cmd.extend(["--etc-folder", str(etc_dir)])
 
     global _active_child
-    child = subprocess.Popen(
+    child = _popen_job(
         cmd,
         cwd=str(plaza_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
     )
     with _active_child_lock:
         _active_child = child

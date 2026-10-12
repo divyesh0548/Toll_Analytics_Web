@@ -345,7 +345,9 @@ export function PortfolioPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
-            <Link to="/exceptions/uploads">Exception uploads</Link>
+            <a href="/exceptions/uploads" target="_blank" rel="noopener noreferrer">
+              Exception uploads
+            </a>
           </Button>
           <Button asChild variant="outline">
             <a href="/analytics/uploads" target="_blank" rel="noopener noreferrer">

@@ -10,6 +10,13 @@ from app.models.class_distribution_per_lane import ClassDistributionPerLane
 from app.models.company import Company
 from app.models.company_contact import CompanyContact
 from app.models.exception_job import ExceptionJob, ExceptionJobFile
+from app.models.exception_pipeline import (
+    ExceptionPipelineBatch,
+    ExceptionPipelineBatchStep,
+    PipelineAuditExceptionMetric,
+    PipelineAuditExceptionOutputFile,
+    PlazaMonthlyExceptionInput,
+)
 from app.models.gap_distribution import GapDistributionPerLane
 from app.models.mop_distribution_per_class import MopDistributionPerClass
 from app.models.mop_distribution_per_lane import MopDistributionPerLane
@@ -35,4 +42,9 @@ __all__ = [
     "AuditExceptionOutputFile",
     "ExceptionJob",
     "ExceptionJobFile",
+    "PlazaMonthlyExceptionInput",
+    "ExceptionPipelineBatch",
+    "ExceptionPipelineBatchStep",
+    "PipelineAuditExceptionMetric",
+    "PipelineAuditExceptionOutputFile",
 ]

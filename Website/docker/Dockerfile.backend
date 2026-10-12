@@ -1,0 +1,64 @@
+# Fat backend image: Flask API + exception/analytics job scripts + local Chrome.
+# Build from repo root:
+#   docker build -f Website/docker/Dockerfile.backend -t toll-backend .
+
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    PYTHONUTF8=1 \
+    TOLL_REPO_ROOT=/app \
+    WEBSITE_BACKEND_ROOT=/app/Website/backend \
+    EXCEPTION_PROGRAMS_ROOT="/app/Exeption Programs" \
+    PLAZA_DB_UPDATE_ROOT=/app/Plaza_db_update \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# System libs for pandas/openpyxl + Google Chrome (local scrape, not Selenium Grid)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        unzip \
+        fonts-liberation \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libcups2 \
+        libdbus-1-3 \
+        libdrm2 \
+        libgbm1 \
+        libgtk-3-0 \
+        libnspr4 \
+        libnss3 \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxrandr2 \
+        xdg-utils \
+    && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Website/backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+
+# App + job scripts (same relative layout as the git repo)
+COPY Website/backend /app/Website/backend
+COPY ["Exeption Programs", "/app/Exeption Programs"]
+COPY Plaza_db_update /app/Plaza_db_update
+
+WORKDIR /app/Website/backend
+
+EXPOSE 5000
+
+# One process: gunicorn + in-process job worker thread (do not scale replicas
+# of this service without an external job lock).
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "4", "--timeout", "0", "run:app"]

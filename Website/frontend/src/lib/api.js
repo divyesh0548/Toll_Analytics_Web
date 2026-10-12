@@ -177,14 +177,111 @@ export function getPlazaNumbers(plazaIdentifier, period = 'mtd', range = {}) {
   return request(`/api/analytics/plazas/${plazaIdentifier}/numbers?${params.toString()}`)
 }
 
-export function getPlazaAuditExceptions(plazaIdentifier, { year, month } = {}) {
+export function getPlazaAuditExceptions(
+  plazaIdentifier,
+  { year, month, metricsSource = 'manual' } = {},
+) {
   const params = new URLSearchParams()
   if (year != null && year !== '') params.set('year', String(year))
   if (month != null && month !== '') params.set('month', String(month))
+  if (metricsSource) params.set('metrics_source', String(metricsSource))
   const query = params.toString()
   return request(
     `/api/plazas/${plazaIdentifier}/audit-exceptions${query ? `?${query}` : ''}`,
   )
+}
+
+export function getExceptionPipelineCatalog() {
+  return request('/api/exception-pipeline/catalog')
+}
+
+export function getExceptionPipelinePeriod({ plazaIdentifier, year, month }) {
+  const params = new URLSearchParams({
+    plaza_identifier: plazaIdentifier,
+    year: String(year),
+    month: String(month),
+  })
+  return request(`/api/exception-pipeline/period?${params.toString()}`)
+}
+
+export async function uploadExceptionPipelineInput({
+  plazaIdentifier,
+  year,
+  month,
+  slot,
+  file,
+}) {
+  const fileName = file?.name || 'upload.bin'
+  const contentType = file?.type || 'application/octet-stream'
+  const fileSize = Number(file?.size || 0)
+  if (!fileSize) {
+    const error = new Error('Uploaded file is empty')
+    error.status = 400
+    throw error
+  }
+  const signed = await request('/api/exception-pipeline/inputs/presign', {
+    method: 'POST',
+    body: JSON.stringify({
+      plaza_identifier: plazaIdentifier,
+      year,
+      month,
+      slot,
+      file_name: fileName,
+      content_type: contentType,
+      file_size_bytes: fileSize,
+    }),
+  })
+  const putHeaders = { 'Content-Type': signed.content_type || contentType }
+  const putResponse = await fetch(signed.upload_url, {
+    method: 'PUT',
+    headers: putHeaders,
+    body: file,
+  })
+  if (!putResponse.ok) {
+    const detail = await putResponse.text().catch(() => '')
+    const error = new Error(
+      detail?.trim()
+        ? `S3 upload failed (${putResponse.status}): ${detail.trim().slice(0, 200)}`
+        : `S3 upload failed (${putResponse.status})`,
+    )
+    error.status = putResponse.status
+    throw error
+  }
+  return request('/api/exception-pipeline/inputs/complete', {
+    method: 'POST',
+    body: JSON.stringify({
+      plaza_identifier: plazaIdentifier,
+      year,
+      month,
+      slot,
+      s3_key: signed.s3_key,
+      file_url: signed.file_url,
+      original_file_name: signed.original_file_name || fileName,
+      file_size_bytes: fileSize,
+      content_type: signed.content_type || contentType,
+    }),
+  })
+}
+
+export function deleteExceptionPipelineInput(fileId) {
+  return request(`/api/exception-pipeline/inputs/${fileId}`, { method: 'DELETE' })
+}
+
+export function createExceptionPipelineBatch(payload) {
+  return request('/api/exception-pipeline/batches', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function startExceptionPipelineBatch(batchUuid) {
+  return request(`/api/exception-pipeline/batches/${batchUuid}/start`, {
+    method: 'POST',
+  })
+}
+
+export function getExceptionPipelineBatch(batchUuid) {
+  return request(`/api/exception-pipeline/batches/${batchUuid}`)
 }
 
 export function getPlazaCalendarEvents(plazaIdentifier, { start, end, eventType } = {}) {
@@ -306,15 +403,27 @@ export async function uploadExceptionJobFile(jobUuid, slot, file) {
   })
 
   // 2) Browser uploads directly to S3 (does not go through Flask).
+  // Must send the exact Content-Type that was signed (see backend presign).
   const putHeaders = {}
-  if (signed.content_type) {
-    putHeaders['Content-Type'] = signed.content_type
+  const signedType = signed.content_type || contentType || 'application/octet-stream'
+  putHeaders['Content-Type'] = signedType
+  let putResponse
+  try {
+    putResponse = await fetch(signed.upload_url, {
+      method: 'PUT',
+      headers: putHeaders,
+      body: file,
+    })
+  } catch (err) {
+    const error = new Error(
+      'S3 upload blocked (network/CORS). In AWS S3 → bucket → Permissions → ' +
+        'Cross-origin resource sharing (CORS), allow PUT from this page origin ' +
+        '(localhost:8080 and/or your ngrok HTTPS URL). See Website/DOCKER.md § S3 CORS. ' +
+        `(${err?.message || 'Failed to fetch'})`,
+    )
+    error.status = 0
+    throw error
   }
-  const putResponse = await fetch(signed.upload_url, {
-    method: 'PUT',
-    headers: putHeaders,
-    body: file,
-  })
   if (!putResponse.ok) {
     const detail = await putResponse.text().catch(() => '')
     const error = new Error(

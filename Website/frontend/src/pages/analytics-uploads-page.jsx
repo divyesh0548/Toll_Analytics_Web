@@ -132,7 +132,7 @@ export function AnalyticsUploadsPage() {
         plaza_identifier: plazaIdentifier,
       })
       setActiveJob(data.job)
-      setNotice('Job created. Upload VRN (and optional ETC), then Start.')
+      setNotice('Job created. Upload VRN and/or ETC files, then Start.')
       const jobData = await listExceptionJobs(undefined, selectedProgram.code)
       setJobs(jobData.jobs || [])
     } catch (err) {
@@ -254,9 +254,9 @@ export function AnalyticsUploadsPage() {
           </p>
           <h1 className="text-display">VRN / ETC upload</h1>
           <p className="max-w-2xl text-body text-muted-foreground">
-            Upload plaza VRN and optional ETC workbooks to S3, then queue the plaza ETL.
-            Metrics update only when the new value is greater. S3 inputs are removed only
-            after a successful run; failed jobs keep files for retry.
+            Upload plaza VRN and/or ETC workbooks to S3 (at least one), then queue the
+            plaza ETL. Metrics update only when the new value is greater. S3 inputs are
+            removed only after a successful run; failed jobs keep files for retry.
           </p>
         </div>
       </div>
@@ -375,9 +375,7 @@ export function AnalyticsUploadsPage() {
                             {slot.label}
                             {slot.required ? (
                               <span className="text-primary"> *</span>
-                            ) : (
-                              <span className="text-small text-muted-foreground"> (optional)</span>
-                            )}
+                            ) : null}
                           </p>
                           {canEdit ? (
                             <label

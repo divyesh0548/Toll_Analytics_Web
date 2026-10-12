@@ -17,7 +17,8 @@ export function Navbar() {
     ? [{ to: '/admin/users', label: 'Users' }]
     : [
         { to: '/portfolio', label: 'Portfolio' },
-        { to: '/exceptions/uploads', label: 'Exceptions' },
+        { to: '/exceptions/uploads', label: 'Exceptions', newTab: true },
+        { to: '/exceptions/pipeline', label: 'Exception pipeline', newTab: true },
         { to: '/analytics/uploads', label: 'Analytics upload', newTab: true },
       ]
 
@@ -34,9 +35,14 @@ export function Navbar() {
           <div className="flex items-center gap-6">
             <Link
               to={isSiteAdmin ? '/admin/users' : '/portfolio'}
-              className="text-subheader text-primary"
+              className="flex items-center gap-2 text-subheader text-primary"
             >
-              Toll Analytics
+              <img
+                src="/Swastik_new.png"
+                alt=""
+                className="h-8 w-8 shrink-0 rounded-sm object-cover"
+              />
+              <span>Swastik Dashboard</span>
             </Link>
             <nav className="hidden items-center gap-1 sm:flex">
               {navItems.map((item) =>
@@ -104,7 +110,7 @@ export function Navbar() {
         open={confirmLogout}
         onClose={() => setConfirmLogout(false)}
         title="Confirm logout"
-        description="Are you sure you want to log out of Toll Analytics?"
+        description="Are you sure you want to log out of Swastik Dashboard?"
         className="max-w-sm"
       >
         <div className="flex justify-end gap-2">

@@ -59,6 +59,7 @@ export function PlazaDetailPage() {
   const [numbersLoading, setNumbersLoading] = useState(false)
   const [numbersError, setNumbersError] = useState('')
   const [auditPeriod, setAuditPeriod] = useState(defaultAuditPeriod)
+  const [auditMetricsSource, setAuditMetricsSource] = useState('manual')
   const [auditData, setAuditData] = useState(null)
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditError, setAuditError] = useState('')
@@ -155,6 +156,7 @@ export function PlazaDetailPage() {
         const data = await getPlazaAuditExceptions(plazaIdentifier, {
           year: auditPeriod.year,
           month: auditPeriod.wholeYear ? undefined : auditPeriod.month,
+          metricsSource: auditMetricsSource,
         })
         if (!active) return
         setAuditData(data)
@@ -170,7 +172,14 @@ export function PlazaDetailPage() {
     return () => {
       active = false
     }
-  }, [plazaIdentifier, tab, auditPeriod.year, auditPeriod.month, auditPeriod.wholeYear])
+  }, [
+    plazaIdentifier,
+    tab,
+    auditPeriod.year,
+    auditPeriod.month,
+    auditPeriod.wholeYear,
+    auditMetricsSource,
+  ])
 
   useEffect(() => {
     if (!plazaIdentifier || tab !== 'traffic') return undefined
@@ -424,6 +433,7 @@ export function PlazaDetailPage() {
           yearValue={auditPeriod.year}
           monthValue={auditPeriod.month}
           wholeYear={auditPeriod.wholeYear}
+          metricsSource={auditMetricsSource}
           onYearChange={(year) =>
             setAuditPeriod((prev) => ({ ...prev, year: String(year) }))
           }
@@ -441,6 +451,7 @@ export function PlazaDetailPage() {
               return { ...prev, wholeYear: false, month: fallback }
             })
           }
+          onMetricsSourceChange={setAuditMetricsSource}
         />
       )}
 

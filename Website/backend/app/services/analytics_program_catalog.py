@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 ANALYTICS_VRN_ETC_PROGRAM = {
     "code": "analytics_vrn_etc",
     "label": "VRN + ETC analytics load",
     "description": (
-        "Upload VRN (and optional ETC) workbooks. Loads hourly mop/class/lane/gap "
-        "insights from VRN and revenue_distribution_per_class from ETC. "
-        "Existing day/hour rows update only when the new metric is greater. "
-        "S3 inputs are deleted only after a successful run; failed jobs keep "
-        "files so you can fix and retry."
+        "Upload VRN and/or ETC workbooks (at least one slot required). "
+        "VRN loads hourly mop/class/lane/gap insights; ETC loads "
+        "revenue_distribution_per_class. Existing day/hour rows update only "
+        "when the new metric is greater. S3 inputs are deleted only after a "
+        "successful run; failed jobs keep files so you can fix and retry."
     ),
     "group_exception_codes": [],
     "group_exception_type_ids": [],
@@ -21,17 +19,19 @@ ANALYTICS_VRN_ETC_PROGRAM = {
     "uses_entity_map": False,
     "updates_metrics": False,
     "is_analytics": True,
+    # Start is allowed when any of these slots has files (neither is mandatory alone).
+    "require_any_slots": ["vrn", "etc"],
     "input_slots": [
         {
             "key": "vrn",
             "label": "VRN files",
-            "required": True,
+            "required": False,
             "multiple": True,
             "accept": ".xlsx,.xls,.xlsm,.csv",
         },
         {
             "key": "etc",
-            "label": "ETC files (optional)",
+            "label": "ETC files",
             "required": False,
             "multiple": True,
             "accept": ".xlsx,.xls,.xlsm,.csv",
@@ -56,6 +56,7 @@ def is_analytics_program_code(code: str) -> bool:
     return get_analytics_program(code) is not None
 
 
-def plaza_db_update_root() -> Path:
-    # Website/backend/app/services → repo root → Plaza_db_update
-    return Path(__file__).resolve().parents[4] / "Plaza_db_update"
+def plaza_db_update_root():
+    from app.services.repo_paths import plaza_db_update_root as resolve_plaza_root
+
+    return resolve_plaza_root()

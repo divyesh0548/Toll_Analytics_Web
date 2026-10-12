@@ -26,7 +26,7 @@ const PROGRAM_SHORT = {
   e04: 'E04',
   e05_group: 'E05',
   valid_invalid_lookup: 'Valid/Invalid',
-  e05: 'Incorrect FASTag',
+  e05: 'E05',
   e06: 'E06 Permit',
   e07: 'E07 Pass Loss',
   e09: 'E09 Unsettled',

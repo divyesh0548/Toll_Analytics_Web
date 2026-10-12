@@ -101,24 +101,54 @@ E04_PROGRAM = {
     ],
 }
 
-# Process A — produces staging invalid_table for E05 (no metrics).
-VALID_INVALID_PROCESS = {
-    "code": "valid_invalid_lookup",
-    "label": "1. Valid / Invalid Lookup",
+# Single E05 job: lifecycle → Valid/Invalid (internal) → E05 with uploaded scrape.
+# No live IHMCL scrape; user always provides the scraped vehicle file.
+E05_PROGRAM = {
+    "code": "e05",
+    "label": "E05 — Incorrect FASTag issuance",
     "description": (
-        "Upload lifecycle/ETC; builds invalid_table and stores it on S3 as "
-        "staging (not shown in Audit downloads). Does not update metrics. "
-        "Requires checkpostmaster (RDS). Rates from E4 plaza_rates via "
-        "plaza_entity_map."
+        "Upload lifecycle/ETC and a scraped IHMCL vehicle file. "
+        "Runs Valid/Invalid Lookup internally, then Incorrect FASTag "
+        "(metrics + final S3). No live scrape. "
+        "Plaza only — entity_name from plaza_entity_map.json."
     ),
     "group_exception_codes": ["E05"],
     "group_exception_type_ids": [5],
     "enabled": True,
     "requires_pipeline_plaza_key": False,
     "uses_entity_map": True,
-    "updates_metrics": False,
-    "produces_staging_invalid": True,
+    "updates_metrics": True,
+    "produces_staging_invalid": False,
     "allows_staging_invalid_pick": False,
+    # Include legacy prep jobs in the Recent list on this card.
+    "job_program_codes": ["e05", "valid_invalid_lookup"],
+    "input_slots": [
+        {
+            "key": "lifecycle",
+            "label": "Lifecycle / ETC file",
+            "required": True,
+            "multiple": False,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+        {
+            "key": "ihmcl",
+            "label": "Scraped vehicle data (IHMCL)",
+            "required": True,
+            "multiple": False,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
+# Legacy aliases (old queued jobs / worker imports).
+E05_MAIN_PROCESS = E05_PROGRAM
+VALID_INVALID_PROGRAM = {
+    "code": "valid_invalid_lookup",
+    "label": "Valid / Invalid Lookup (legacy)",
+    "enabled": False,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": True,
+    "updates_metrics": False,
     "input_slots": [
         {
             "key": "lifecycle",
@@ -129,68 +159,6 @@ VALID_INVALID_PROCESS = {
         },
     ],
 }
-
-# Process B — Incorrect FASTag issuance (metrics + final S3).
-E05_MAIN_PROCESS = {
-    "code": "e05",
-    "label": "2. Incorrect FASTag issuance",
-    "description": (
-        "Choose an invalid table from Valid/Invalid (step 1) or upload one. "
-        "Optionally upload an IHMCL scrape file, or live-scrape "
-        "(EXCEPTION_USE_SELENIUM in .env). Updates E05 metrics and uploads "
-        "final output to S3."
-    ),
-    "group_exception_codes": ["E05"],
-    "group_exception_type_ids": [5],
-    "enabled": True,
-    "requires_pipeline_plaza_key": False,
-    "uses_entity_map": True,
-    "updates_metrics": True,
-    "produces_staging_invalid": False,
-    "allows_staging_invalid_pick": True,
-    "input_slots": [
-        {
-            "key": "invalid_table",
-            "label": "Invalid table",
-            "required": True,
-            "multiple": False,
-            "accept": ".xlsx,.xls,.xlsm,.csv",
-            "or_staging_pick": True,
-        },
-        {
-            "key": "ihmcl",
-            "label": "IHMCL output (optional — skips live scrape)",
-            "required": False,
-            "multiple": False,
-            "accept": ".xlsx,.xls,.xlsm,.csv",
-        },
-    ],
-}
-
-# One catalog card / page for both E05 processes (not separate links).
-E05_PROGRAM = {
-    "code": "e05_group",
-    "label": "E05 — Incorrect FASTag issuance",
-    "description": (
-        "Two steps on one page: Valid/Invalid Lookup (staging invalid table), "
-        "then Incorrect FASTag issuance (metrics + final S3). "
-        "Plaza only — entity_name from plaza_entity_map.json."
-    ),
-    "group_exception_codes": ["E05"],
-    "group_exception_type_ids": [5],
-    "enabled": True,
-    "is_process_group": True,
-    "requires_pipeline_plaza_key": False,
-    "uses_entity_map": True,
-    "updates_metrics": True,
-    "input_slots": [],
-    "processes": [VALID_INVALID_PROCESS, E05_MAIN_PROCESS],
-    # Job list for this page includes both process codes.
-    "job_program_codes": ["valid_invalid_lookup", "e05"],
-}
-
-# Keep aliases for worker imports.
-VALID_INVALID_PROGRAM = VALID_INVALID_PROCESS
 
 E06_PROGRAM = {
     "code": "e06",
@@ -412,52 +380,55 @@ def job_list_codes_for_program(code: str) -> list[str]:
 
 
 def _repo_root() -> Path:
-    # Website/backend/app/services → repo root
-    return Path(__file__).resolve().parents[4]
+    from app.services.repo_paths import repo_root
+
+    return repo_root()
+
+
+def _exception_programs_root() -> Path:
+    from app.services.repo_paths import exception_programs_root
+
+    return exception_programs_root()
 
 
 def exempt_portal_root() -> Path:
     """Path to the copied Exempt Query portal."""
-    return (
-        _repo_root()
-        / "Exeption Programs"
-        / "Exemptio query E1-2-3-13-14"
-    )
+    return _exception_programs_root() / "Exemptio query E1-2-3-13-14"
 
 
 def e4_program_root() -> Path:
     """Path to the E4 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E4"
+    return _exception_programs_root() / "E4"
 
 
 def e5_program_root() -> Path:
     """Path to the E5 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E5"
+    return _exception_programs_root() / "E5"
 
 
 def e6_program_root() -> Path:
     """Path to the E6 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E6"
+    return _exception_programs_root() / "E6"
 
 
 def e7_program_root() -> Path:
     """Path to the E7 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E7"
+    return _exception_programs_root() / "E7"
 
 
 def e9_program_root() -> Path:
     """Path to the E9 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E9"
+    return _exception_programs_root() / "E9"
 
 
 def e10_program_root() -> Path:
     """Path to the E10 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E10"
+    return _exception_programs_root() / "E10"
 
 
 def e15_program_root() -> Path:
     """Path to the E15 exception program folder."""
-    return _repo_root() / "Exeption Programs" / "E15"
+    return _exception_programs_root() / "E15"
 
 
 def valid_invalid_script_dir() -> Path:

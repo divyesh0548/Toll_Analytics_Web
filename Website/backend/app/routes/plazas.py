@@ -118,6 +118,9 @@ def plaza_audit_exceptions(plaza_identifier: str):
     plaza = Plaza.query.filter_by(plaza_identifier=plaza_identifier).first_or_404()
     year_raw = (request.args.get("year") or "").strip()
     month_raw = (request.args.get("month") or "").strip()
+    metrics_source = (request.args.get("metrics_source") or "manual").strip().lower()
+    if metrics_source not in {"manual", "pipeline"}:
+        metrics_source = "manual"
     try:
         year = int(year_raw) if year_raw else None
         month = int(month_raw) if month_raw else None
@@ -129,6 +132,7 @@ def plaza_audit_exceptions(plaza_identifier: str):
             plaza.plaza_identifier,
             year=year,
             month=month,
+            metrics_source=metrics_source,
         )
     except ValueError as exc:
         log_fail(f"audit exceptions failed: {exc}")

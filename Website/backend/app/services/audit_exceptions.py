@@ -12,6 +12,10 @@ from app.models.audit_exception import (
     AuditExceptionOutputFile,
     AuditExceptionType,
 )
+from app.models.exception_pipeline import (
+    PipelineAuditExceptionMetric,
+    PipelineAuditExceptionOutputFile,
+)
 from app.services.audit_exception_bootstrap import ensure_audit_exception_types
 
 
@@ -85,19 +89,28 @@ def _output_file_matches(
     return (year, month) in periods
 
 
+def _metric_models(*, metrics_source: str):
+    """manual = legacy single-run tables; pipeline = one-click tables."""
+    if str(metrics_source or "").strip().lower() == "pipeline":
+        return PipelineAuditExceptionMetric, PipelineAuditExceptionOutputFile
+    return AuditExceptionMetric, AuditExceptionOutputFile
+
+
 def _load_output_files_by_type(
     plaza_identifier: str,
     *,
     year: int,
     month: int | None,
+    metrics_source: str = "manual",
 ) -> dict[int, list[dict]]:
     """Newest-first output files per exception_type_id matching the selection."""
+    _Metric, OutputFile = _metric_models(metrics_source=metrics_source)
     rows = (
-        AuditExceptionOutputFile.query.filter_by(
+        OutputFile.query.filter_by(
             plaza_identifier=plaza_identifier,
             is_final_output=True,
         )
-        .order_by(AuditExceptionOutputFile.created_at.desc())
+        .order_by(OutputFile.created_at.desc())
         .all()
     )
     by_type: dict[int, list[dict]] = defaultdict(list)
@@ -108,12 +121,13 @@ def _load_output_files_by_type(
     return by_type
 
 
-def _available_periods(plaza_identifier: str) -> list[dict]:
+def _available_periods(plaza_identifier: str, *, metrics_source: str = "manual") -> list[dict]:
+    Metric, _Output = _metric_models(metrics_source=metrics_source)
     pair_rows = (
-        db.session.query(AuditExceptionMetric.year, AuditExceptionMetric.month)
-        .filter(AuditExceptionMetric.plaza_identifier == plaza_identifier)
+        db.session.query(Metric.year, Metric.month)
+        .filter(Metric.plaza_identifier == plaza_identifier)
         .distinct()
-        .order_by(AuditExceptionMetric.year.desc(), AuditExceptionMetric.month.desc())
+        .order_by(Metric.year.desc(), Metric.month.desc())
         .all()
     )
     return [
@@ -141,6 +155,7 @@ def build_plaza_audit_exceptions(
     *,
     year: int | None = None,
     month: int | None = None,
+    metrics_source: str = "manual",
 ) -> dict:
     """
     Build audit exceptions for a plaza.
@@ -148,11 +163,14 @@ def build_plaza_audit_exceptions(
     - year + month: single calendar month
     - year only (month is None): sum metrics across all months in that year
     - neither: default to the current calendar month
+    - metrics_source: "manual" (legacy tables) or "pipeline" (one-click tables)
     """
     ensure_audit_exception_types()
+    source = "pipeline" if str(metrics_source or "").strip().lower() == "pipeline" else "manual"
+    Metric, _Output = _metric_models(metrics_source=source)
 
     today = date.today()
-    periods = _available_periods(plaza_identifier)
+    periods = _available_periods(plaza_identifier, metrics_source=source)
     years = _available_years(periods, today)
 
     # Default = current month (not the latest month that happens to have data).
@@ -181,7 +199,7 @@ def build_plaza_audit_exceptions(
             children_by_parent[row.parent_id].append(row)
 
     if month is None:
-        metrics = AuditExceptionMetric.query.filter_by(
+        metrics = Metric.query.filter_by(
             plaza_identifier=plaza_identifier,
             year=year,
         ).all()
@@ -217,7 +235,7 @@ def build_plaza_audit_exceptions(
                 bucket["percentage"] = None
             by_type_id[type_id] = bucket
     else:
-        metrics = AuditExceptionMetric.query.filter_by(
+        metrics = Metric.query.filter_by(
             plaza_identifier=plaza_identifier,
             year=year,
             month=month,
@@ -243,7 +261,7 @@ def build_plaza_audit_exceptions(
         }
 
     output_files_by_type = _load_output_files_by_type(
-        plaza_identifier, year=year, month=month
+        plaza_identifier, year=year, month=month, metrics_source=source
     )
 
     exceptions = []
@@ -319,6 +337,7 @@ def build_plaza_audit_exceptions(
 
     return {
         "plaza_identifier": plaza_identifier,
+        "metrics_source": source,
         "selection": selection,
         "availability": {
             "months": periods,

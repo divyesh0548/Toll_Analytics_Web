@@ -47,7 +47,7 @@ export function defaultAuditPeriod() {
   return {
     year: String(now.getFullYear()),
     month: String(now.getMonth() + 1).padStart(2, '0'),
-    wholeYear: false,
+    wholeYear: true,
   }
 }
 
@@ -179,9 +179,11 @@ export function AuditExceptionsPanel({
   yearValue,
   monthValue,
   wholeYear = false,
+  metricsSource = 'manual',
   onYearChange,
   onMonthChange,
   onWholeYearChange,
+  onMetricsSourceChange,
 }) {
   const yearOptions = useMemo(
     () => buildAuditYearOptions(data?.availability?.years || [], yearValue || data?.selection?.year),
@@ -207,6 +209,18 @@ export function AuditExceptionsPanel({
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
+          <label className="space-y-1">
+            <span className="block text-body text-foreground">Metrics source</span>
+            <select
+              className="h-10 min-w-[10rem] rounded-sm border border-input bg-background px-2 text-body"
+              value={metricsSource || data?.metrics_source || 'manual'}
+              onChange={(e) => onMetricsSourceChange?.(e.target.value)}
+              disabled={loading}
+            >
+              <option value="manual">Single-run (legacy)</option>
+              <option value="pipeline">One-click pipeline</option>
+            </select>
+          </label>
           <label className="flex h-10 items-center gap-2">
             <Switch
               checked={Boolean(wholeYear)}

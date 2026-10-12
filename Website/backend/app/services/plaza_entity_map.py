@@ -6,27 +6,30 @@ import json
 import sys
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-_COMMON_DIR = _REPO_ROOT / "Exeption Programs" / "common"
-_MAP_PATH = _COMMON_DIR / "plaza_entity_map.json"
+def _common_dir() -> Path:
+    from app.services.repo_paths import exception_programs_root
+
+    return exception_programs_root() / "common"
 
 
 def plaza_entity_map_path() -> Path:
-    return _MAP_PATH
+    return _common_dir() / "plaza_entity_map.json"
 
 
 def load_plaza_entity_map() -> dict[str, str]:
-    if str(_COMMON_DIR) not in sys.path:
-        sys.path.insert(0, str(_COMMON_DIR.parent))
+    common_dir = _common_dir()
+    map_path = common_dir / "plaza_entity_map.json"
+    if str(common_dir) not in sys.path:
+        sys.path.insert(0, str(common_dir.parent))
     try:
         from common.plaza_entity_map import load_plaza_entity_map as _load
 
         return _load()
     except Exception:
         # Fallback: read JSON directly if common import fails.
-        if not _MAP_PATH.is_file():
+        if not map_path.is_file():
             return {}
-        raw = json.loads(_MAP_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(map_path.read_text(encoding="utf-8"))
         section = raw.get("plaza_identifier_to_entity_name") or {}
         return {
             str(k).strip(): str(v).strip()
