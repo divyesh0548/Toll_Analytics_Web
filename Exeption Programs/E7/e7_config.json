@@ -4,7 +4,7 @@
   "start_effective_date": "Start Effective Date",
   "end_effective_date": "End Effective Date",
   "issuance_date": "Issuance Date",
-  "issuance_fees": "Issuance Fees (Rs.)",
+  "issuance_fees": "Issuance Fees(Rs.)",
   "payment_mode": "Payment Mode",
   "payment_mode_exclude": "IHMCL_Exemption",
   "months": "Months",

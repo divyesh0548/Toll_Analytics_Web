@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from calendar import month_abbr
+from calendar import month_abbr, monthrange
 from collections import defaultdict
 from datetime import date
+
+from sqlalchemy import text
 
 from app.extensions import db
 from app.models.audit_exception import (
@@ -17,6 +19,7 @@ from app.models.exception_pipeline import (
     PipelineAuditExceptionOutputFile,
 )
 from app.services.audit_exception_bootstrap import ensure_audit_exception_types
+from app.utils.analytics_config import REVENUE_DISTRIBUTION_PER_CLASS_TABLE
 
 
 MONTH_LABELS = list(month_abbr)  # index 1 = Jan
@@ -30,6 +33,38 @@ def _period_label(year: int, month: int | None) -> str:
         return f"{year} (full year)"
     name = MONTH_LABELS[month] if 1 <= month <= 12 else str(month)
     return f"{name} {year}"
+
+
+def _period_date_bounds(year: int, month: int | None) -> tuple[date, date]:
+    if month is None:
+        return date(year, 1, 1), date(year, 12, 31)
+    last = monthrange(year, month)[1]
+    return date(year, month, 1), date(year, month, last)
+
+
+def _plaza_period_revenue(plaza_identifier: str, year: int, month: int | None) -> float | None:
+    """Sum ETC class revenue for the selected month or full year. None if no rows."""
+    start, end = _period_date_bounds(year, month)
+    table = REVENUE_DISTRIBUTION_PER_CLASS_TABLE
+    if not str(table).replace("_", "").isalnum():
+        raise RuntimeError(f"Invalid revenue table name: {table!r}")
+    row = db.session.execute(
+        text(
+            f"""
+            SELECT
+                COUNT(*)::int AS row_count,
+                COALESCE(SUM(revenue), 0)::float AS total
+            FROM {table}
+            WHERE plaza_identifier = :plaza
+              AND date >= :start
+              AND date <= :end
+            """
+        ),
+        {"plaza": plaza_identifier, "start": start, "end": end},
+    ).mappings().first()
+    if not row or int(row["row_count"] or 0) == 0:
+        return None
+    return float(row["total"] or 0)
 
 
 def parse_month_label_periods(month_label: str) -> set[tuple[int, int]]:
@@ -210,20 +245,25 @@ def build_plaza_audit_exceptions(
                 "percentage_values": [],
                 "severity": None,
                 "status": None,
+                "notes": None,
+                "has_metric": False,
             }
         )
         for metric in metrics:
             bucket = totals[metric.exception_type_id]
+            bucket["has_metric"] = True
             if metric.percentage is not None:
                 bucket["percentage_values"].append(float(metric.percentage))
                 continue
             bucket["total_amount"] += float(metric.total_amount or 0)
             bucket["total_count"] += int(metric.total_count or 0)
-            # Keep latest non-empty severity/status if present.
+            # Keep latest non-empty severity/status/notes if present.
             if metric.severity and not bucket["severity"]:
                 bucket["severity"] = metric.severity
             if metric.status and not bucket["status"]:
                 bucket["status"] = metric.status
+            if metric.notes and not bucket["notes"]:
+                bucket["notes"] = metric.notes
         by_type_id = {}
         for type_id, bucket in totals.items():
             percentages = bucket.pop("percentage_values")
@@ -247,6 +287,8 @@ def build_plaza_audit_exceptions(
                 "percentage": float(m.percentage) if m.percentage is not None else None,
                 "severity": m.severity,
                 "status": m.status,
+                "notes": m.notes,
+                "has_metric": True,
             }
             for m in metrics
         }
@@ -258,8 +300,9 @@ def build_plaza_audit_exceptions(
             "percentage": None,
             "severity": None,
             "status": None,
+            "notes": None,
+            "has_metric": False,
         }
-
     output_files_by_type = _load_output_files_by_type(
         plaza_identifier, year=year, month=month, metrics_source=source
     )
@@ -284,6 +327,8 @@ def build_plaza_audit_exceptions(
                     "percentage": child_metric.get("percentage"),
                     "severity": child_metric.get("severity"),
                     "status": child_metric.get("status"),
+                    "notes": child_metric.get("notes"),
+                    "has_metric": bool(child_metric.get("has_metric")),
                     "output_files": list(
                         output_files_by_type.get(int(child.id), [])
                     ),
@@ -293,14 +338,17 @@ def build_plaza_audit_exceptions(
             total_amount = sum(row["total_amount"] or 0 for row in segments)
             total_count = sum(row["total_count"] or 0 for row in segments)
             percentage = None
+            has_metric = any(row.get("has_metric") for row in segments)
         elif metric.get("percentage") is not None:
             total_amount = None
             total_count = None
             percentage = float(metric["percentage"])
+            has_metric = bool(metric.get("has_metric"))
         else:
             total_amount = float(metric["total_amount"] or 0)
             total_count = int(metric["total_count"] or 0)
             percentage = None
+            has_metric = bool(metric.get("has_metric"))
         exceptions.append(
             {
                 "code": exc_type.code,
@@ -311,6 +359,8 @@ def build_plaza_audit_exceptions(
                 "percentage": percentage,
                 "severity": metric.get("severity"),
                 "status": metric.get("status"),
+                "notes": metric.get("notes"),
+                "has_metric": has_metric,
                 "output_files": list(
                     output_files_by_type.get(int(exc_type.id), [])
                 ),
@@ -352,5 +402,7 @@ def build_plaza_audit_exceptions(
                 row["total_count"] for row in exceptions if row["percentage"] is None
             ),
             "exception_types": len(exceptions),
+            # Plaza ETC revenue for the selected month/year (denominator for % of Revenue).
+            "period_revenue": _plaza_period_revenue(plaza_identifier, year, month),
         },
     }

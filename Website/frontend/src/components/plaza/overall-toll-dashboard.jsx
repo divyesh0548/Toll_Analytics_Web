@@ -114,6 +114,49 @@ function comparisonRows(data) {
     .sort((a, b) => b.count - a.count || b.revenue - a.revenue)
 }
 
+/** Keep chart readable: when many points, keep every Nth (always include last). */
+const TREND_MAX_POINTS = 16
+
+function downsampleTrendRows(rows, maxPoints = TREND_MAX_POINTS) {
+  if (!rows?.length || rows.length <= maxPoints) return rows || []
+  const step = Math.ceil(rows.length / maxPoints)
+  const out = []
+  for (let i = 0; i < rows.length; i += step) {
+    out.push(rows[i])
+  }
+  const last = rows[rows.length - 1]
+  if (out[out.length - 1]?.key !== last.key) {
+    out.push(last)
+  }
+  return out
+}
+
+function dailyTrendRows(data) {
+  const revenueDaily = data?.revenue?.daily || []
+  const rows = revenueDaily
+    .map((row) => {
+      const date = String(row.date || '').slice(0, 10)
+      let label = row.label || date
+      if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        const d = new Date(`${date}T00:00:00`)
+        if (!Number.isNaN(d.getTime())) {
+          label = d.toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+          })
+        }
+      }
+      return {
+        key: date || label,
+        label,
+        revenue: Number(row.revenue) || 0,
+        traffic: Number(row.txn_count) || 0,
+      }
+    })
+    .sort((a, b) => String(a.key).localeCompare(String(b.key)))
+  return downsampleTrendRows(rows)
+}
+
 function monthlyTrendRows(data) {
   const revenueMonthly = data?.revenue?.monthly || []
   return revenueMonthly
@@ -127,6 +170,50 @@ function monthlyTrendRows(data) {
       }
     })
     .sort((a, b) => a.key.localeCompare(b.key))
+}
+
+function yearlyTrendRows(data) {
+  const revenueMonthly = data?.revenue?.monthly || []
+  const byYear = new Map()
+  for (const row of revenueMonthly) {
+    const year = Number(row.year)
+    if (!Number.isFinite(year)) continue
+    const existing = byYear.get(year) || { key: String(year), label: String(year), revenue: 0, traffic: 0 }
+    existing.revenue += Number(row.revenue) || 0
+    existing.traffic += Number(row.txn_count) || 0
+    byYear.set(year, existing)
+  }
+  return [...byYear.values()].sort((a, b) => Number(a.key) - Number(b.key))
+}
+
+function trendRowsForPeriod(period, data) {
+  const p = String(period || 'mtd').toLowerCase()
+  if (p === 'day') return dailyTrendRows(data)
+  if (p === 'ytd') return yearlyTrendRows(data)
+  return monthlyTrendRows(data)
+}
+
+function trendCopy(period) {
+  const p = String(period || 'mtd').toLowerCase()
+  if (p === 'day') {
+    return {
+      title: 'Daily Trend',
+      description: 'Transactions and revenue by day in the selected range',
+      empty: 'No daily trend for this period.',
+    }
+  }
+  if (p === 'ytd') {
+    return {
+      title: 'Yearly Trend',
+      description: 'Transactions and revenue by year in the selected range',
+      empty: 'No yearly trend for this period.',
+    }
+  }
+  return {
+    title: 'Monthly Trend',
+    description: 'Transactions and revenue across months in range',
+    empty: 'No monthly trend for this period.',
+  }
 }
 
 function categoryColor(dark, index) {
@@ -409,7 +496,7 @@ function CategoryPanel({
   )
 }
 
-export function OverallTollDashboard({ data, showYoy, dark }) {
+export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
   if (!data?.has_data) {
     return (
       <Card>
@@ -426,7 +513,8 @@ export function OverallTollDashboard({ data, showYoy, dark }) {
   const kpis = data.kpis || {}
   const rows = buildCategoryRows(data)
   const revenueRows = buildRevenueRows(data)
-  const trend = monthlyTrendRows(data)
+  const trend = trendRowsForPeriod(period, data)
+  const trendMeta = trendCopy(period)
   const comparison = comparisonRows(data)
   const daySpan = inclusiveDaySpan(data.start_date, data.end_date)
   const avgRevenuePerDay =
@@ -567,14 +655,14 @@ export function OverallTollDashboard({ data, showYoy, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Monthly Trend</CardTitle>
-          <CardDescription>Transactions and revenue across months in range</CardDescription>
+          <CardTitle>{trendMeta.title}</CardTitle>
+          <CardDescription>{trendMeta.description}</CardDescription>
         </CardHeader>
         <CardContent>
           {trend.length ? (
             <MonthlyTrendChart rows={trend} dark={dark} />
           ) : (
-            <p className="text-body text-muted-foreground">No monthly trend for this period.</p>
+            <p className="text-body text-muted-foreground">{trendMeta.empty}</p>
           )}
         </CardContent>
       </Card>

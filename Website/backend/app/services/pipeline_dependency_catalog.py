@@ -11,8 +11,11 @@ MONTHLY_INPUT_SLOTS: list[dict] = [
     {
         "key": "vrn",
         "label": "VRN files",
-        "description": "Plaza VRN transaction files for the month.",
-        "required_hint": "Full Exempt, E06, E10",
+        "description": (
+            "Plaza VRN transaction files for the month. "
+            "Also loads plaza analytics (mop/class/lane/gap) in parallel."
+        ),
+        "required_hint": "Full Exempt, E06, E10 + plaza analytics",
         "multiple": True,
         "accept": ".xlsx,.xls,.xlsm,.csv",
         "user_upload": True,
@@ -20,8 +23,11 @@ MONTHLY_INPUT_SLOTS: list[dict] = [
     {
         "key": "etc",
         "label": "ETC / Lifecycle files",
-        "description": "ETC or lifecycle extracts (same files often work for E05 lifecycle).",
-        "required_hint": "Full Exempt, E05, E06, E09, E10",
+        "description": (
+            "ETC or lifecycle extracts (same files often work for E05 lifecycle). "
+            "Also loads plaza revenue analytics in parallel."
+        ),
+        "required_hint": "Full Exempt, E05, E06, E09, E10 + plaza analytics",
         "multiple": True,
         "accept": ".xlsx,.xls,.xlsm,.csv",
         "user_upload": True,
@@ -59,9 +65,10 @@ MONTHLY_INPUT_SLOTS: list[dict] = [
     },
     {
         "key": "to_plaza_vrn",
-        "label": "To-plaza VRN (subsequent plaza)",
+        "label": "E15 — To-plaza VRN",
         "description": (
-            "VRN of the subsequent plaza for E15. Separate from this plaza's VRN."
+            "Exempt vs subsequent plaza: upload the next (To) plaza’s VRN. "
+            "Separate from this plaza’s VRN."
         ),
         "required_hint": "E15",
         "multiple": True,
@@ -88,7 +95,7 @@ MONTHLY_INPUT_SLOTS: list[dict] = [
 PIPELINE_PROGRAMS: list[dict] = [
     {
         "code": "full_exempt_e1_e2_e3_e13_e14",
-        "label": "Exempt Query — Full Pipeline",
+        "label": "Exempt Query — Full Process",
         "sort_order": 10,
         "requires_pipeline_plaza_key": True,
         "required_slots": ["vrn", "etc", "pass", "concessionaire"],
@@ -112,29 +119,23 @@ PIPELINE_PROGRAMS: list[dict] = [
         "produces_slots": [],
     },
     {
-        "code": "e07",
-        "label": "E07 — Local passes at lower or zero charge",
+        "code": "e05",
+        "label": "E05 — Incorrect FASTag issuance",
         "sort_order": 30,
         "requires_pipeline_plaza_key": False,
-        "required_slots": ["pass"],
+        # Scraped is required to enable E05 in the batch UI (no live scrape).
+        "required_slots": ["etc", "scraped"],
         "optional_slots": [],
-        "slot_map": {"pass": "pass"},
-        "produces_slots": [],
-    },
-    {
-        "code": "e09",
-        "label": "E09 — Unsettled transactions",
-        "sort_order": 40,
-        "requires_pipeline_plaza_key": False,
-        "required_slots": ["etc"],
-        "optional_slots": [],
-        "slot_map": {"etc": "etc"},
+        "slot_map": {
+            "etc": "lifecycle",
+            "scraped": "ihmcl",
+        },
         "produces_slots": [],
     },
     {
         "code": "e06",
         "label": "E06 — Discounted passes / national permit",
-        "sort_order": 50,
+        "sort_order": 40,
         "requires_pipeline_plaza_key": False,
         "required_slots": ["etc", "vrn"],
         "optional_slots": ["scraped"],
@@ -146,17 +147,23 @@ PIPELINE_PROGRAMS: list[dict] = [
         "produces_slots": [],
     },
     {
-        "code": "e05",
-        "label": "E05 — Incorrect FASTag issuance",
+        "code": "e07",
+        "label": "E07 — Local passes at lower or zero charge",
+        "sort_order": 50,
+        "requires_pipeline_plaza_key": False,
+        "required_slots": ["pass"],
+        "optional_slots": [],
+        "slot_map": {"pass": "pass"},
+        "produces_slots": [],
+    },
+    {
+        "code": "e09",
+        "label": "E09 — Unsettled transactions",
         "sort_order": 60,
         "requires_pipeline_plaza_key": False,
-        # Scraped is required to enable E05 in the batch UI (no live scrape).
-        "required_slots": ["etc", "scraped"],
+        "required_slots": ["etc"],
         "optional_slots": [],
-        "slot_map": {
-            "etc": "lifecycle",
-            "scraped": "ihmcl",
-        },
+        "slot_map": {"etc": "etc"},
         "produces_slots": [],
     },
     {
@@ -170,9 +177,19 @@ PIPELINE_PROGRAMS: list[dict] = [
         "produces_slots": [],
     },
     {
+        "code": "e11",
+        "label": "E11 — AVC class consistency",
+        "sort_order": 80,
+        "requires_pipeline_plaza_key": False,
+        "required_slots": ["vrn"],
+        "optional_slots": [],
+        "slot_map": {"vrn": "vrn"},
+        "produces_slots": [],
+    },
+    {
         "code": "e15",
         "label": "E15 — Exempt vs subsequent plaza",
-        "sort_order": 80,
+        "sort_order": 90,
         "requires_pipeline_plaza_key": False,
         # full_exempt_final auto-fed from same plaza+month after Full Exempt.
         "required_slots": ["full_exempt_final", "to_plaza_vrn"],

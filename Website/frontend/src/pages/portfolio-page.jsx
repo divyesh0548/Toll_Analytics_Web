@@ -12,6 +12,7 @@ import {
 } from '@/lib/chart-axis'
 import { cn, formatLocalDateTime } from '@/lib/utils'
 import { useTheme } from '@/components/theme-provider'
+import { useAuth } from '@/components/auth-provider'
 
 function formatCount(value) {
   if (value == null) return '—'
@@ -241,6 +242,7 @@ function SpvRows({ spv, spvOpen, onToggleSpv }) {
 
 export function PortfolioPage() {
   const { theme } = useTheme()
+  const { showExceptionUploads } = useAuth()
   const [companies, setCompanies] = useState([])
   const [volumeByCompany, setVolumeByCompany] = useState({})
   const [rollup, setRollup] = useState(null)
@@ -344,14 +346,16 @@ export function PortfolioPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {showExceptionUploads ? (
+            <Button asChild variant="outline">
+              <a href="/exceptions/uploads" target="_blank" rel="noopener noreferrer">
+                Exception uploads
+              </a>
+            </Button>
+          ) : null}
           <Button asChild variant="outline">
-            <a href="/exceptions/uploads" target="_blank" rel="noopener noreferrer">
-              Exception uploads
-            </a>
-          </Button>
-          <Button asChild variant="outline">
-            <a href="/analytics/uploads" target="_blank" rel="noopener noreferrer">
-              Analytics upload
+            <a href="/exceptions/pipeline" target="_blank" rel="noopener noreferrer">
+              File Upload
             </a>
           </Button>
           <Button asChild variant="outline">

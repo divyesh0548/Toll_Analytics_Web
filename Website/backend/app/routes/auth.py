@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 import string
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from app.extensions import db
 from app.models.user import CREATABLE_ROLES, ROLES, SITEADMIN_ROLE, User
@@ -23,6 +23,14 @@ auth_bp = Blueprint("auth", __name__)
 def _generate_temp_password(length: int = 14) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _ui_features() -> dict:
+    return {
+        "show_exception_uploads": bool(
+            current_app.config.get("SHOW_EXCEPTION_UPLOADS", False)
+        ),
+    }
 
 
 @auth_bp.get("/health")
@@ -49,7 +57,9 @@ def login():
 
     token = issue_token(user)
     log_ok(f"{email} logged in")
-    return jsonify({"token": token, "user": user.to_dict()})
+    return jsonify(
+        {"token": token, "user": user.to_dict(), "features": _ui_features()}
+    )
 
 
 @auth_bp.get("/me")
@@ -57,7 +67,7 @@ def login():
 def me():
     user = get_current_user()
     log_ok(f"session ok: {user.email}")
-    return jsonify({"user": user.to_dict()})
+    return jsonify({"user": user.to_dict(), "features": _ui_features()})
 
 
 @auth_bp.post("/change-password")

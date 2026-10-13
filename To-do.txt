@@ -1,7 +1,5 @@
-Re-run the "run_plaza_etl" from bassi plaza due to 0 transactions in Truck-7-axcel.
+E15 is pending on the website.
 
-Testing of E10, E15 is pending on the website.
+Test the automatics web-scraping in website based exception queries.
 
-Remove the vehicles with 0 transactions and some revenue. For now. Will decide the solution later.
-
-Develop a script to delete montly data of a plaza, to test user uploaded ETC/VRN file updation.
+Run the E15 query for bassi with subsequent plaza Aroli. Remove the current data.

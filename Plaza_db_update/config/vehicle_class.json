@@ -24,7 +24,14 @@
   },
   "OSV": {
     "db_column": "vc_osv",
-    "aliases": ["OSV", "Earth Moving Machinery", "Heavy Construction machinery"]
+    "aliases": [
+      "OSV",
+      "Earth Moving Machinery",
+      "Heavy Construction machinery",
+      "TRUCK 7 AXLE",
+      "Truck 7 - axle",
+      "Truck Multi axle  ( 7 and above)"
+    ]
   },
   "TRACTOR": {
     "db_column": "vc_tractor",
@@ -33,10 +40,6 @@
   "TRUCK 4-6 AXLE": {
     "db_column": "vc_truck_4_6_axle",
     "aliases": ["TRUCK 4-6 AXLE", "TRUCK 4 6 AXLE", "Truck 4 - axle", "Truck 5 - axle", "Truck 6 - axle"]
-  },
-  "TRUCK 7 AXLE":{
-    "db_column": "vc_truck_7_axle",
-    "aliases": ["TRUCK 7 AXLE", "Truck 7 - axle", "Truck Multi axle  ( 7 and above)"]
   },
   "TRUCK-2-AXLE": {
     "db_column": "vc_truck_2_axle",

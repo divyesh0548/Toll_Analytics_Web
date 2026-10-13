@@ -28,6 +28,16 @@ def main() -> int:
     parser.add_argument("--update-metrics", default="1")
     parser.add_argument("--upload-output", default="1")
     parser.add_argument("--dry-run", default="0")
+    parser.add_argument(
+        "--period-year",
+        default="",
+        help="Pipeline batch year — roll metrics into this month",
+    )
+    parser.add_argument(
+        "--period-month",
+        default="",
+        help="Pipeline batch month (1-12) — roll metrics into this month",
+    )
     args = parser.parse_args()
 
     from_folder = Path(args.from_folder).expanduser().resolve()
@@ -84,6 +94,14 @@ def main() -> int:
         if str(args.dry_run).strip().lower() in {"1", "true", "yes", "on"}
         else "0"
     )
+    period_year = str(args.period_year or "").strip()
+    period_month = str(args.period_month or "").strip()
+    if period_year and period_month:
+        os.environ["E15_PERIOD_YEAR"] = period_year
+        os.environ["E15_PERIOD_MONTH"] = period_month
+    else:
+        os.environ.pop("E15_PERIOD_YEAR", None)
+        os.environ.pop("E15_PERIOD_MONTH", None)
 
     print(
         f"Starting E15 from={from_folder} vrn={vrn_folder} "

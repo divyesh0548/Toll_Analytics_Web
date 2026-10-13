@@ -260,6 +260,54 @@ def parse_amount(value) -> float | None:
     return number
 
 
+EMPTY_FILTER_STATUS = "empty_filter"
+EMPTY_FILTER_NOTES = "No UNSETTLED rows after filters"
+NO_AMOUNT_STATUS = "no_amount"
+NO_AMOUNT_NOTES = "No countable unsettled amounts"
+
+
+def months_from_reader_time(df: pd.DataFrame, config: dict) -> list[tuple[int, int]]:
+    """Distinct (year, month) from Reader Read Time — used when filters leave 0 rows."""
+    if df is None or df.empty:
+        return []
+    time_name, _type_name, _amount_name = column_names(config)
+    if time_name not in df.columns:
+        return []
+    pairs: set[tuple[int, int]] = set()
+    for raw in df[time_name].tolist():
+        when = parse_datetime(raw)
+        if when is None:
+            continue
+        pairs.add((int(when.year), int(when.month)))
+    return sorted(pairs)
+
+
+def zero_month_rows(
+    periods: list[tuple[int, int]],
+    *,
+    status: str = EMPTY_FILTER_STATUS,
+    notes: str = EMPTY_FILTER_NOTES,
+) -> list[dict]:
+    rows: list[dict] = []
+    seen: set[tuple[int, int]] = set()
+    for year, month in periods:
+        key = (int(year), int(month))
+        if key in seen or not (1 <= key[1] <= 12):
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "year": key[0],
+                "month": key[1],
+                "total_count": 0,
+                "total_amount": 0.0,
+                "status": status,
+                "notes": notes,
+            }
+        )
+    return rows
+
+
 def monthly_totals(unsettled: pd.DataFrame, config: dict) -> list[dict]:
     """
     Build year/month totals from Reader Read Time + Amount on the unsettled
@@ -303,6 +351,8 @@ def monthly_totals(unsettled: pd.DataFrame, config: dict) -> list[dict]:
                 "month": month,
                 "total_count": bucket["rows"],
                 "total_amount": round(bucket["amount"], 2),
+                "status": None,
+                "notes": None,
             }
         )
         print(
@@ -397,14 +447,16 @@ def update_exception_metrics(
     insert_sql = f"""
         INSERT INTO {metrics_table} (
             plaza_identifier, exception_type_id, year, month,
-            total_amount, total_count, created_at, updated_at
+            total_amount, total_count, status, notes, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
     """
     update_sql = f"""
         UPDATE {metrics_table}
         SET total_amount = %s,
             total_count = %s,
+            status = %s,
+            notes = %s,
             updated_at = NOW()
         WHERE plaza_identifier = %s
           AND exception_type_id = %s
@@ -448,11 +500,18 @@ def update_exception_metrics(
                 new_amount = Decimal(str(row["total_amount"])).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
+                status = row.get("status")
+                notes = row.get("notes")
+                if status is not None:
+                    status = str(status).strip() or None
+                if notes is not None:
+                    notes = str(notes).strip() or None
                 current = existing.get((year, month))
                 if current is None:
                     print(
                         f"  {year}-{month:02d}: INSERT count={new_count:,}, "
                         f"amount={new_amount:,.2f}"
+                        + (f", status={status}" if status else "")
                         + (" [dry-run]" if dry_run else "")
                     )
                     if not dry_run:
@@ -465,6 +524,8 @@ def update_exception_metrics(
                                 month,
                                 new_amount,
                                 new_count,
+                                status,
+                                notes,
                             ),
                         )
                     continue
@@ -473,6 +534,7 @@ def update_exception_metrics(
                     f"  {year}-{month:02d}: UPDATE "
                     f"count {old_count:,} -> {new_count:,}, "
                     f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+                    + (f", status={status}" if status else "")
                     + (" [dry-run]" if dry_run else "")
                 )
                 if not dry_run:
@@ -481,6 +543,8 @@ def update_exception_metrics(
                         (
                             new_amount,
                             new_count,
+                            status,
+                            notes,
                             plaza,
                             EXCEPTION_TYPE_ID,
                             year,
@@ -513,15 +577,47 @@ def main() -> int:
     if not frames:
         raise RuntimeError("No readable ETC files.")
     merged = pd.concat(frames, ignore_index=True)
+    # Capture months before UNSETTLED filter may drop every row.
+    months_hint = months_from_reader_time(merged, config)
     type_name = column_name(config, "settlement_type")
     unsettled = merged.loc[
         merged[type_name].map(lambda value: is_unsettled(value, unsettled_value))
     ].copy()
     print(f"UNSETTLED rows: {len(unsettled)} of {len(merged)}")
+    if unsettled.empty and months_hint:
+        print(
+            f"No UNSETTLED rows — will mark {len(months_hint)} month(s) as empty: "
+            + ", ".join(f"{y}-{m:02d}" for y, m in months_hint)
+        )
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     unsettled.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
     print(f"Wrote: {OUTPUT_FILE}")
+
+    plaza_id = resolve_plaza_identifier()
+    dry_run = bool(DB_DRY_RUN)
+
+    # Empty after UNSETTLED filter — still mark Reader Read Time months as zeros.
+    if unsettled.empty:
+        print("UNSETTLED output is empty — skipping amount totals / S3 upload.")
+        if not Metrics_DB_Update:
+            print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
+            return 0
+        if not months_hint:
+            print("No Reader Read Time months found before filter. DB not updated.")
+            return 0
+        zeros = zero_month_rows(
+            months_hint,
+            status=EMPTY_FILTER_STATUS,
+            notes=EMPTY_FILTER_NOTES,
+        )
+        print("-" * 60)
+        print(
+            f"Updating audit_exception_metrics (exception_type_id={EXCEPTION_TYPE_ID}) "
+            f"with zeros — {EMPTY_FILTER_NOTES}"
+        )
+        update_exception_metrics(zeros, plaza_id, dry_run=dry_run)
+        return 0
 
     # Months/years come from dates on the written output file.
     print("-" * 60)
@@ -529,11 +625,29 @@ def main() -> int:
     output_df = load_output_file(OUTPUT_FILE)
     totals = monthly_totals(output_df, config)
     if not totals:
-        print("No months with countable Amount — metrics/S3 month label skipped.")
+        periods = months_from_reader_time(unsettled, config) or list(months_hint)
+        if not periods:
+            print("No months with countable Amount and no date months. DB not updated.")
+            return 0
+        print(
+            "No countable Amount — writing zero metrics for "
+            f"{len(periods)} month(s)."
+        )
+        if not Metrics_DB_Update:
+            print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
+            return 0
+        zeros = zero_month_rows(
+            periods,
+            status=NO_AMOUNT_STATUS,
+            notes=NO_AMOUNT_NOTES,
+        )
+        print("-" * 60)
+        print(
+            f"Updating audit_exception_metrics (exception_type_id={EXCEPTION_TYPE_ID}) "
+            f"with zeros — {NO_AMOUNT_NOTES}"
+        )
+        update_exception_metrics(zeros, plaza_id, dry_run=dry_run)
         return 0
-
-    plaza_id = resolve_plaza_identifier()
-    dry_run = bool(DB_DRY_RUN)
 
     if Metrics_DB_Update:
         print("-" * 60)

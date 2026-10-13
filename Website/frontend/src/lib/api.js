@@ -274,8 +274,15 @@ export function createExceptionPipelineBatch(payload) {
   })
 }
 
-export function startExceptionPipelineBatch(batchUuid) {
+export function startExceptionPipelineBatch(batchUuid, { runAnalytics = true } = {}) {
   return request(`/api/exception-pipeline/batches/${batchUuid}/start`, {
+    method: 'POST',
+    body: JSON.stringify({ run_analytics: Boolean(runAnalytics) }),
+  })
+}
+
+export function stopExceptionPipelineBatch(batchUuid) {
+  return request(`/api/exception-pipeline/batches/${batchUuid}/stop`, {
     method: 'POST',
   })
 }

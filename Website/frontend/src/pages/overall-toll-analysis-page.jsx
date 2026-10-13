@@ -41,7 +41,8 @@ export function OverallTollAnalysisPage() {
   const [spvId, setSpvId] = useState(searchParams.get('spv') || '')
   const [plazaId, setPlazaId] = useState(searchParams.get('plaza') || '')
 
-  const [period, setPeriod] = useState('mtd')
+  const [periodDraft, setPeriodDraft] = useState('mtd')
+  const [periodApplied, setPeriodApplied] = useState('mtd')
   const [rangeDraft, setRangeDraft] = useState({ start: '', end: '' })
   const [appliedRange, setAppliedRange] = useState({ start: '', end: '' })
   const [numbers, setNumbers] = useState(null)
@@ -79,7 +80,7 @@ export function OverallTollAnalysisPage() {
   )
 
   const selectedPlaza = plazas.find((p) => p.plaza_identifier === plazaId) || null
-  const showYoy = canShowYoy(period, appliedRange, numbers?.availability)
+  const showYoy = canShowYoy(periodApplied, appliedRange, numbers?.availability)
 
   // Sync filters → URL
   useEffect(() => {
@@ -174,9 +175,9 @@ export function OverallTollAnalysisPage() {
 
   useEffect(() => {
     suppressRefetchRef.current = false
-  }, [plazaId, period])
+  }, [plazaId, periodApplied])
 
-  // Fetch numbers when plaza + applied range ready
+  // Fetch numbers when plaza + applied period/range ready
   useEffect(() => {
     if (!plazaId) {
       setNumbers(null)
@@ -195,13 +196,14 @@ export function OverallTollAnalysisPage() {
         const hasApplied = Boolean(appliedRange.start && appliedRange.end)
         const data = await getPlazaNumbers(
           plazaId,
-          period,
+          periodApplied,
           hasApplied ? appliedRange : {},
         )
         if (!active) return
         setNumbers(data)
+        setPeriodDraft(periodApplied)
         if (!hasApplied) {
-          const next = defaultRangeForPeriod(period, data.availability)
+          const next = defaultRangeForPeriod(periodApplied, data.availability)
           setRangeDraft(next)
           setAppliedRange(next)
           suppressRefetchRef.current = true
@@ -224,13 +226,15 @@ export function OverallTollAnalysisPage() {
     return () => {
       active = false
     }
-  }, [plazaId, period, appliedRange.start, appliedRange.end])
+  }, [plazaId, periodApplied, appliedRange.start, appliedRange.end])
 
   function handleCompanyChange(value) {
     setCompanyId(value || '')
     setSpvId('')
     setPlazaId('')
     setNumbers(null)
+    setPeriodDraft('mtd')
+    setPeriodApplied('mtd')
     setAppliedRange({ start: '', end: '' })
     setRangeDraft({ start: '', end: '' })
   }
@@ -239,6 +243,8 @@ export function OverallTollAnalysisPage() {
     setSpvId(value || '')
     setPlazaId('')
     setNumbers(null)
+    setPeriodDraft('mtd')
+    setPeriodApplied('mtd')
     setAppliedRange({ start: '', end: '' })
     setRangeDraft({ start: '', end: '' })
   }
@@ -246,21 +252,35 @@ export function OverallTollAnalysisPage() {
   function handlePlazaChange(value) {
     setPlazaId(value || '')
     setNumbers(null)
+    setPeriodDraft('mtd')
+    setPeriodApplied('mtd')
     setAppliedRange({ start: '', end: '' })
     setRangeDraft({ start: '', end: '' })
   }
 
   function handlePeriodChange(nextPeriod) {
-    if (nextPeriod === period) return
-    setPeriod(nextPeriod)
-    const next = defaultRangeForPeriod(nextPeriod, numbers?.availability)
-    setRangeDraft(next)
-    setAppliedRange(next)
-    suppressRefetchRef.current = false
+    if (nextPeriod === periodDraft) return
+    setPeriodDraft(nextPeriod)
+    setRangeDraft(defaultRangeForPeriod(nextPeriod, numbers?.availability))
   }
 
   function handleApplyRange() {
-    setAppliedRange({ ...rangeDraft })
+    let start = rangeDraft.start
+    let end = rangeDraft.end
+    if (!start || !end) return
+    if (start > end) {
+      ;[start, end] = [end, start]
+      setRangeDraft({ start, end })
+    }
+    if (periodDraft === 'day') {
+      const startDate = new Date(`${start}T00:00:00`)
+      const endDate = new Date(`${end}T00:00:00`)
+      const span =
+        Math.floor((endDate.getTime() - startDate.getTime()) / 86400000) + 1
+      if (span < 5) return
+    }
+    setPeriodApplied(periodDraft)
+    setAppliedRange({ start, end })
   }
 
   return (
@@ -324,9 +344,11 @@ export function OverallTollAnalysisPage() {
 
       {plazaId ? (
         <PeriodRangeControls
-          period={period}
+          period={periodDraft}
+          appliedPeriod={periodApplied}
           onPeriodChange={handlePeriodChange}
           draft={rangeDraft}
+          appliedRange={appliedRange}
           onDraftChange={setRangeDraft}
           onApply={handleApplyRange}
           availability={numbers?.availability}
@@ -366,7 +388,12 @@ export function OverallTollAnalysisPage() {
               <Loader2 className="h-7 w-7 animate-spin text-primary" />
             </div>
           ) : null}
-          <OverallTollDashboard data={numbers} showYoy={showYoy} dark={dark} />
+          <OverallTollDashboard
+            data={numbers}
+            showYoy={showYoy}
+            dark={dark}
+            period={periodApplied}
+          />
         </div>
       ) : null}
     </div>

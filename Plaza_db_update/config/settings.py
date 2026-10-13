@@ -9,12 +9,12 @@ from pathlib import Path
 PLAZA_UPDATE_DIR = Path(__file__).resolve().parent.parent
 
 # Must match plazas.plaza_identifier created on the website.
-PLAZA_IDENTIFIER = "39d45059-341d-435b-8824-9963b4e2068e"
+PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
 
 # Display name stored alongside plaza_identifier.
-PLAZA_NAME = "aroli"
+PLAZA_NAME = "odhaki_paipkhar"
 
-INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\odhaki_paipkhar"
+INPUT_FOLDER = r"C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs"
 # Optional local ETC folder (Website jobs). When set, module4 skips submissions download.
 ETC_INPUT_FOLDER = ""
 

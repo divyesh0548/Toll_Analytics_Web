@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from app.services.exception_program_catalog import (
     E07_PROGRAM,
     E09_PROGRAM,
     E10_PROGRAM,
+    E11_PROGRAM,
     E15_PROGRAM,
     FULL_EXEMPT_PROGRAM,
     VALID_INVALID_PROGRAM,
@@ -45,6 +47,7 @@ from app.services.exception_program_catalog import (
     e7_program_root,
     e9_program_root,
     e10_program_root,
+    e11_program_root,
     e15_program_root,
     exempt_portal_root,
     valid_invalid_script_dir,
@@ -56,9 +59,54 @@ logger = logging.getLogger(__name__)
 
 _worker_started = False
 _active_child_lock = threading.Lock()
-_active_child: subprocess.Popen | None = None
+_active_children: set[subprocess.Popen] = set()
+_WORKER_MAX_PARALLEL = 2
 _last_staging_cleanup_at: float = 0.0
 _STAGING_CLEANUP_INTERVAL_SEC = 3600
+
+
+def _register_active_child(child: subprocess.Popen | None) -> None:
+    if child is None:
+        return
+    with _active_child_lock:
+        _active_children.add(child)
+
+
+def _unregister_active_child(child: subprocess.Popen | None) -> None:
+    if child is None:
+        return
+    with _active_child_lock:
+        _active_children.discard(child)
+
+
+def kill_active_job_children() -> int:
+    """Force-kill every registered job subprocess (used when stopping a pipeline)."""
+    with _active_child_lock:
+        children = list(_active_children)
+    killed = 0
+    for child in children:
+        try:
+            if child.poll() is None:
+                _kill_process_tree(child)
+                killed += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed killing active child pid=%s", getattr(child, "pid", None))
+        finally:
+            _unregister_active_child(child)
+    return killed
+
+
+def _job_marked_cancelled(job: ExceptionJob) -> bool:
+    """True if stop API already set this job to cancelled (other DB session)."""
+    try:
+        db.session.expire(job)
+        db.session.refresh(job)
+    except Exception:  # noqa: BLE001
+        fresh = ExceptionJob.query.get(job.id)
+        if fresh is None:
+            return False
+        return str(fresh.status or "") == "cancelled"
+    return str(job.status or "") == "cancelled"
 
 _SLOT_TO_FOLDER = {
     "lc_etc": "lc_etc",
@@ -125,6 +173,23 @@ def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
     env: dict[str, str] = {
         str(k): str(v) for k, v in os.environ.items() if v is not None
     }
+    # File Upload pipeline mode sets these on the worker process. dotenv must
+    # not overwrite them back to audit_exception_metrics / output_files.
+    pipeline_mode = str(os.environ.get("PIPELINE_BATCH_MODE") or "").strip() == "1"
+    pipeline_preserve = {
+        key: str(os.environ[key])
+        for key in (
+            "Exception_Metrics_Table",
+            "EXCEPTION_METRICS_TABLE",
+            "Plaza_analytics_Table_NAME",
+            "PLAZA_ANALYTICS_TABLE_NAME",
+            "EXCEPTION_OUTPUT_FILES_TABLE",
+            "Exception_Output_Files_Table",
+            "PIPELINE_BATCH_MODE",
+        )
+        if pipeline_mode and os.environ.get(key)
+    }
+
     env_path = _backend_env_path()
     if env_path.is_file():
         for key, value in dotenv_values(env_path).items():
@@ -133,6 +198,9 @@ def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
             text = str(value).strip()
             if text:
                 env[str(key)] = text
+
+    if pipeline_preserve:
+        env.update(pipeline_preserve)
 
     # Host/user/password fallbacks only — never DB_NAME → RDS_DB_NAME.
     if env.get("DB_HOST") and not env.get("RDS_HOST"):
@@ -200,24 +268,70 @@ def recover_orphaned_running_jobs() -> int:
 
     The previous process is gone, so 'running' cannot make progress. Putting
     them back to 'queued' lets the new worker finish them (and preserves a
-    real pipeline error if they fail again). Marking them 'failed' with a
-    generic interrupt message hid the actual error from the UI.
+    real pipeline error if they fail again).
+
+    Jobs whose parent pipeline batch is already terminal are cancelled instead,
+    so they do not block a newer File Upload run after restart.
     """
+    from app.models.exception_pipeline import (
+        ExceptionPipelineBatch,
+        ExceptionPipelineBatchStep,
+    )
+
     stuck = ExceptionJob.query.filter_by(status="running").all()
     if not stuck:
         return 0
+    recovered = 0
+    cancelled = 0
+    now = _utc_now()
     for job in stuck:
+        parent_batch = None
+        step = ExceptionPipelineBatchStep.query.filter_by(
+            child_job_uuid=job.job_uuid
+        ).first()
+        if step is not None:
+            parent_batch = step.batch
+        if parent_batch is None:
+            parent_batch = ExceptionPipelineBatch.query.filter_by(
+                analytics_job_uuid=job.job_uuid
+            ).first()
+
+        if parent_batch is not None and str(parent_batch.status or "") in {
+            "cancelled",
+            "failed",
+            "succeeded",
+        }:
+            job.status = "cancelled"
+            job.error_message = (
+                f"Stopped — parent batch already {parent_batch.status}."
+            )
+            job.progress_message = "Cancelled on restart (batch no longer active)."
+            job.finished_at = now
+            cancelled += 1
+            logger.warning(
+                "Cancelled orphaned job %s (batch %s is %s)",
+                job.job_uuid,
+                parent_batch.batch_uuid,
+                parent_batch.status,
+            )
+            continue
+
         job.status = "queued"
         job.error_message = None
         job.progress_message = (
             "Re-queued after backend restart — worker will pick this up again."
         )
         job.finished_at = None
+        recovered += 1
         logger.warning(
             "Recovered orphaned running job %s → queued", job.job_uuid
         )
     db.session.commit()
-    return len(stuck)
+    if cancelled:
+        logger.info(
+            "Cancelled %s orphaned job(s) tied to finished batches", cancelled
+        )
+    return recovered
 
 
 def _maybe_cleanup_staging() -> None:
@@ -252,24 +366,60 @@ def start_exception_job_worker(app) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("Failed to recover orphaned running jobs")
         try:
+            from app.services.exception_pipeline_service import (
+                reconcile_duplicate_active_batches,
+            )
+
+            n = reconcile_duplicate_active_batches()
+            if n:
+                logger.info(
+                    "Cancelled %s older active pipeline batch(es) after restart",
+                    n,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to reconcile duplicate pipeline batches")
+        try:
             _maybe_cleanup_staging()
         except Exception:  # noqa: BLE001
             logger.exception("Initial staging cleanup failed")
 
-    def loop():
-        while True:
+    def _run_job_in_thread(job_id: int) -> None:
+        with app.app_context():
             try:
-                with app.app_context():
-                    _maybe_cleanup_staging()
-                    _process_one_queued_job()
+                _process_claimed_job(job_id)
             except Exception:  # noqa: BLE001
-                logger.exception("Exception job worker loop error")
-            time.sleep(3)
+                logger.exception("Exception job worker thread error for job_id=%s", job_id)
+
+    def loop():
+        futures: set = set()
+        with ThreadPoolExecutor(
+            max_workers=_WORKER_MAX_PARALLEL,
+            thread_name_prefix="exc-job",
+        ) as pool:
+            while True:
+                try:
+                    with app.app_context():
+                        _maybe_cleanup_staging()
+                        futures = {f for f in futures if not f.done()}
+                        while len(futures) < _WORKER_MAX_PARALLEL:
+                            job_id = _claim_next_queued_job_id()
+                            if job_id is None:
+                                break
+                            futures.add(pool.submit(_run_job_in_thread, job_id))
+                except Exception:  # noqa: BLE001
+                    logger.exception("Exception job worker loop error")
+                time.sleep(1 if futures else 3)
 
     thread = threading.Thread(target=loop, name="exception-job-worker", daemon=True)
     thread.start()
-    logger.info("Exception job worker started")
-    print("Exception job worker started", flush=True)
+    logger.info(
+        "Exception job worker started (max_parallel=%s)",
+        _WORKER_MAX_PARALLEL,
+    )
+    print(
+        f"Exception job worker started (max_parallel={_WORKER_MAX_PARALLEL})",
+        flush=True,
+    )
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -312,12 +462,9 @@ def _release_job_resources(process_dir: Path | None, child: subprocess.Popen | N
     On failure/success end: kill pipeline child (closes its file handles),
     drop Python refs, then best-effort delete the workspace.
     """
-    global _active_child
     if child is not None:
         _kill_process_tree(child)
-    with _active_child_lock:
-        if _active_child is child:
-            _active_child = None
+    _unregister_active_child(child)
     # Encourage CPython to close any lingering file objects from this thread.
     gc.collect()
     time.sleep(0.4)
@@ -325,31 +472,62 @@ def _release_job_resources(process_dir: Path | None, child: subprocess.Popen | N
         _safe_rmtree(process_dir)
 
 
-def _process_one_queued_job() -> None:
-    global _active_child
-
+def _claim_next_queued_job_id() -> int | None:
+    """Atomically move one queued job to running; return its id (or None)."""
     job = (
         ExceptionJob.query.filter_by(status="queued")
         .order_by(ExceptionJob.id.asc())
         .first()
     )
     if job is None:
-        return
-
+        return None
     job.status = "running"
     job.started_at = _utc_now()
     job.progress_message = "Preparing workspace…"
     job.error_message = None
+    # Keep pipeline step row in sync so File Upload UI shows running, not queued.
+    try:
+        from app.models.exception_pipeline import ExceptionPipelineBatchStep
+
+        step = ExceptionPipelineBatchStep.query.filter_by(
+            child_job_uuid=job.job_uuid
+        ).first()
+        if step is not None and step.status in {"queued", "pending"}:
+            step.status = "running"
+            if step.started_at is None:
+                step.started_at = job.started_at
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed updating pipeline step status for job %s", job.job_uuid
+        )
     db.session.commit()
+    return int(job.id)
+
+
+def _process_one_queued_job() -> None:
+    """Claim and run one queued job (used by tests / single-shot callers)."""
+    job_id = _claim_next_queued_job_id()
+    if job_id is None:
+        return
+    _process_claimed_job(job_id)
+
+
+def _process_claimed_job(job_id: int) -> None:
+    job = ExceptionJob.query.get(job_id)
+    if job is None:
+        return
 
     from app.services.exception_pipeline_service import (
         apply_pipeline_env_for_job,
         clear_pipeline_env,
+        is_pipeline_analytics_job,
+        on_analytics_job_finished,
         on_pipeline_child_finished,
         register_full_exempt_final_local,
     )
 
     pipeline_mode = apply_pipeline_env_for_job(job)
+    pipeline_analytics = is_pipeline_analytics_job(job.job_uuid)
     process_dir: Path | None = None
     child: subprocess.Popen | None = None
     failed = False
@@ -371,41 +549,57 @@ def _process_one_queued_job() -> None:
             process_dir, child = _run_e9_job(job)
         elif job.program_code == E10_PROGRAM["code"]:
             process_dir, child = _run_e10_job(job)
+        elif job.program_code == E11_PROGRAM["code"]:
+            process_dir, child = _run_e11_job(job)
         elif job.program_code == E15_PROGRAM["code"]:
             process_dir, child = _run_e15_job(job)
         elif job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
             process_dir, child = _run_analytics_vrn_etc_job(job)
         else:
             raise RuntimeError(f"Program {job.program_code!r} is not wired yet.")
-        job.status = "succeeded"
-        job.progress_message = "Completed successfully."
-        job.finished_at = _utc_now()
-        db.session.commit()
-        if (
-            pipeline_mode
-            and job.program_code == FULL_EXEMPT_PROGRAM["code"]
-            and process_dir is not None
-        ):
-            try:
-                register_full_exempt_final_local(job, process_dir)
-            except Exception:  # noqa: BLE001
-                logger.exception("Pipeline full_exempt_final register failed")
-        _print_job_runtime(job, time.perf_counter() - t0, ok=True)
-        # Delete S3 inputs only after a fully successful run (retry keeps them).
-        # Pipeline children re-use monthly S3 keys — do not delete those objects.
-        if not pipeline_mode:
-            _cleanup_input_files(job)
-        # Analytics has no downloadable outputs — free local scratch.
-        if job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
-            _release_job_resources(process_dir, child)
-            process_dir = None
-            child = None
+        if _job_marked_cancelled(job):
+            failed = True
+            job.status = "cancelled"
+            job.error_message = "Stopped by user"
+            job.progress_message = "Stopped by user."
+            job.finished_at = _utc_now()
+            db.session.commit()
+            _print_job_runtime(job, time.perf_counter() - t0, ok=False)
+        else:
+            job.status = "succeeded"
+            job.progress_message = "Completed successfully."
+            job.finished_at = _utc_now()
+            db.session.commit()
+            if (
+                pipeline_mode
+                and job.program_code == FULL_EXEMPT_PROGRAM["code"]
+                and process_dir is not None
+            ):
+                try:
+                    register_full_exempt_final_local(job, process_dir)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Pipeline full_exempt_final register failed")
+            _print_job_runtime(job, time.perf_counter() - t0, ok=True)
+            # Delete S3 inputs only after a fully successful run (retry keeps them).
+            # Pipeline children / parallel analytics re-use monthly S3 keys — keep them.
+            if not pipeline_mode and not pipeline_analytics:
+                _cleanup_input_files(job)
+            # Analytics has no downloadable outputs — free local scratch.
+            if job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
+                _release_job_resources(process_dir, child)
+                process_dir = None
+                child = None
     except Exception as exc:  # noqa: BLE001
         failed = True
         logger.exception("Job %s failed", job.job_uuid)
-        job.status = "failed"
-        job.error_message = str(exc)
-        job.progress_message = "Failed."
+        if _job_marked_cancelled(job):
+            job.status = "cancelled"
+            job.error_message = "Stopped by user"
+            job.progress_message = "Stopped by user."
+        else:
+            job.status = "failed"
+            job.error_message = str(exc)
+            job.progress_message = "Failed."
         job.finished_at = _utc_now()
         db.session.commit()
         _print_job_runtime(job, time.perf_counter() - t0, ok=False)
@@ -416,15 +610,18 @@ def _process_one_queued_job() -> None:
             except Exception:  # noqa: BLE001
                 logger.exception("Pipeline batch advance failed for %s", job.job_uuid)
             clear_pipeline_env()
+        if pipeline_analytics:
+            try:
+                on_analytics_job_finished(job)
+            except Exception:  # noqa: BLE001
+                logger.exception("Pipeline analytics finish hook failed for %s", job.job_uuid)
         # Kill leftover children so Windows releases file locks.
         # Delete workspace only on failure (keep outputs after success).
         # Analytics success already cleaned above; failed analytics also cleans.
         if failed:
             _release_job_resources(process_dir, child)
         else:
-            with _active_child_lock:
-                if _active_child is child:
-                    _active_child = None
+            _unregister_active_child(child)
             gc.collect()
 
 
@@ -438,6 +635,65 @@ def _safe_rmtree(path: Path) -> bool:
     except OSError:
         logger.warning("Could not remove locked workspace %s — leaving it", path)
         return False
+
+
+def _stage_full_exempt_annexure_defaults(
+    *,
+    portal: Path,
+    input_root: Path,
+    plaza_key: str,
+) -> None:
+    """
+    Copy mapped RatesAfter April / Approved Exmption defaults into the process
+    input folders when the Website job did not upload those slots.
+    """
+    import shutil
+    import sys
+
+    key = str(plaza_key or "").strip().upper()
+    if not key:
+        raise RuntimeError("pipeline_plaza_key is required for Full Exempt rates lookup.")
+
+    final_dir = (
+        portal / "Scripts" / "Excempy_Query" / "Final_7_scripts"
+    )
+    if str(final_dir) not in sys.path:
+        sys.path.insert(0, str(final_dir))
+    try:
+        from annexure_plaza_config import (  # noqa: WPS433
+            resolve_approved_exemption_file,
+            resolve_rates_file,
+            uses_approved_exemption_script,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Could not load annexure_plaza_config for rates lookup: {exc}"
+        ) from exc
+
+    rates_dir = input_root / "rates"
+    rates_dir.mkdir(parents=True, exist_ok=True)
+    if not any(rates_dir.iterdir()):
+        rates_src = resolve_rates_file(key)
+        if rates_src is None or not rates_src.is_file():
+            raise RuntimeError(
+                f"No rates file for plaza {key!r}. "
+                "Add it under Scripts/Excempy_Query/RatesAfter April "
+                "(see annexure_plaza_config.json rates_files), or upload a rates file."
+            )
+        shutil.copy2(rates_src, rates_dir / rates_src.name)
+
+    if uses_approved_exemption_script(key):
+        approved_dir = input_root / "approved_exemption"
+        approved_dir.mkdir(parents=True, exist_ok=True)
+        if not any(approved_dir.iterdir()):
+            approved_src = resolve_approved_exemption_file(key)
+            if approved_src is None or not approved_src.is_file():
+                raise RuntimeError(
+                    f"Plaza {key!r} needs an Approved Exemption file. "
+                    "Add it under Scripts/Excempy_Query/Approved Exmption "
+                    "(see annexure_plaza_config.json), or upload one."
+                )
+            shutil.copy2(approved_src, approved_dir / approved_src.name)
 
 
 def _run_full_exempt_job(
@@ -490,6 +746,14 @@ def _run_full_exempt_job(
         dest = input_root / slot_folder / base_name
         download_to_path(row.s3_key, dest)
 
+    # Stage plaza default rates / approved-exemption when not uploaded on the job.
+    plaza_key = str(job.pipeline_plaza_key or "").strip().upper()
+    _stage_full_exempt_annexure_defaults(
+        portal=portal,
+        input_root=input_root,
+        plaza_key=plaza_key,
+    )
+
     job.progress_message = "Running Full Exempt Pipeline…"
     db.session.commit()
 
@@ -498,7 +762,6 @@ def _run_full_exempt_job(
         raise RuntimeError(f"Runner script missing: {runner}")
 
     env = _build_full_exempt_subprocess_env()
-    global _active_child
     child = _popen_job(
         [
             sys.executable,
@@ -515,8 +778,7 @@ def _run_full_exempt_job(
         cwd=str(portal),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -594,7 +856,6 @@ def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     output_file = output_dir / "merged_pass_files.xlsx"
     env = _build_e4_subprocess_env()
-    global _active_child
     child = _popen_job(
         [
             sys.executable,
@@ -613,8 +874,7 @@ def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         cwd=str(e4_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -709,7 +969,6 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
     env = _build_full_exempt_subprocess_env()
     # Entity / plaza rates key from shared map (not Scripts plaza_rates).
     env["VALID_INVALID_PLAZA_NAME"] = entity_name
-    global _active_child
     child = _popen_job(
         [
             sys.executable,
@@ -728,8 +987,7 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
         cwd=str(script_dir),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -809,7 +1067,6 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     vil_env = _build_full_exempt_subprocess_env()
     vil_env["VALID_INVALID_PLAZA_NAME"] = entity_name
 
-    global _active_child
     vil_child = _popen_job(
         [
             sys.executable,
@@ -828,8 +1085,7 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         cwd=str(script_dir),
         env=vil_env,
     )
-    with _active_child_lock:
-        _active_child = vil_child
+    _register_active_child(vil_child)
 
     try:
         vil_stdout, _ = vil_child.communicate()
@@ -885,8 +1141,7 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         cwd=str(e5_root),
         env=e5_env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -1007,14 +1262,12 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     if permit_paths:
         cmd.extend(["--permit-folder", str(permit_dir)])
 
-    global _active_child
     child = _popen_job(
         cmd,
         cwd=str(e6_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -1090,27 +1343,46 @@ def _run_e7_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     output_file = output_dir / "e7_vc4_loss.csv"
     env = _build_e4_subprocess_env()
 
-    global _active_child
+    cmd = [
+        sys.executable,
+        str(runner),
+        "--pass-folder",
+        str(pass_dir),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--output-file",
+        str(output_file),
+        "--update-metrics",
+        "1",
+        "--upload-output",
+        "1",
+    ]
+    # Full pipeline: roll metrics + S3 label into the batch year/month so the
+    # pipeline metrics view and download match this run (even when Loss is 0).
+    try:
+        from app.services.exception_pipeline_service import find_batch_step_for_job
+
+        step = find_batch_step_for_job(job.job_uuid)
+        if step is not None and step.batch is not None:
+            cmd.extend(
+                [
+                    "--period-year",
+                    str(int(step.batch.year)),
+                    "--period-month",
+                    str(int(step.batch.month)),
+                ]
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "E07 could not resolve pipeline period for job %s", job.job_uuid
+        )
+
     child = _popen_job(
-        [
-            sys.executable,
-            str(runner),
-            "--pass-folder",
-            str(pass_dir),
-            "--plaza-identifier",
-            job.plaza_identifier,
-            "--output-file",
-            str(output_file),
-            "--update-metrics",
-            "1",
-            "--upload-output",
-            "1",
-        ],
+        cmd,
         cwd=str(e7_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -1171,7 +1443,6 @@ def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     output_file = output_dir / "e9_unsettled.csv"
     env = _build_e4_subprocess_env()
 
-    global _active_child
     child = _popen_job(
         [
             sys.executable,
@@ -1190,8 +1461,7 @@ def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         cwd=str(e9_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -1256,7 +1526,6 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     output_file = output_dir / "e10_vrn_etc_merged.csv"
     env = _build_e4_subprocess_env()
 
-    global _active_child
     child = _popen_job(
         [
             sys.executable,
@@ -1279,8 +1548,7 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         cwd=str(e10_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -1297,6 +1565,101 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
             combined[-2000:]
             if combined
             else f"E10 failed with exit code {child.returncode}"
+        )
+    return process_dir, child
+
+
+def _run_e11_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    entity_name = require_entity_name(job.plaza_identifier)
+    previous_process_name = str(job.process_name or "").strip()
+    process_name = f"e11_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
+    job.process_name = process_name
+    job.progress_message = f"Downloading E11 VRN files (entity={entity_name})…"
+    db.session.commit()
+
+    e11_root = e11_program_root()
+    if not e11_root.is_dir():
+        raise RuntimeError(f"E11 program folder not found at {e11_root}")
+
+    jobs_root = e11_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    if previous_process_name and previous_process_name != process_name:
+        _safe_rmtree(jobs_root / previous_process_name)
+
+    process_dir = jobs_root / process_name
+    vrn_dir = process_dir / "vrn"
+    output_dir = process_dir / "output"
+    vrn_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    vrn_paths = _download_slot_files(job, "vrn", vrn_dir)
+    if not vrn_paths:
+        raise RuntimeError("No VRN files on this E11 job.")
+
+    job.progress_message = "Running E11 (AVC pivot → metrics → S3)…"
+    db.session.commit()
+
+    runner = e11_root / "run_website_e11_job.py"
+    if not runner.is_file():
+        raise RuntimeError(f"E11 runner script missing: {runner}")
+
+    env = _build_e4_subprocess_env()
+    cmd = [
+        sys.executable,
+        str(runner),
+        "--vrn-folder",
+        str(vrn_dir),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--entity-name",
+        entity_name,
+        "--output-dir",
+        str(output_dir),
+        "--update-metrics",
+        "1",
+        "--upload-output",
+        "1",
+    ]
+    try:
+        from app.services.exception_pipeline_service import find_batch_step_for_job
+
+        step = find_batch_step_for_job(job.job_uuid)
+        if step is not None and step.batch is not None:
+            cmd.extend(
+                [
+                    "--period-year",
+                    str(int(step.batch.year)),
+                    "--period-month",
+                    str(int(step.batch.month)),
+                ]
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "E11 could not resolve pipeline period for job %s", job.job_uuid
+        )
+
+    child = _popen_job(
+        cmd,
+        cwd=str(e11_root),
+        env=env,
+    )
+    _register_active_child(child)
+
+    try:
+        stdout, _ = child.communicate()
+    except Exception:
+        _kill_process_tree(child)
+        raise
+
+    combined = (stdout or "").strip()
+    if combined:
+        job.progress_message = combined[-4000:]
+        db.session.commit()
+    if child.returncode != 0:
+        raise RuntimeError(
+            combined[-2000:]
+            if combined
+            else f"E11 failed with exit code {child.returncode}"
         )
     return process_dir, child
 
@@ -1345,31 +1708,48 @@ def _run_e15_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     output_file = output_dir / "from_to_combined.xlsx"
     env = _build_e4_subprocess_env()
 
-    global _active_child
+    cmd = [
+        sys.executable,
+        str(runner),
+        "--from-folder",
+        str(from_dir),
+        "--vrn-folder",
+        str(vrn_dir),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--entity-name",
+        entity_name,
+        "--output-file",
+        str(output_file),
+        "--update-metrics",
+        "1",
+        "--upload-output",
+        "1",
+    ]
+    try:
+        from app.services.exception_pipeline_service import find_batch_step_for_job
+
+        step = find_batch_step_for_job(job.job_uuid)
+        if step is not None and step.batch is not None:
+            cmd.extend(
+                [
+                    "--period-year",
+                    str(int(step.batch.year)),
+                    "--period-month",
+                    str(int(step.batch.month)),
+                ]
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "E15 could not resolve pipeline period for job %s", job.job_uuid
+        )
+
     child = _popen_job(
-        [
-            sys.executable,
-            str(runner),
-            "--from-folder",
-            str(from_dir),
-            "--vrn-folder",
-            str(vrn_dir),
-            "--plaza-identifier",
-            job.plaza_identifier,
-            "--entity-name",
-            entity_name,
-            "--output-file",
-            str(output_file),
-            "--update-metrics",
-            "1",
-            "--upload-output",
-            "1",
-        ],
+        cmd,
         cwd=str(e15_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()
@@ -1448,14 +1828,12 @@ def _run_analytics_vrn_etc_job(job: ExceptionJob) -> tuple[Path, subprocess.Pope
     if etc_paths:
         cmd.extend(["--etc-folder", str(etc_dir)])
 
-    global _active_child
     child = _popen_job(
         cmd,
         cwd=str(plaza_root),
         env=env,
     )
-    with _active_child_lock:
-        _active_child = child
+    _register_active_child(child)
 
     try:
         stdout, _ = child.communicate()

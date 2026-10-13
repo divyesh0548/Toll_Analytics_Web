@@ -77,8 +77,8 @@ from excel_common import (  # noqa: E402
 # Runtime inputs
 # ---------------------------------------------------------------------------
 
-ENTITY_NAME = "aroli"  # submissions.entity_name (usually same as plaza folder name)
-FROM_DATE = "2026-07-30"  # inclusive YYYY-MM-DD
+ENTITY_NAME = "odhaki_paipkhar"  # submissions.entity_name (usually same as plaza folder name)
+FROM_DATE = "2025-11-20"  # inclusive YYYY-MM-DD
 TO_DATE = "2026-08-31"  # inclusive YYYY-MM-DD
 
 DOWNLOAD_FOLDER = ROOT_DIR / "etc_downloads"

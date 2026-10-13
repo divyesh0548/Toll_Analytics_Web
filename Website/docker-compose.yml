@@ -29,11 +29,15 @@ services:
       - e7_jobs:/app/Exeption Programs/E7/jobs
       - e9_jobs:/app/Exeption Programs/E9/jobs
       - e10_jobs:/app/Exeption Programs/E10/jobs
+      - e11_jobs:/app/Exeption Programs/E11/jobs
       - e15_jobs:/app/Exeption Programs/E15/jobs
       - plaza_jobs:/app/Plaza_db_update/jobs
       # Full Exempt writes process folders under File_Process/.../4_Full_Exempt_Pipeline
       # (same tree as portal assets) — leave on container FS; do not volume-mount over it.
       - vil_jobs:/app/Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/valid_invalid_lookup/jobs
+      # Annexure defaults (gitignored xlsx) — mount from host so rates/approved maps resolve
+      - "../Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/RatesAfter April:/app/Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/RatesAfter April:ro"
+      - "../Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/Approved Exmption:/app/Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/Approved Exmption:ro"
     shm_size: "2gb"
     mem_limit: 16g
     ports:
@@ -57,6 +61,7 @@ volumes:
   e7_jobs:
   e9_jobs:
   e10_jobs:
+  e11_jobs:
   e15_jobs:
   plaza_jobs:
   vil_jobs:

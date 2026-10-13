@@ -1,3 +1,4 @@
-In Recent jobs update the real status of that job.
+In Overall Toll analytics page, If interval in selected as day, then displat daliy trends in that bottom graph. 
+For monthly, monthly trned and for yearly, yearly trend.
 
-There was a failed job, which is now runnig but in that saction it still displays as Failed.
+If number of days is more then divide them and show only some alternate days. Like each 2nd or 3rd day, in order to fit all days in graph.

@@ -17,6 +17,7 @@ function shouldPromptPasswordChange(user) {
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
+  const [features, setFeatures] = useState({ show_exception_uploads: false })
   const [loading, setLoading] = useState(true)
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
 
@@ -24,6 +25,7 @@ export function AuthProvider({ children }) {
     const token = getToken()
     if (!token) {
       setUser(null)
+      setFeatures({ show_exception_uploads: false })
       setUserRole(null)
       setPasswordChangeOpen(false)
       setLoading(false)
@@ -32,11 +34,15 @@ export function AuthProvider({ children }) {
     try {
       const data = await fetchMe()
       setUser(data.user)
+      setFeatures({
+        show_exception_uploads: Boolean(data.features?.show_exception_uploads),
+      })
       setUserRole(data.user?.role)
       return data.user
     } catch {
       clearToken()
       setUser(null)
+      setFeatures({ show_exception_uploads: false })
       setPasswordChangeOpen(false)
       return null
     } finally {
@@ -52,6 +58,9 @@ export function AuthProvider({ children }) {
     const data = await apiLogin(email, password)
     setToken(data.token)
     setUser(data.user)
+    setFeatures({
+      show_exception_uploads: Boolean(data.features?.show_exception_uploads),
+    })
     setUserRole(data.user?.role)
     setPasswordChangeOpen(shouldPromptPasswordChange(data.user))
     return data.user
@@ -60,6 +69,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     clearToken()
     setUser(null)
+    setFeatures({ show_exception_uploads: false })
     setPasswordChangeOpen(false)
   }, [])
 
@@ -80,6 +90,8 @@ export function AuthProvider({ children }) {
   const value = useMemo(
     () => ({
       user,
+      features,
+      showExceptionUploads: Boolean(features?.show_exception_uploads),
       loading,
       isAuthenticated: Boolean(user),
       isSiteAdmin: user?.role === 'siteadmin',
@@ -93,6 +105,7 @@ export function AuthProvider({ children }) {
     }),
     [
       user,
+      features,
       loading,
       passwordChangeOpen,
       login,

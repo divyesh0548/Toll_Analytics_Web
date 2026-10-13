@@ -95,6 +95,7 @@ class ExceptionJob(db.Model):
                 "e07": "E07",
                 "e09": "E09",
                 "e10": "E10",
+                "e11": "E11",
                 "e15": "E15",
             }.get(code, code)
             job_name = f"{short} · {job_name}"

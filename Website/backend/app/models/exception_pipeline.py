@@ -103,6 +103,8 @@ class ExceptionPipelineBatch(db.Model):
     progress_message = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
     continue_on_failure = db.Column(db.Boolean, nullable=False, default=True)
+    # Parallel plaza ETL (VRN/ETC analytics) — not part of the serial exception chain.
+    analytics_job_uuid = db.Column(db.String(36), nullable=True, index=True)
     created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     started_at = db.Column(db.DateTime(timezone=True), nullable=True)
     finished_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -134,12 +136,41 @@ class ExceptionPipelineBatch(db.Model):
             "progress_message": self.progress_message,
             "error_message": self.error_message,
             "continue_on_failure": bool(self.continue_on_failure),
+            "analytics_job_uuid": self.analytics_job_uuid,
             "started_at": _iso_utc(self.started_at),
             "finished_at": _iso_utc(self.finished_at),
             "created_at": _iso_utc(self.created_at),
         }
         if include_steps:
             payload["steps"] = [s.to_dict() for s in self.steps]
+        if self.analytics_job_uuid:
+            from app.models.exception_job import ExceptionJob
+
+            analytics_job = ExceptionJob.query.filter_by(
+                job_uuid=self.analytics_job_uuid
+            ).first()
+            if analytics_job is not None:
+                payload["analytics"] = {
+                    "job_uuid": analytics_job.job_uuid,
+                    "program_code": analytics_job.program_code,
+                    "label": "Plaza analytics (VRN / ETC)",
+                    "status": analytics_job.status,
+                    "progress_message": analytics_job.progress_message,
+                    "error_message": analytics_job.error_message,
+                    "started_at": _iso_utc(analytics_job.started_at),
+                    "finished_at": _iso_utc(analytics_job.finished_at),
+                }
+            else:
+                payload["analytics"] = {
+                    "job_uuid": self.analytics_job_uuid,
+                    "program_code": "analytics_vrn_etc",
+                    "label": "Plaza analytics (VRN / ETC)",
+                    "status": "unknown",
+                    "progress_message": None,
+                    "error_message": None,
+                }
+        else:
+            payload["analytics"] = None
         return payload
 
 
@@ -174,14 +205,36 @@ class ExceptionPipelineBatchStep(db.Model):
     batch = db.relationship("ExceptionPipelineBatch", back_populates="steps")
 
     def to_dict(self) -> dict:
+        status = self.status
+        error_message = self.error_message
+        started_at = self.started_at
+        finished_at = self.finished_at
+        # Mirror live child-job status so UI shows "running" while the worker
+        # is executing (step row is only set to queued until the job finishes).
+        if self.child_job_uuid:
+            from app.models.exception_job import ExceptionJob
+
+            child = ExceptionJob.query.filter_by(
+                job_uuid=self.child_job_uuid
+            ).first()
+            if child is not None:
+                child_status = str(child.status or "").strip()
+                if child_status:
+                    status = child_status
+                if child.error_message and not error_message:
+                    error_message = child.error_message
+                if child.started_at is not None:
+                    started_at = child.started_at
+                if child.finished_at is not None:
+                    finished_at = child.finished_at
         return {
             "program_code": self.program_code,
             "sort_order": self.sort_order,
-            "status": self.status,
+            "status": status,
             "child_job_uuid": self.child_job_uuid,
-            "error_message": self.error_message,
-            "started_at": _iso_utc(self.started_at),
-            "finished_at": _iso_utc(self.finished_at),
+            "error_message": error_message,
+            "started_at": _iso_utc(started_at),
+            "finished_at": _iso_utc(finished_at),
         }
 
 

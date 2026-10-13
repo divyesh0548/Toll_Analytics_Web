@@ -71,6 +71,9 @@ pnpm-debug.log*
 *.ods
 # Required E10 reference workbook (ship with image / repo)
 !Exeption Programs/E10/OW multiple LSW std weights.xlsx
+# Full Exempt annexure defaults used by Website / Docker jobs
+!Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/RatesAfter April/**
+!Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/Approved Exmption/**
 
 # Large / generated data folders (not source)
 Input/

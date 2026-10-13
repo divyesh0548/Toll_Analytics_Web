@@ -20,7 +20,7 @@
     {"entity_name": "bahadrabad", "date_format": ""},
     {"entity_name": "balibhasa", "date_format": ""},
     {"entity_name": "bankapur", "date_format": ""},
-    {"entity_name": "bassi", "date_format": "mm/dd/yyyy"},
+    {"entity_name": "bassi", "date_format": "dd/mm/yyyy"},
     {"entity_name": "bhojpuree", "date_format": ""},
     {"entity_name": "boharipar", "date_format": ""},
     {"entity_name": "chalageri", "date_format": ""},

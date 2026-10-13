@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
 import {
   createExceptionPipelineBatch,
   deleteExceptionPipelineInput,
@@ -11,8 +12,10 @@ import {
   getExceptionPipelinePeriod,
   listPlazas,
   startExceptionPipelineBatch,
+  stopExceptionPipelineBatch,
   uploadExceptionPipelineInput,
 } from '@/lib/api'
+import { useAuth } from '@/components/auth-provider'
 
 const MONTHS = [
   { value: 1, label: 'Jan' },
@@ -30,17 +33,20 @@ const MONTHS = [
 ]
 
 export function ExceptionPipelinePage() {
+  const { showExceptionUploads } = useAuth()
   const now = new Date()
   const [plazas, setPlazas] = useState([])
   const [catalog, setCatalog] = useState(null)
   const [plazaIdentifier, setPlazaIdentifier] = useState('')
-  const [pipelinePlazaKey, setPipelinePlazaKey] = useState('')
   const [year, setYear] = useState(now.getFullYear())
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [period, setPeriod] = useState(null)
   const [selectedCodes, setSelectedCodes] = useState([])
+  const [runAnalytics, setRunAnalytics] = useState(true)
+  const [pendingBySlot, setPendingBySlot] = useState({})
   const [batch, setBatch] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -49,6 +55,18 @@ export function ExceptionPipelinePage() {
     [catalog],
   )
   const programs = period?.programs || []
+  const pendingEntries = useMemo(
+    () =>
+      Object.entries(pendingBySlot).filter(
+        ([, files]) => Array.isArray(files) && files.length > 0,
+      ),
+    [pendingBySlot],
+  )
+  const pendingCount = pendingEntries.reduce(
+    (sum, [, files]) => sum + files.length,
+    0,
+  )
+  const hasPending = pendingCount > 0
 
   useEffect(() => {
     let active = true
@@ -69,6 +87,12 @@ export function ExceptionPipelinePage() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    setPendingBySlot({})
+    setBatch(null)
+    setNotice('')
+  }, [plazaIdentifier, year, month])
 
   useEffect(() => {
     if (!plazaIdentifier) {
@@ -104,7 +128,11 @@ export function ExceptionPipelinePage() {
 
   useEffect(() => {
     if (!batch?.batch_uuid) return undefined
-    if (!['queued', 'running'].includes(batch.status)) return undefined
+    const analyticsBusy = ['queued', 'running'].includes(
+      String(batch.analytics?.status || ''),
+    )
+    const batchBusy = ['queued', 'running'].includes(batch.status)
+    if (!batchBusy && !analyticsBusy) return undefined
     const timer = setInterval(async () => {
       try {
         const data = await getExceptionPipelineBatch(batch.batch_uuid)
@@ -122,31 +150,82 @@ export function ExceptionPipelinePage() {
       }
     }, 4000)
     return () => clearInterval(timer)
-  }, [batch?.batch_uuid, batch?.status, plazaIdentifier, year, month])
+  }, [
+    batch?.batch_uuid,
+    batch?.status,
+    batch?.analytics?.status,
+    plazaIdentifier,
+    year,
+    month,
+  ])
 
   async function refreshPeriod() {
     if (!plazaIdentifier) return
     const data = await getExceptionPipelinePeriod({ plazaIdentifier, year, month })
     setPeriod(data)
+    return data
   }
 
-  async function handleUpload(slotKey, fileList) {
-    const files = Array.from(fileList || [])
-    if (!files.length || !plazaIdentifier) return
+  function fileKey(file) {
+    return `${file.name}::${file.size}::${file.lastModified}`
+  }
+
+  function stageFiles(slotKey, fileList) {
+    const incoming = Array.from(fileList || [])
+    if (!incoming.length) return
+    setPendingBySlot((prev) => {
+      const existing = prev[slotKey] || []
+      const seen = new Set(existing.map(fileKey))
+      const merged = [...existing]
+      for (const file of incoming) {
+        const key = fileKey(file)
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(file)
+      }
+      return { ...prev, [slotKey]: merged }
+    })
+    setError('')
+    setNotice('')
+  }
+
+  function removePendingFile(slotKey, file) {
+    setPendingBySlot((prev) => {
+      const existing = prev[slotKey] || []
+      const nextFiles = existing.filter((f) => fileKey(f) !== fileKey(file))
+      const next = { ...prev }
+      if (nextFiles.length) next[slotKey] = nextFiles
+      else delete next[slotKey]
+      return next
+    })
+  }
+
+  async function handleUploadAll() {
+    if (!plazaIdentifier || !hasPending) return
     setBusy(true)
     setError('')
+    setNotice('')
     try {
-      for (const file of files) {
-        await uploadExceptionPipelineInput({
-          plazaIdentifier,
-          year,
-          month,
-          slot: slotKey,
-          file,
-        })
+      let uploaded = 0
+      for (const [slotKey, files] of pendingEntries) {
+        for (const file of files) {
+          await uploadExceptionPipelineInput({
+            plazaIdentifier,
+            year,
+            month,
+            slot: slotKey,
+            file,
+          })
+          uploaded += 1
+        }
       }
+      setPendingBySlot({})
       await refreshPeriod()
-      setNotice(`Uploaded to ${slotKey}`)
+      setNotice(
+        uploaded === 1
+          ? 'Uploaded 1 file. Choose checks below, then start the process.'
+          : `Uploaded ${uploaded} files. Choose checks below, then start the process.`,
+      )
     } catch (err) {
       setError(err.message || 'Upload failed')
     } finally {
@@ -173,25 +252,67 @@ export function ExceptionPipelinePage() {
     )
   }
 
+  const analyticsReady = Boolean(period?.analytics_ready)
+  const canStart =
+    Boolean(plazaIdentifier) &&
+    !hasPending &&
+    (selectedCodes.length > 0 || (runAnalytics && analyticsReady))
+  const mappedPipelineKey =
+    catalog?.plaza_identifier_to_pipeline_key?.[plazaIdentifier] || ''
+  const batchActive = Boolean(
+    batch &&
+      (['queued', 'running'].includes(String(batch.status || '')) ||
+        ['queued', 'running'].includes(String(batch.analytics?.status || ''))),
+  )
+
   async function handleStart() {
-    if (!plazaIdentifier || !selectedCodes.length) return
+    if (!canStart) return
     setBusy(true)
     setError('')
     setNotice('')
     try {
       const created = await createExceptionPipelineBatch({
         plaza_identifier: plazaIdentifier,
-        pipeline_plaza_key: pipelinePlazaKey || undefined,
         year,
         month,
         program_codes: selectedCodes,
         continue_on_failure: true,
+        run_analytics: runAnalytics,
       })
-      const started = await startExceptionPipelineBatch(created.batch.batch_uuid)
+      const started = await startExceptionPipelineBatch(created.batch.batch_uuid, {
+        runAnalytics,
+      })
       setBatch(started.batch)
-      setNotice('Pipeline batch started. Metrics write to the pipeline tables only.')
+      const bits = []
+      if (selectedCodes.length) bits.push('exception checks')
+      if (started.batch?.analytics) bits.push('plaza analytics')
+      setNotice(
+        bits.length
+          ? `Started: ${bits.join(' + ')}.`
+          : 'Processing started.',
+      )
     } catch (err) {
-      setError(err.message || 'Could not start batch')
+      setError(err.message || 'Could not start processing')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleStopConfirm() {
+    if (!batch?.batch_uuid) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    setStopConfirmOpen(false)
+    try {
+      const data = await stopExceptionPipelineBatch(batch.batch_uuid)
+      setBatch(data.batch)
+      setNotice(
+        'Process stopped. Run progress was discarded; uploaded input files are unchanged.',
+      )
+      await refreshPeriod()
+    } catch (err) {
+      setError(err.message || 'Could not stop the process')
     } finally {
       setBusy(false)
     }
@@ -212,20 +333,30 @@ export function ExceptionPipelinePage() {
           </Link>
         </Button>
         <p className="text-small uppercase tracking-[0.14em] text-muted-foreground">
-          Exceptions
+          Toll operations
         </p>
-        <h1 className="text-display">Monthly one-click pipeline</h1>
+        <h1 className="text-display">File Upload</h1>
         <p className="max-w-3xl text-body text-muted-foreground">
-          Upload shared files once for a plaza and month, enable programs whose
-          inputs are present, then run them serially. Metrics and outputs go to
-          the new pipeline tables (legacy single-run page is unchanged).
+          Select plaza files for a month, upload them together, then start the
+          process. Exception checks run in order from the shared files; when VRN
+          and/or ETC are present, plaza analytics also runs.
         </p>
-        <p className="text-small text-muted-foreground">
-          Prefer the classic flow?{' '}
-          <Link className="underline" to="/exceptions/uploads">
-            Single exception uploads
-          </Link>
+        <p className="max-w-3xl rounded-sm border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
+          Recommendation: upload and process one calendar month at a time. Mixing
+          multiple months in a single run can confuse period matching and make
+          results harder to review.
         </p>
+        {showExceptionUploads ? (
+          <p className="max-w-3xl text-body text-muted-foreground">
+            Prefer the classic flow?{' '}
+            <Link
+              to="/exceptions/uploads"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              Single exception uploads
+            </Link>
+          </p>
+        ) : null}
       </div>
 
       {error ? (
@@ -286,21 +417,13 @@ export function ExceptionPipelinePage() {
               ))}
             </select>
           </label>
-          <label className="space-y-1">
-            <span className="block text-body">Pipeline plaza key (Full Exempt)</span>
-            <select
-              className="h-10 min-w-[10rem] rounded-sm border border-input bg-background px-2"
-              value={pipelinePlazaKey}
-              onChange={(e) => setPipelinePlazaKey(e.target.value)}
-            >
-              <option value="">—</option>
-              {(catalog?.pipeline_plaza_keys || []).map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
-          </label>
+          {plazaIdentifier ? (
+            <p className="w-full text-small text-muted-foreground">
+              {mappedPipelineKey
+                ? `Full Exempt key: ${mappedPipelineKey} (from plaza)`
+                : 'No Full Exempt key mapped for this plaza yet — Full Exempt checks will need annexure_plaza_config.json.'}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -308,14 +431,15 @@ export function ExceptionPipelinePage() {
         <CardHeader>
           <CardTitle>Shared input files</CardTitle>
           <CardDescription>
-            Scraped vehicle/permit is optional. To-plaza VRN is separate from this
-            plaza&apos;s VRN. Full Exempt final is produced by the pipeline and
-            auto-feeds E15.
+            Each input accepts multiple files. Select all files for a slot (you
+            can add more later), then click Upload files. Scraped vehicle/permit
+            is optional. To-plaza VRN is separate from this plaza&apos;s VRN.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {uploadSlots.map((slot) => {
-            const files = (period?.files || []).filter((f) => f.slot === slot.key)
+            const uploaded = (period?.files || []).filter((f) => f.slot === slot.key)
+            const pending = pendingBySlot[slot.key] || []
             return (
               <div key={slot.key} className="rounded-sm border border-border p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -326,31 +450,55 @@ export function ExceptionPipelinePage() {
                   </div>
                   <label className="cursor-pointer">
                     <span className="inline-flex h-9 items-center rounded-sm border border-input px-3 text-small">
-                      {busy ? 'Working…' : 'Upload'}
+                      {pending.length ? 'Add more files' : 'Select files'}
                     </span>
                     <input
                       type="file"
                       className="hidden"
-                      multiple={Boolean(slot.multiple)}
+                      multiple
                       accept={slot.accept}
                       disabled={busy || !plazaIdentifier}
                       onChange={(e) => {
-                        handleUpload(slot.key, e.target.files)
+                        stageFiles(slot.key, e.target.files)
                         e.target.value = ''
                       }}
                     />
                   </label>
                 </div>
-                {files.length ? (
+                {pending.length ? (
                   <ul className="mt-2 space-y-1">
-                    {files.map((f) => (
+                    {pending.map((file) => (
+                      <li
+                        key={`${slot.key}-${fileKey(file)}`}
+                        className="flex flex-wrap items-center justify-between gap-2 text-small"
+                      >
+                        <span>
+                          {file.name}{' '}
+                          <span className="text-muted-foreground">(selected, not uploaded)</span>
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy}
+                          onClick={() => removePendingFile(slot.key, file)}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {uploaded.length ? (
+                  <ul className="mt-2 space-y-1">
+                    {uploaded.map((f) => (
                       <li
                         key={f.id}
                         className="flex flex-wrap items-center justify-between gap-2 text-small"
                       >
                         <span>
                           {f.original_file_name}
-                          {f.source === 'pipeline_output' ? ' (auto)' : ''}
+                          {f.source === 'pipeline_output' ? ' (auto)' : ' (uploaded)'}
                         </span>
                         {f.source !== 'pipeline_output' ? (
                           <Button
@@ -366,9 +514,9 @@ export function ExceptionPipelinePage() {
                       </li>
                     ))}
                   </ul>
-                ) : (
+                ) : !pending.length ? (
                   <p className="mt-2 text-small text-muted-foreground">No files yet.</p>
-                )}
+                ) : null}
               </div>
             )
           })}
@@ -377,17 +525,55 @@ export function ExceptionPipelinePage() {
               Full Exempt final is registered for this month — E15 can run.
             </p>
           ) : null}
+          <Button
+            type="button"
+            disabled={busy || !plazaIdentifier || !hasPending}
+            onClick={handleUploadAll}
+          >
+            {busy && hasPending
+              ? 'Uploading…'
+              : hasPending
+                ? `Upload ${pendingCount} file${pendingCount === 1 ? '' : 's'}`
+                : 'Upload files'}
+          </Button>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Programs</CardTitle>
+          <CardTitle>Checks to run</CardTitle>
           <CardDescription>
-            Checkboxes enable only when required monthly slots are present.
+            Upload files first. Each check unlocks when its required files for
+            this month are present. Plaza analytics is optional and selected by
+            default when VRN/ETC are available.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <label
+            className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
+              analyticsReady ? '' : 'opacity-55'
+            }`}
+          >
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={runAnalytics && analyticsReady}
+              disabled={!analyticsReady || busy || hasPending}
+              onChange={(e) => setRunAnalytics(Boolean(e.target.checked))}
+            />
+            <span>
+              <span className="block text-body font-medium">
+                {period?.analytics_label || 'Plaza analytics (VRN / ETC)'}
+              </span>
+              <span className="text-small text-muted-foreground">
+                {analyticsReady
+                  ? runAnalytics
+                    ? 'Will run in parallel when you start (same VRN/ETC files).'
+                    : 'Skipped for this run.'
+                  : 'Upload VRN and/or ETC above to enable plaza analytics.'}
+              </span>
+            </span>
+          </label>
           {programs.map((p) => (
             <label
               key={p.code}
@@ -399,7 +585,7 @@ export function ExceptionPipelinePage() {
                 type="checkbox"
                 className="mt-1"
                 checked={selectedCodes.includes(p.code)}
-                disabled={!p.enabled || busy}
+                disabled={!p.enabled || busy || hasPending}
                 onChange={() => toggleProgram(p.code, p.enabled)}
               />
               <span>
@@ -414,35 +600,96 @@ export function ExceptionPipelinePage() {
               </span>
             </label>
           ))}
-          <Button
-            type="button"
-            disabled={busy || !selectedCodes.length || !plazaIdentifier}
-            onClick={handleStart}
-          >
-            Start selected programs
-          </Button>
+          {hasPending ? (
+            <p className="text-small text-muted-foreground">
+              Upload selected files before starting the process.
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" disabled={busy || !canStart || batchActive} onClick={handleStart}>
+              Start process
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || !batchActive}
+              onClick={() => setStopConfirmOpen(true)}
+            >
+              Stop
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
       {batch ? (
         <Card>
           <CardHeader>
-            <CardTitle>Batch status</CardTitle>
+            <CardTitle>Run status</CardTitle>
             <CardDescription>
               {batch.batch_uuid} · {batch.status}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
             <p className="text-body">{batch.progress_message}</p>
+            {batch.analytics ? (
+              <div className="rounded-sm border border-border/70 bg-muted/30 px-3 py-2 text-small">
+                <span className="font-medium">
+                  {batch.analytics.label || 'Plaza analytics'}:{' '}
+                  {batch.analytics.status}
+                </span>
+                {batch.analytics.error_message
+                  ? ` — ${batch.analytics.error_message}`
+                  : ''}
+                {batch.analytics.progress_message &&
+                batch.analytics.status === 'running' ? (
+                  <p className="mt-1 text-muted-foreground">
+                    {batch.analytics.progress_message}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {(batch.steps || []).map((s) => (
               <div key={s.program_code} className="text-small">
                 {s.program_code}: {s.status}
                 {s.error_message ? ` — ${s.error_message}` : ''}
               </div>
             ))}
+            {batchActive ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setStopConfirmOpen(true)}
+              >
+                Stop
+              </Button>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
+
+      <Dialog
+        open={stopConfirmOpen}
+        onClose={() => {
+          if (!busy) setStopConfirmOpen(false)
+        }}
+        title="Stop this process?"
+        description="All in-progress work for this run will be discarded. Uploaded input files will remain available for this plaza and month."
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => setStopConfirmOpen(false)}
+          >
+            Cancel
+          </Button>
+          <Button type="button" disabled={busy} onClick={handleStopConfirm}>
+            Stop all processes
+          </Button>
+        </div>
+      </Dialog>
     </section>
   )
 }

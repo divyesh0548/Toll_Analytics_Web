@@ -1,5 +1,5 @@
 """
-E11 — AVC class consistency by vehicle, one file per month.
+E11 — AVC class consistency by vehicle (Raksha-style accuracy workbook).
 
 1. Download VRN files for ENTITY_NAME between FROM_DATE and TO_DATE.
 2. Combine rows by the Date column's calendar month.
@@ -10,6 +10,8 @@ E11 — AVC class consistency by vehicle, one file per month.
    If Undefined is strictly the highest, the next defined class count is used.
 5. The month result is right counts / all rows in that month.
    Vehicle percentages are not added together.
+6. Output is an Excel workbook (one sheet per month) with per-vehicle class
+   counts — same style as AVC-accuracy-Raksha.xlsx. That file is uploaded.
 
 Run:
   1. In e11_config.json, set date_format for the entity to dd/mm/yyyy or mm/dd/yyyy
@@ -21,6 +23,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import re
 import sys
 import zipfile
 from collections import Counter, defaultdict
@@ -33,6 +37,13 @@ import psycopg2
 from dotenv import dotenv_values
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
+from common.s3_output_upload import (  # noqa: E402
+    month_label_from_periods,
+    upload_exception_output,
+)
+
 REPO_ROOT = BASE_DIR.parent.parent
 WEBSITE_ENV = REPO_ROOT / "Website" / "backend" / ".env"
 E4_VRN_PATH = BASE_DIR.parent / "E4" / "vrn-download-merge.py"
@@ -40,7 +51,7 @@ PLAZA_DIR = REPO_ROOT / "Plaza_db_update"
 CONFIG_PATH = BASE_DIR / "e11_config.json"
 VEHICLE_CLASS_PATH = PLAZA_DIR / "config" / "vehicle_class.json"
 
-# --- Runtime inputs ---
+# --- Runtime inputs (Website overrides via E11_* env) ---
 ENTITY_NAME = "bassi"
 FROM_DATE = "2026-01-01"
 TO_DATE = "2026-02-28"
@@ -50,6 +61,106 @@ EXCEPTION_TYPE_ID = 11
 
 DOWNLOAD_FOLDER = BASE_DIR / "vrn_downloads"
 OUTPUT_DIR = BASE_DIR / "output"
+# When set (Website job), use local VRN files instead of submissions download.
+VRN_INPUT_FOLDER = ""
+Metrics_DB_Update = True
+DB_DRY_RUN = False
+UPLOAD_OUTPUT_TO_S3 = True
+# Pipeline batch period (optional). When set, metrics + S3 label use this month.
+PERIOD_YEAR: int | None = None
+PERIOD_MONTH: int | None = None
+EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
+_MONTH_ABBR = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+# ISO year-first stamps (Excel exports / merged files). Must win over dayfirst
+# so 2026-08-01 is 1 Aug, not 8 Jan.
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?(?:\s*[AaPp][Mm])?$"
+)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_website_env_overrides() -> None:
+    global ENTITY_NAME, FROM_DATE, TO_DATE, PLAZA_IDENTIFIER
+    global VRN_INPUT_FOLDER, OUTPUT_DIR, DOWNLOAD_FOLDER
+    global Metrics_DB_Update, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+    global PERIOD_YEAR, PERIOD_MONTH
+
+    if os.environ.get("E11_ENTITY_NAME", "").strip():
+        ENTITY_NAME = os.environ["E11_ENTITY_NAME"].strip()
+    if os.environ.get("E11_FROM_DATE", "").strip():
+        FROM_DATE = os.environ["E11_FROM_DATE"].strip()
+    if os.environ.get("E11_TO_DATE", "").strip():
+        TO_DATE = os.environ["E11_TO_DATE"].strip()
+    if os.environ.get("E11_PLAZA_IDENTIFIER", "").strip():
+        PLAZA_IDENTIFIER = os.environ["E11_PLAZA_IDENTIFIER"].strip()
+    if os.environ.get("E11_VRN_INPUT_FOLDER", "").strip():
+        VRN_INPUT_FOLDER = os.environ["E11_VRN_INPUT_FOLDER"].strip()
+    if os.environ.get("E11_OUTPUT_DIR", "").strip():
+        OUTPUT_DIR = Path(os.environ["E11_OUTPUT_DIR"].strip())
+    if "E11_METRICS_DB_UPDATE" in os.environ:
+        Metrics_DB_Update = _env_flag("E11_METRICS_DB_UPDATE", Metrics_DB_Update)
+    if "E11_UPLOAD_OUTPUT_TO_S3" in os.environ:
+        UPLOAD_OUTPUT_TO_S3 = _env_flag("E11_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
+    if "E11_DB_DRY_RUN" in os.environ:
+        DB_DRY_RUN = _env_flag("E11_DB_DRY_RUN", DB_DRY_RUN)
+
+    year_raw = os.environ.get("E11_PERIOD_YEAR", "").strip()
+    month_raw = os.environ.get("E11_PERIOD_MONTH", "").strip()
+    if year_raw and month_raw:
+        year = int(year_raw)
+        month = int(month_raw)
+        if not (1990 <= year <= 2100 and 1 <= month <= 12):
+            raise RuntimeError(
+                f"Invalid E11_PERIOD_YEAR/MONTH: {year_raw!r}/{month_raw!r}"
+            )
+        PERIOD_YEAR = year
+        PERIOD_MONTH = month
+
+
+def _metrics_table_name() -> str:
+    name = (
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
+        or "audit_exception_metrics"
+    )
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise RuntimeError(f"Invalid Exception_Metrics_Table: {name!r}")
+    return name
+
+
+def list_vrn_files(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        raise FileNotFoundError(f"VRN folder not found: {folder}")
+    files = sorted(
+        p
+        for p in folder.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in EXCEL_EXTENSIONS
+        and not p.name.startswith("~$")
+    )
+    if not files:
+        raise FileNotFoundError(f"No VRN Excel/CSV files under: {folder}")
+    return files
 
 _DAY_FIRST_FORMATS = (
     "%d-%m-%Y %H:%M:%S",
@@ -155,11 +266,10 @@ def prompt_skip_or_stop(path: Path, missing_words: list[str]) -> None:
     print(f"\n  Not detected in {path.name}:")
     for word in missing_words:
         print(f"    {word}")
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            f"Not detected in {path.name}: {', '.join(missing_words)}. "
-            "No terminal input, so the program stopped."
-        )
+    # Website / Docker jobs: auto-skip bad files (no interactive stdin).
+    if _env_flag("E11_NONINTERACTIVE", False) or not sys.stdin.isatty():
+        print("  Non-interactive — skipping this file.")
+        raise SkipFile(path.name)
     while True:
         try:
             choice = input("  Skip this file [s] or stop the program [x]? ").strip().lower()
@@ -214,9 +324,36 @@ def date_order_for(entity_name: str, config: dict) -> str:
 
 
 def parse_date(value, date_order: str) -> datetime | None:
+    """
+    Parse a VRN date cell.
+
+    ISO YYYY-MM-DD is always year-first (never dayfirst), matching E10/E15.
+    Otherwise use the plaza date_format from e11_config.json
+    (dd/mm/yyyy vs mm/dd/yyyy).
+    """
     text = _header_cell(value)
     if text.casefold() in _BLANK:
         return None
+
+    # Strip a trailing time if Date and Time were concatenated oddly.
+    # Keep strptime candidates that include time as well.
+    if _ISO_DATETIME_RE.match(text) or text[:10].count("-") == 2 and text[:4].isdigit():
+        iso_formats = (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d %I:%M:%S %p",
+            "%Y-%m-%d %I:%M %p",
+            "%Y-%m-%d",
+        )
+        for fmt in iso_formats:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        parsed = pd.to_datetime(text, dayfirst=False, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.to_pydatetime()
+
     if date_order == "mm/dd/yyyy":
         formats = _MONTH_FIRST_FORMATS + _PLAIN_FORMATS
         dayfirst = False
@@ -398,19 +535,101 @@ def write_undefined(path: Path, labels: set[str]) -> None:
     print(f"Undefined AVC labels: {len(lines)} → {path}")
 
 
+def month_sheet_name(month_key: str) -> str:
+    """Excel sheet title for YYYY-MM (max 31 chars)."""
+    year_s, month_s = str(month_key).split("-", 1)
+    month_i = int(month_s)
+    if not (1 <= month_i <= 12):
+        return str(month_key)[:31]
+    return f"{_MONTH_ABBR[month_i - 1]}-{year_s}"
+
+
+def export_month_sheet(pivot: pd.DataFrame, class_names: list[str]) -> pd.DataFrame:
+    """
+    Raksha-style columns:
+    Sr. No. | Vehicle Reg. No. | class… | Undefined | Total | Maximum Classification | Right %
+    Zero class counts are left blank (same as the reference workbook).
+    """
+    frame = pivot.copy()
+    if frame.empty:
+        columns = (
+            ["Sr. No.", "Vehicle Reg. No."]
+            + list(class_names)
+            + [UNDEFINED, "Total", "Maximum Classification", "Right %"]
+        )
+        return pd.DataFrame(columns=columns)
+
+    frame.insert(0, "Sr. No.", range(1, len(frame) + 1))
+    frame = frame.rename(
+        columns={
+            "VEH REG NO": "Vehicle Reg. No.",
+            "Right count": "Maximum Classification",
+        }
+    )
+    blankable = list(class_names) + [UNDEFINED]
+    for col in blankable:
+        if col in frame.columns:
+            frame[col] = frame[col].replace(0, pd.NA)
+    ordered = (
+        ["Sr. No.", "Vehicle Reg. No."]
+        + [c for c in class_names if c in frame.columns]
+        + [c for c in (UNDEFINED, "Total", "Maximum Classification", "Right %") if c in frame.columns]
+    )
+    return frame[ordered]
+
+
+def write_avc_accuracy_workbook(
+    path: Path,
+    month_pivots: dict[str, pd.DataFrame],
+    class_names: list[str],
+    summary_rows: list[dict],
+) -> Path:
+    """One sheet per calendar month; Summary sheet with monthly right-%."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    used_names: set[str] = set()
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        for month_key in sorted(month_pivots):
+            sheet = month_sheet_name(month_key)
+            # Avoid duplicate sheet names if the key is somehow repeated.
+            base = sheet
+            suffix = 2
+            while sheet.casefold() in used_names:
+                sheet = f"{base[:28]}_{suffix}"
+                suffix += 1
+            used_names.add(sheet.casefold())
+            export_month_sheet(month_pivots[month_key], class_names).to_excel(
+                writer, sheet_name=sheet, index=False
+            )
+        if summary_rows:
+            summary_df = pd.DataFrame(summary_rows)[
+                ["year", "month", "rows", "vehicles", "right_count", "right_pct"]
+            ]
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+    print(f"Wrote AVC accuracy workbook ({len(month_pivots)} month sheet(s)): {path}")
+    return path
+
+
 def _analytics_connection_kwargs() -> dict:
-    if not WEBSITE_ENV.is_file():
-        raise FileNotFoundError(f"Env file not found: {WEBSITE_ENV}")
-    values = dotenv_values(WEBSITE_ENV)
-    host = str(values.get("DB_HOST") or "").strip()
-    port = str(values.get("DB_PORT") or "5432").strip()
-    user = str(values.get("DB_USER") or "").strip()
-    password = str(values.get("DB_PASSWORD") or "")
+    # Docker: Compose injects Website/backend/.env into the process (file may be absent).
+    values = dotenv_values(WEBSITE_ENV) if WEBSITE_ENV.is_file() else {}
+    host = str(values.get("DB_HOST") or os.getenv("DB_HOST") or "").strip()
+    port = str(values.get("DB_PORT") or os.getenv("DB_PORT") or "5432").strip()
+    user = str(values.get("DB_USER") or os.getenv("DB_USER") or "").strip()
+    password = str(
+        values.get("DB_PASSWORD")
+        if values.get("DB_PASSWORD") is not None
+        else os.getenv("DB_PASSWORD", "")
+    )
     database = (
         str(values.get("NHIT_DB") or "").strip()
-        or str(values.get("ANALYTICS_DB_NAME") or "").strip()
-        or str(values.get("DB_NAME") or "").strip()
+        or str(values.get("ANALYTICS_DB_NAME") or os.getenv("ANALYTICS_DB_NAME") or "").strip()
+        or str(values.get("Toll_Analytics_DB") or os.getenv("Toll_Analytics_DB") or "").strip()
+        or str(values.get("DB_NAME") or os.getenv("DB_NAME") or "").strip()
     )
+    if not host and not WEBSITE_ENV.is_file():
+        raise FileNotFoundError(
+            f"Env file not found: {WEBSITE_ENV} (and DB_HOST not in process env)"
+        )
     missing = [
         name
         for name, value in (
@@ -432,7 +651,12 @@ def _analytics_connection_kwargs() -> dict:
     }
 
 
-def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
+def update_exception_metrics(
+    rows: list[dict],
+    plaza_identifier: str,
+    *,
+    dry_run: bool = False,
+) -> None:
     """Store only the monthly right-class percentage for exception type 11."""
     plaza = str(plaza_identifier or "").strip()
     if not plaza:
@@ -445,11 +669,13 @@ def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
         return
 
     kwargs = _analytics_connection_kwargs()
-    print(f"Target DB: {kwargs['database']}.audit_exception_metrics")
+    metrics_table = _metrics_table_name()
+    print(f"Target DB: {kwargs['database']}.{metrics_table}")
     print(f"plaza_identifier: {plaza}")
     print(f"exception_type_id: {EXCEPTION_TYPE_ID}")
-    upsert_sql = """
-        INSERT INTO audit_exception_metrics (
+    print(f"Months to sync: {len(rows)}" + (" (dry run)" if dry_run else ""))
+    upsert_sql = f"""
+        INSERT INTO {metrics_table} (
             plaza_identifier, exception_type_id, year, month,
             percentage, created_at, updated_at
         )
@@ -483,21 +709,26 @@ def update_exception_metrics(rows: list[dict], plaza_identifier: str) -> None:
                 percentage = Decimal(str(row["right_pct"])).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
-                cursor.execute(
-                    upsert_sql,
-                    (
-                        plaza,
-                        EXCEPTION_TYPE_ID,
-                        int(row["year"]),
-                        int(row["month"]),
-                        percentage,
-                    ),
-                )
                 print(
                     f"  {int(row['year'])}-{int(row['month']):02d}: "
                     f"percentage={percentage}%"
+                    + (" [dry-run]" if dry_run else "")
                 )
-        conn.commit()
+                if not dry_run:
+                    cursor.execute(
+                        upsert_sql,
+                        (
+                            plaza,
+                            EXCEPTION_TYPE_ID,
+                            int(row["year"]),
+                            int(row["month"]),
+                            percentage,
+                        ),
+                    )
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
     print(f"Updated {len(rows)} month(s).")
 
 
@@ -527,17 +758,32 @@ def download_vrn(entity_name: str, from_date: str, to_date: str) -> list[Path]:
 
 
 def main() -> int:
+    apply_website_env_overrides()
     entity_name = str(ENTITY_NAME).strip()
     if not entity_name:
         raise RuntimeError("Set ENTITY_NAME at the top of Main_E11.py.")
 
     print("=" * 60)
-    print("E11 — monthly AVC pivot and right-class percentage")
+    print("E11 — AVC accuracy workbook (per-vehicle pivot, one sheet per month)")
+    print(f"ENTITY_NAME = {entity_name!r}")
+    print(f"PLAZA_IDENTIFIER = {PLAZA_IDENTIFIER!r}")
+    print(f"VRN_INPUT_FOLDER = {VRN_INPUT_FOLDER!r}")
+    print(f"Metrics_DB_Update = {Metrics_DB_Update}")
+    print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
+    print(f"DB_DRY_RUN = {DB_DRY_RUN}")
+    if PERIOD_YEAR and PERIOD_MONTH:
+        print(f"PERIOD = {PERIOD_YEAR}-{PERIOD_MONTH:02d} (pipeline rollup)")
     print("=" * 60)
     config = load_config()
     date_order = date_order_for(entity_name, config)
     print(f"Date order for {entity_name}: {date_order}")
-    paths = download_vrn(entity_name, FROM_DATE, TO_DATE)
+
+    if str(VRN_INPUT_FOLDER or "").strip():
+        paths = list_vrn_files(Path(VRN_INPUT_FOLDER))
+        print(f"Using {len(paths)} local VRN file(s) from {VRN_INPUT_FOLDER}")
+    else:
+        paths = download_vrn(entity_name, FROM_DATE, TO_DATE)
+
     months, undefined_labels, class_names = month_frames(paths, config, date_order)
 
     if not months:
@@ -545,13 +791,13 @@ def main() -> int:
         write_undefined(OUTPUT_DIR / "undefined_avc.txt", undefined_labels)
         return 0
 
-    out_dir = OUTPUT_DIR / entity_name
+    out_dir = Path(OUTPUT_DIR) / entity_name
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_rows = []
+    month_pivots: dict[str, pd.DataFrame] = {}
     for month_key in sorted(months):
         pivot, summary = build_month_pivot(months[month_key], class_names)
-        pivot_path = out_dir / f"{month_key}_avc_pivot.csv"
-        pivot.to_csv(pivot_path, index=False, encoding="utf-8-sig")
+        month_pivots[month_key] = pivot
         year, month = month_key.split("-")
         summary_rows.append(
             {
@@ -569,13 +815,81 @@ def main() -> int:
             f"right {summary['right_count']:,} / {summary['rows']:,} "
             f"= {summary['right_pct']:.2f}%"
         )
-        print(f"  Wrote: {pivot_path}")
 
+    # Local summary CSV kept for debugging; S3 upload uses the detail workbook.
     summary_path = out_dir / "monthly_right_avc.csv"
     pd.DataFrame(summary_rows).to_csv(summary_path, index=False, encoding="utf-8-sig")
     print(f"Wrote: {summary_path}")
+
+    workbook_path = out_dir / f"{entity_name}_avc_accuracy.xlsx"
+    write_avc_accuracy_workbook(
+        workbook_path, month_pivots, class_names, summary_rows
+    )
     write_undefined(out_dir / "undefined_avc.txt", undefined_labels)
-    update_exception_metrics(summary_rows, PLAZA_IDENTIFIER)
+
+    plaza_id = str(PLAZA_IDENTIFIER or "").strip()
+    dry_run = bool(DB_DRY_RUN)
+    pipeline_period = PERIOD_YEAR is not None and PERIOD_MONTH is not None
+
+    # Pipeline: one metrics/S3 month for the batch period (weighted right %).
+    metrics_rows = summary_rows
+    if pipeline_period:
+        total_rows = sum(int(r["rows"]) for r in summary_rows)
+        total_right = sum(int(r["right_count"]) for r in summary_rows)
+        total_vehicles = sum(int(r["vehicles"]) for r in summary_rows)
+        right_pct = (
+            round(100.0 * total_right / total_rows, 2) if total_rows else 0.0
+        )
+        metrics_rows = [
+            {
+                "year": int(PERIOD_YEAR),
+                "month": int(PERIOD_MONTH),
+                "rows": total_rows,
+                "vehicles": total_vehicles,
+                "right_count": total_right,
+                "right_pct": right_pct,
+            }
+        ]
+        print(
+            f"Pipeline period {PERIOD_YEAR}-{PERIOD_MONTH:02d}: "
+            f"rows={total_rows:,}, right {total_right:,} / {total_rows:,} "
+            f"= {right_pct:.2f}%"
+        )
+
+    if Metrics_DB_Update:
+        print("-" * 60)
+        print(
+            f"Updating {_metrics_table_name()} "
+            f"(exception_type_id={EXCEPTION_TYPE_ID})…"
+        )
+        update_exception_metrics(metrics_rows, plaza_id, dry_run=dry_run)
+    else:
+        print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
+
+    if not UPLOAD_OUTPUT_TO_S3:
+        print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
+        return 0
+
+    if not plaza_id:
+        raise RuntimeError("PLAZA_IDENTIFIER is required for S3 upload.")
+    if pipeline_period:
+        month_periods = [(int(PERIOD_YEAR), int(PERIOD_MONTH))]
+    else:
+        month_periods = [(int(row["year"]), int(row["month"])) for row in summary_rows]
+    label = month_label_from_periods(month_periods)
+    print("-" * 60)
+    print(
+        f"Uploading {workbook_path.name} to S3 "
+        f"(month_label={label!r}, months={len(month_periods)}, "
+        f"sheets={len(month_pivots)})…"
+    )
+    upload_exception_output(
+        workbook_path,
+        plaza_id,
+        exception_type_id=int(EXCEPTION_TYPE_ID),
+        month_label=label,
+        dry_run=dry_run,
+    )
     return 0
 
 

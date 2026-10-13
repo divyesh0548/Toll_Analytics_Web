@@ -73,8 +73,9 @@ PLAZA_IDENTIFIER = ""
 EXCEPTION_TYPE_ID = 6
 # Date column on etc_enriched.xlsx used for S3 month/year label.
 READ_DATETIME_COLUMN = "read_datetime"
-# Write monthly Loss totals into audit_exception_metrics
-UPDATE_DB = False
+# Write monthly Loss totals into audit_exception_metrics.
+# Website jobs always pass E6_METRICS_DB_UPDATE=1; default True so metrics are on.
+UPDATE_DB = True
 DB_DRY_RUN = False
 # Upload etc_enriched.xlsx to S3 + audit_exception_output_files row.
 UPLOAD_OUTPUT_TO_S3 = True
@@ -454,7 +455,21 @@ def filter_etc_by_reason(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         )
 
     before = len(df)
-    mask = df[reason_col].astype(str).str.strip().str.casefold().isin(keep_set)
+    reason_series = (
+        df[reason_col]
+        .astype(str)
+        .str.strip()
+        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "NaT": pd.NA})
+    )
+    non_null = int(reason_series.notna().sum())
+    if non_null == 0:
+        raise RuntimeError(
+            f"ETC Reason column {reason_col!r} is empty after merge. "
+            "Newer ETC exports often use 'Trc Vrc Reason Code' (e.g. DISCOUNTLP) "
+            "instead of 'Reason'. Update etc_merge.merge_columns.reason aliases. "
+            f"Available columns: {list(df.columns)}"
+        )
+    mask = reason_series.fillna("").str.casefold().isin(keep_set)
     filtered = df.loc[mask].reset_index(drop=True)
     print(
         f"ETC Reason filter ({reason_col!r} in "
@@ -462,9 +477,18 @@ def filter_etc_by_reason(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         f"kept {len(filtered):,}/{before:,} rows"
     )
     if filtered.empty:
+        sample = (
+            reason_series.dropna()
+            .astype(str)
+            .str.strip()
+            .value_counts()
+            .head(15)
+            .to_dict()
+        )
         raise RuntimeError(
             "ETC Reason filter removed every row. "
-            f"Check Reason values vs reason_keep_values={list(keep_values)!r}."
+            f"Check Reason values vs reason_keep_values={list(keep_values)!r}. "
+            f"Top values in {reason_col!r}: {sample}"
         )
     return filtered
 

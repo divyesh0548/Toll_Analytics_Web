@@ -21,6 +21,7 @@ Rules:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +31,32 @@ import psycopg2
 from dotenv import load_dotenv
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
+
+# ISO date first — dayfirst=True on YYYY-MM-DD swaps month/day for days 1–12.
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?"
+)
+
+
+def parse_output_datetimes(values) -> pd.Series:
+    series = pd.Series(values, dtype="object")
+    text = series.map(
+        lambda v: ""
+        if v is None or (isinstance(v, float) and pd.isna(v))
+        else str(v).strip()
+    )
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    iso_mask = text.map(lambda s: bool(_ISO_DATETIME_RE.match(s)))
+    if iso_mask.any():
+        parsed.loc[iso_mask] = pd.to_datetime(
+            text[iso_mask], errors="coerce", dayfirst=False
+        )
+    other = (~iso_mask) & text.ne("")
+    if other.any():
+        parsed.loc[other] = pd.to_datetime(
+            text[other], errors="coerce", format="mixed", dayfirst=True
+        )
+    return parsed
 
 # ---------------------------------------------------------------------------
 DB_UPDATE_ONLY = False
@@ -164,11 +191,15 @@ def aggregate_monthly_applicable_rate(
     *,
     date_aliases: list[str] | None = None,
     rate_aliases: list[str] | None = None,
+    force_period: tuple[int, int] | None = None,
 ) -> list[dict]:
     """
     Group by year/month of Date & Time.
     Only rows with Applicable Rate > 0.
     total_amount = sum(Applicable Rate); total_count = row count.
+
+    When force_period=(year, month) is set (pipeline batch), roll the whole
+    run into that single month instead of splitting by Date & Time.
     """
     if df is None or df.empty:
         return []
@@ -178,7 +209,7 @@ def aggregate_monthly_applicable_rate(
     rate_col = resolve_column(headers, rate_aliases or RATE_ALIASES)
 
     missing = []
-    if not date_col:
+    if not date_col and force_period is None:
         missing.append("Date & Time")
     if not rate_col:
         missing.append("Applicable Rate")
@@ -189,12 +220,34 @@ def aggregate_monthly_applicable_rate(
         )
 
     work = df.copy()
-    work["_dt"] = pd.to_datetime(work[date_col], errors="coerce", format="mixed")
     work["_rate"] = work[rate_col].map(_to_float_or_none)
-    work = work.dropna(subset=["_dt", "_rate"])
+    work = work.dropna(subset=["_rate"])
     work = work.loc[work["_rate"] > 0].copy()
     if work.empty:
         print("No rows with Applicable Rate > 0 for monthly aggregation.")
+        return []
+
+    if force_period is not None:
+        year, month = int(force_period[0]), int(force_period[1])
+        total_amount = Decimal(str(round(float(work["_rate"].sum()), 2)))
+        total_count = int(len(work))
+        print(
+            f"Pipeline period {year}-{month:02d}: "
+            f"count={total_count:,}, amount={total_amount:,.2f}"
+        )
+        return [
+            {
+                "year": year,
+                "month": month,
+                "total_count": total_count,
+                "total_amount": total_amount,
+            }
+        ]
+
+    work["_dt"] = parse_output_datetimes(work[date_col])
+    work = work.dropna(subset=["_dt"])
+    if work.empty:
+        print("No rows with parseable Date & Time for monthly aggregation.")
         return []
 
     work["year"] = work["_dt"].dt.year.astype(int)
@@ -378,6 +431,7 @@ def update_db_from_dataframe(
     dry_run: bool = False,
     date_aliases: list[str] | None = None,
     rate_aliases: list[str] | None = None,
+    force_period: tuple[int, int] | None = None,
 ) -> dict[str, int]:
     plaza_identifier = str(plaza_identifier or "").strip()
     if not plaza_identifier:
@@ -390,6 +444,7 @@ def update_db_from_dataframe(
         df,
         date_aliases=date_aliases,
         rate_aliases=rate_aliases,
+        force_period=force_period,
     )
     print(f"Target DB: {conn_kw['database']}.{table}")
     print(f"Plaza: {plaza_identifier}")

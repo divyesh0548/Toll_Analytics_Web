@@ -11,6 +11,7 @@ Full pipeline:
 
 Update rule when a row already exists for plaza + exception_type_id + year + month:
   always overwrite total_count and total_amount with the new values.
+  Optional status / notes (e.g. empty_filter when all rows dropped).
 """
 
 from __future__ import annotations
@@ -330,6 +331,10 @@ def fetch_existing_metrics(
     }
 
 
+EMPTY_FILTER_STATUS = "empty_filter"
+EMPTY_FILTER_NOTES = "No qualifying passes after filters"
+
+
 def upsert_monthly_metrics(
     conn,
     *,
@@ -342,6 +347,7 @@ def upsert_monthly_metrics(
     """
     Insert missing months.
     Always overwrite total_count and total_amount when a row already exists.
+    Optional per-row status / notes (cleared when omitted / null).
     """
     stats = {"inserted": 0, "updated": 0, "unchanged": 0}
     if not rows:
@@ -366,10 +372,12 @@ def upsert_monthly_metrics(
             month,
             total_amount,
             total_count,
+            status,
+            notes,
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         """
     ).format(table=table_id)
     update_sql = sql.SQL(
@@ -377,6 +385,8 @@ def upsert_monthly_metrics(
         UPDATE {table}
         SET total_amount = %s,
             total_count = %s,
+            status = %s,
+            notes = %s,
             updated_at = NOW()
         WHERE plaza_identifier = %s
           AND exception_type_id = %s
@@ -391,6 +401,12 @@ def upsert_monthly_metrics(
             month = int(row["month"])
             new_count = int(row["total_count"] or 0)
             new_amount = Decimal(str(row["total_amount"] or 0))
+            status = row.get("status")
+            notes = row.get("notes")
+            if status is not None:
+                status = str(status).strip() or None
+            if notes is not None:
+                notes = str(notes).strip() or None
             key = (year, month)
             current = existing.get(key)
 
@@ -398,6 +414,7 @@ def upsert_monthly_metrics(
                 print(
                     f"  {year}-{month:02d}: INSERT "
                     f"count={new_count:,}, amount={new_amount:,.2f}"
+                    + (f", status={status}" if status else "")
                 )
                 if not dry_run:
                     cursor.execute(
@@ -409,6 +426,8 @@ def upsert_monthly_metrics(
                             month,
                             new_amount,
                             new_count,
+                            status,
+                            notes,
                         ),
                     )
                 stats["inserted"] += 1
@@ -420,6 +439,7 @@ def upsert_monthly_metrics(
                 f"  {year}-{month:02d}: UPDATE "
                 f"count {old_count:,} -> {new_count:,}, "
                 f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+                + (f", status={status}" if status else "")
             )
             if not dry_run:
                 cursor.execute(
@@ -427,6 +447,8 @@ def upsert_monthly_metrics(
                     (
                         new_amount,
                         new_count,
+                        status,
+                        notes,
                         plaza_identifier,
                         exception_type_id,
                         year,
@@ -437,6 +459,88 @@ def upsert_monthly_metrics(
 
     if not dry_run:
         conn.commit()
+    return stats
+
+
+def zero_month_rows(
+    periods: list[tuple[int, int]],
+    *,
+    status: str = EMPTY_FILTER_STATUS,
+    notes: str = EMPTY_FILTER_NOTES,
+) -> list[dict]:
+    """Build metric rows with count/amount 0 for each (year, month)."""
+    rows: list[dict] = []
+    seen: set[tuple[int, int]] = set()
+    for year, month in periods:
+        key = (int(year), int(month))
+        if key in seen or not (1 <= key[1] <= 12):
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "year": key[0],
+                "month": key[1],
+                "total_count": 0,
+                "total_amount": Decimal("0"),
+                "status": status,
+                "notes": notes,
+            }
+        )
+    return rows
+
+
+def update_db_zero_months(
+    periods: list[tuple[int, int]],
+    plaza_identifier: str,
+    *,
+    exception_type_id: int = EXCEPTION_TYPE_ID,
+    dry_run: bool = False,
+    status: str = EMPTY_FILTER_STATUS,
+    notes: str = EMPTY_FILTER_NOTES,
+) -> dict[str, int]:
+    """Upsert zero metrics (with status/notes) for plaza months with no E4 output."""
+    plaza_identifier = str(plaza_identifier or "").strip()
+    if not plaza_identifier:
+        raise RuntimeError("plaza_identifier is required.")
+    rows = zero_month_rows(periods, status=status, notes=notes)
+    if not rows:
+        print("No months to mark as empty — DB not updated.")
+        return {"inserted": 0, "updated": 0, "unchanged": 0}
+
+    load_env()
+    conn_kw = connection_kwargs()
+    table = metrics_table_name()
+    print(f"Target DB: {conn_kw['database']}.{table}")
+    print(f"Plaza: {plaza_identifier}")
+    print(f"exception_type_id: {exception_type_id}")
+    print(f"Marking {len(rows)} month(s) as empty after filters:")
+    for row in rows:
+        print(f"  {row['year']}-{row['month']:02d}: count=0, amount=0, status={row['status']}")
+
+    conn = psycopg2.connect(**conn_kw)
+    try:
+        plaza = fetch_plaza(conn, plaza_identifier)
+        if plaza is None:
+            raise RuntimeError(
+                f"plaza_identifier {plaza_identifier!r} not found in plazas table."
+            )
+        print(f"Plaza name: {plaza['plaza_name']}")
+        stats = upsert_monthly_metrics(
+            conn,
+            plaza_identifier=plaza_identifier,
+            exception_type_id=exception_type_id,
+            rows=rows,
+            dry_run=dry_run,
+            table_name=table,
+        )
+    finally:
+        conn.close()
+
+    print(
+        f"DB sync done — inserted={stats['inserted']}, "
+        f"updated={stats['updated']}, unchanged={stats['unchanged']}"
+        + (" (dry run)" if dry_run else "")
+    )
     return stats
 
 

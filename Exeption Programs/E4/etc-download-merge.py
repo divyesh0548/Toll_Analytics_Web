@@ -31,6 +31,7 @@ from psycopg2.extras import RealDictCursor
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
+WEBSITE_ENV = BASE_DIR.parent.parent / "Website" / "backend" / ".env"
 CONFIG_PATH = BASE_DIR / "etc_merge_config.json"
 
 # --- Runtime inputs (edit these; not in JSON) ---
@@ -51,31 +52,60 @@ EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
 
 
 def load_env() -> None:
-    if not ENV_FILE.is_file():
-        raise FileNotFoundError(f"Env file not found: {ENV_FILE}")
-    load_dotenv(ENV_FILE, override=True)
+    """Prefer process env (Docker) / Website/backend/.env; E4/.env is optional."""
+    loaded_any = False
+    backend_root = os.environ.get("WEBSITE_BACKEND_ROOT", "").strip()
+    candidates = []
+    if backend_root:
+        candidates.append(Path(backend_root).expanduser() / ".env")
+    candidates.extend([WEBSITE_ENV, ENV_FILE])
+    for path in candidates:
+        if path.is_file():
+            load_dotenv(path, override=False)
+            loaded_any = True
+    if loaded_any:
+        return
+    if os.getenv("DB_HOST", "").strip() and os.getenv("DB_NAME", "").strip():
+        return
+    raise FileNotFoundError(
+        f"Env file not found: tried {WEBSITE_ENV} and {ENV_FILE}"
+    )
 
 
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(f"Missing required env var: {name} (in {ENV_FILE})")
+        raise RuntimeError(
+            f"Missing required env var: {name} "
+            "(checked process env and Website/backend/.env)"
+        )
     return value
 
 
 def connection_kwargs() -> dict:
+    """Submissions DB (ETC URLs) lives in Source_DB_NAME, not analytics DB_NAME."""
+    database = (
+        os.getenv("Source_DB_NAME", "").strip()
+        or os.getenv("SOURCE_DB_NAME", "").strip()
+    )
+    if not database:
+        raise RuntimeError(
+            "Missing Source_DB_NAME (submissions DB) in Website/backend/.env. "
+            "DB_NAME is the analytics database and does not contain submissions."
+        )
     return {
         "host": require_env("DB_HOST"),
-        "port": int(require_env("DB_PORT") or "5432"),
+        "port": int(os.getenv("DB_PORT", "5432").strip() or "5432"),
         "user": require_env("DB_USER"),
         "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("DB_NAME"),
+        "database": database,
     }
 
 
 def table_name() -> str:
     return (
-        os.getenv("Table_NAME", "").strip()
+        os.getenv("exceptions_Table_NAME", "").strip()
+        or os.getenv("Table_NAME", "").strip()
         or os.getenv("TABLE_NAME", "").strip()
         or "submissions"
     )

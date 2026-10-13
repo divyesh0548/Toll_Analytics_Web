@@ -1,0 +1,24 @@
+run_plaza_etl processing log
+Started: 2026-10-13 10:57:24
+================================================================================
+Plaza identifier: d55c2122-117c-45be-8554-7ea76730932b
+Plaza: odhaki_paipkhar
+Input folder: C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs
+Files found: 880
+Dry run: False
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\odhaki_paipkhar\2026-06-10\8_4\20260610_103226_ETC_TXN_DETAIL_SHIFT-_B.xlsx — Header row could not be detected in: 20260610_103226_ETC_TXN_DETAIL_SHIFT-_B.xlsx
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\odhaki_paipkhar\2026-07-03\12_8\20260703_023842_UPI_Transaction_Report_01.07.2026.xlsx — Unable to read workbook: could not read stylesheet from C:\Users\DIVYES~1\AppData\Local\Temp\tmp9p7dkfj2\20260703_023842_UPI_Transaction_Report_01.07.2026.xlsx.
+This is most probably because the workbook source files contain some invalid XML.
+Please see the exception for more details.
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\updated\2025-11-27\12_8\20251127_023823_All_Transaction_Report_27.11.2025.xlsx — Header row could not be detected in: 20251127_023823_All_Transaction_Report_27.11.2025.xlsx
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\updated\2025-12-02\8_4\20251202_110001_TRS_Revised_2_Old_shift_B_02.12.2025.xlsx — Header row could not be detected in: 20251202_110001_TRS_Revised_2_Old_shift_B_02.12.2025.xlsx
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\updated\2026-01-13\12_8\20260113_023504_All_Transaction_Report_Shift_A.xlsx — Header row could not be detected in: 20260113_023504_All_Transaction_Report_Shift_A.xlsx
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\updated\2026-01-20\4_12\20260120_184410_ETC_TXN_REPORT_SHIFTB_C.xlsx — Header row could not be detected in: 20260120_184410_ETC_TXN_REPORT_SHIFTB_C.xlsx
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\updated\2026-02-16\12_8\20260216_023502_All_Transaction_Report_Shift_A.xlsx — Unable to read workbook: could not read stylesheet from C:\Users\DIVYES~1\AppData\Local\Temp\tmpl3qtjptc\20260216_023502_All_Transaction_Report_Shift_A.xlsx.
+This is most probably because the workbook source files contain some invalid XML.
+Please see the exception for more details.
+[SKIP] C:\Divyesh\Toll Analytics Dashboard\Odhaki Paipkhar VRNs\updated\2026-03-30\12_8\20260330_023755_ALL_Transaction_Report_Shift_A.xlsx — Unable to read workbook: could not read stylesheet from C:\Users\DIVYES~1\AppData\Local\Temp\tmpmekx8757\20260330_023755_ALL_Transaction_Report_Shift_A.xlsx.
+This is most probably because the workbook source files contain some invalid XML.
+Please see the exception for more details.
+
+Completed. Skipped files: 8.

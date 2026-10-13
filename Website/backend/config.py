@@ -20,6 +20,13 @@ def _database_uri() -> str:
     return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or _database_uri()
@@ -32,6 +39,8 @@ class Config:
     JSON_SORT_KEYS = False
     # Large exception job inputs (ETC/VRN); unset = no Flask limit.
     MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024**3)))
+    # Show classic per-exception uploads UI (/exceptions/uploads) in nav.
+    SHOW_EXCEPTION_UPLOADS = _env_flag("SHOW_EXCEPTION_UPLOADS", False)
 
 
 class DevelopmentConfig(Config):

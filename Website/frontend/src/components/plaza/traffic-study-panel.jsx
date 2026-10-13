@@ -20,7 +20,10 @@ import {
   updatePlazaCalendarEvent,
   uploadPlazaCalendarEvents,
 } from '@/lib/api'
-import { categoryTooltipXFormatter } from '@/lib/chart-axis'
+import {
+  categoryTooltipXFormatter,
+  categoryXAxis,
+} from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 
 export const EVENT_TYPE_OPTIONS = [
@@ -119,6 +122,12 @@ function trafficByDateMap(dailyTrend) {
   return map
 }
 
+function weekdayShortForDate(y, m, day) {
+  // WEEKDAYS is Mon…Sun; JS getDay() is Sun=0
+  const idx = (new Date(y, m - 1, day).getDay() + 6) % 7
+  return WEEKDAYS[idx]
+}
+
 function monthSeries(dailyTrend, yearMonth) {
   const [y, m] = String(yearMonth).split('-').map(Number)
   const daysInMonth = new Date(y, m, 0).getDate()
@@ -128,14 +137,15 @@ function monthSeries(dailyTrend, yearMonth) {
   const dates = []
   for (let day = 1; day <= daysInMonth; day += 1) {
     const iso = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    categories.push(String(day))
+    // Two-line label (date + weekday) keeps width narrow vs Y-axis labels.
+    categories.push(`${day}\n${weekdayShortForDate(y, m, day)}`)
     dates.push(iso)
     data.push(byDate.has(iso) ? byDate.get(iso) : null)
   }
   return { categories, data, dates }
 }
 
-function eventChartAnnotations(visibleEvents, dates, colors) {
+function eventChartAnnotations(visibleEvents, dates, colors, categories = null) {
   /**
    * Vertical lines from each event down to its X-axis date (start day),
    * with the label on the line. Multi-day windows also get a light range fill.
@@ -158,8 +168,15 @@ function eventChartAnnotations(visibleEvents, dates, colors) {
     if (firstIdx == null || lastIdx == null) continue
 
     const fill = ev.event_type === 'mela_window' ? '#d97706' : colors.danger
-    const startCat = String(new Date(`${dates[firstIdx]}T00:00:00`).getDate())
-    const endCat = String(new Date(`${dates[lastIdx]}T00:00:00`).getDate())
+    // Prefer exact category strings (e.g. "1\nMon") so annotations align after label format changes.
+    const startCat =
+      categories?.[firstIdx] != null
+        ? String(categories[firstIdx])
+        : String(new Date(`${dates[firstIdx]}T00:00:00`).getDate())
+    const endCat =
+      categories?.[lastIdx] != null
+        ? String(categories[lastIdx])
+        : String(new Date(`${dates[lastIdx]}T00:00:00`).getDate())
     const labelText = ev.label || EVENT_TYPE_LABEL[ev.event_type] || 'Event'
 
     // Light band for multi-day windows (no label on the band).
@@ -235,11 +252,17 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
 
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
+  // Use full (unthinned) categories for annotations so event lines hit every day.
   const annotations = {
-    xaxis: eventChartAnnotations(visibleEvents, series.dates, {
-      danger: colors.danger,
-    }),
+    xaxis: eventChartAnnotations(
+      visibleEvents,
+      series.dates,
+      { danger: colors.danger },
+      series.categories,
+    ),
   }
+  // ~28–31 points with weekday text: diagonal + extra left pad clears Y-axis.
+  const xAxis = categoryXAxis(series.categories, theme.labelStyle, 31)
 
   const options = {
     ...baseChartOptions(dark),
@@ -250,26 +273,40 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
     },
     grid: {
       ...baseChartOptions(dark).grid,
-      padding: { top: 36, right: 8, left: 8, bottom: 0 },
+      padding: {
+        top: 36,
+        right: 12,
+        left: 16,
+        bottom: 12,
+      },
     },
     stroke: { width: 3, curve: 'smooth' },
     markers: { size: 3 },
     colors: [colors.primary],
     xaxis: {
-      categories: series.categories,
+      ...xAxis,
+      categories: xAxis.categories,
       title: { text: 'Date of month', style: theme.labelStyle },
       labels: {
-        rotate: 0,
-        rotateAlways: false,
-        hideOverlappingLabels: false,
+        ...xAxis.labels,
+        rotate: -45,
+        rotateAlways: true,
+        hideOverlappingLabels: true,
         trim: false,
-        style: theme.labelStyle,
+        offsetY: 2,
+        minHeight: 56,
+        style: {
+          ...theme.labelStyle,
+          fontSize: '10px',
+        },
       },
     },
     yaxis: {
       labels: {
         formatter: (v) => Number(v).toLocaleString('en-IN'),
         style: theme.labelStyle,
+        maxWidth: 72,
+        offsetX: -2,
       },
     },
     annotations,
@@ -278,9 +315,9 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
       x: {
         formatter: (_val, opts) => {
           const idx = opts?.dataPointIndex
-          const day = series.categories[idx]
+          const label = String(series.categories[idx] || '').replace('\n', ' ')
           const iso = series.dates[idx]
-          return iso ? `${day} (${iso})` : String(day)
+          return iso ? `${label} · ${iso}` : label
         },
       },
       y: { formatter: (v) => (v == null ? '—' : Number(v).toLocaleString('en-IN')) },
@@ -292,7 +329,7 @@ function MonthTrafficChart({ dailyTrend, monthValue, visibleEvents, dark }) {
       options={options}
       series={[{ name: 'Daily traffic', data: series.data }]}
       type="line"
-      height={380}
+      height={400}
     />
   )
 }
@@ -489,8 +526,12 @@ function MonthYearApplyControls({
     }
   }, [monthsForYear, draftMonth])
 
+  const draftValue =
+    draftYear && draftMonth ? `${draftYear}-${draftMonth}` : ''
+  const isDirty = Boolean(draftValue) && draftValue !== String(monthValue || '')
+
   function handleApply() {
-    if (!draftYear || !draftMonth) return
+    if (!draftYear || !draftMonth || !isDirty) return
     onApply?.(`${draftYear}-${draftMonth}`)
   }
 
@@ -526,9 +567,11 @@ function MonthYearApplyControls({
           ))}
         </select>
       </label>
-      <Button type="button" onClick={handleApply} disabled={disabled || !draftYear || !draftMonth}>
-        Apply
-      </Button>
+      {isDirty && !disabled ? (
+        <Button type="button" onClick={handleApply} disabled={!draftYear || !draftMonth}>
+          Apply
+        </Button>
+      ) : null}
     </div>
   )
 }

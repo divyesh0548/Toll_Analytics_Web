@@ -30,10 +30,10 @@ from psycopg2 import sql
 # Runtime inputs — edit these, then run the script
 # ---------------------------------------------------------------------------
 
-PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
+PLAZA_IDENTIFIER = "d55c2122-117c-45be-8554-7ea76730932b"
 
 # Inclusive date range (YYYY-MM-DD)
-FROM_DATE = "2026-08-01"
+FROM_DATE = "2025-11-23"
 TO_DATE = "2026-08-31"
 
 # True = count only, no DELETE

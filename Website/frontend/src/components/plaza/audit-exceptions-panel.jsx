@@ -7,6 +7,18 @@ import { Switch } from '@/components/ui/switch'
 import { formatMoneyCompact } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 
+const LAC = 100_000
+
+/** Absolute rupees → Lakh number only (no “Lakh” suffix; use in column header). */
+function formatImpactLakh(value, { digits = 2 } = {}) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  const n = Number(value) / LAC
+  return n.toLocaleString('en-IN', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  })
+}
+
 const MONTH_NAMES = [
   'Jan',
   'Feb',
@@ -27,11 +39,43 @@ function formatCount(value) {
   return Number(value).toLocaleString('en-IN')
 }
 
-function formatSharePct(amount, totalAmount) {
+function formatSharePct(amount, periodRevenue) {
+  if (periodRevenue == null) return null
   const a = Number(amount)
-  const t = Number(totalAmount)
+  const t = Number(periodRevenue)
   if (!Number.isFinite(a) || !Number.isFinite(t) || t <= 0) return null
   return (a / t) * 100
+}
+
+/** Empty-result note when a metric row exists with zero transactions (month view). */
+function emptyResultNote(line, { wholeYear }) {
+  if (wholeYear) return null
+  if (line?.percentage != null) return null
+  if (Number(line?.total_count) !== 0) return null
+
+  const code = String(line?.code || '').toUpperCase()
+  const status = String(line?.status || '').trim().toLowerCase()
+  const defaults = {
+    empty_filter:
+      code === 'E09' || code === 'E9'
+        ? 'No UNSETTLED rows after filters'
+        : code === 'E04' || code === 'E4'
+          ? 'No qualifying passes after filters'
+          : 'No transactions after filters',
+    no_trips: 'No trips recorded for qualifying passes',
+    no_amount: 'No countable unsettled amounts',
+  }
+  if (status === 'empty_filter' || status === 'no_trips' || status === 'no_amount') {
+    return line?.notes || defaults[status] || defaults.empty_filter
+  }
+  if (line?.notes) {
+    return String(line.notes)
+  }
+  // Metric recorded as zero without a status (common until writers set notes).
+  if (line?.has_metric) {
+    return 'No transactions recorded for this period'
+  }
+  return null
 }
 
 function formatBytes(value) {
@@ -180,10 +224,12 @@ export function AuditExceptionsPanel({
   monthValue,
   wholeYear = false,
   metricsSource = 'manual',
+  canApply = false,
   onYearChange,
   onMonthChange,
   onWholeYearChange,
   onMetricsSourceChange,
+  onApply,
 }) {
   const yearOptions = useMemo(
     () => buildAuditYearOptions(data?.availability?.years || [], yearValue || data?.selection?.year),
@@ -191,7 +237,8 @@ export function AuditExceptionsPanel({
   )
   const exceptions = data?.exceptions || []
   const summary = data?.summary
-  const totalAmount = Number(summary?.total_amount) || 0
+  const periodRevenue =
+    summary?.period_revenue != null ? Number(summary.period_revenue) : null
   const selectedYear = yearValue || (data?.selection?.year != null ? String(data.selection.year) : '')
   const selectedMonth =
     monthValue ||
@@ -205,7 +252,7 @@ export function AuditExceptionsPanel({
         <div>
           <h2 className="text-header">Audit exceptions</h2>
           <p className="text-body text-muted-foreground">
-            Standard findings for this plaza by month or full year. Amounts in ₹ Lakh.
+            Standard findings for this plaza by month or full year. Impact in ₹ Lakh.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
@@ -217,8 +264,8 @@ export function AuditExceptionsPanel({
               onChange={(e) => onMetricsSourceChange?.(e.target.value)}
               disabled={loading}
             >
-              <option value="manual">Single-run (legacy)</option>
-              <option value="pipeline">One-click pipeline</option>
+              <option value="manual">Manual upload</option>
+              <option value="pipeline">File Upload</option>
             </select>
           </label>
           <label className="flex h-10 items-center gap-2">
@@ -265,6 +312,16 @@ export function AuditExceptionsPanel({
               </select>
             </label>
           ) : null}
+          {canApply ? (
+            <Button
+              type="button"
+              className="h-10"
+              disabled={loading}
+              onClick={() => onApply?.()}
+            >
+              Apply
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -296,7 +353,7 @@ export function AuditExceptionsPanel({
         </Card>
         <Card>
           <CardContent className="space-y-1 p-4">
-            <p className="text-body text-foreground">Total amount</p>
+            <p className="text-body text-foreground">Total Impact</p>
             <p className="text-display text-2xl font-semibold tracking-tight">
               {formatMoneyCompact(summary?.total_amount)}
             </p>
@@ -310,9 +367,9 @@ export function AuditExceptionsPanel({
             {data?.selection?.label || 'Selected period'}
           </CardTitle>
           <CardDescription className="text-body">
-            Transactions and amount (₹ Lakh) for this plaza. % of total is each exception’s
-            share of overall amount. Output downloads match by month label
-            (e.g. 2026-Apr-May shows for April and May).
+            Transactions and impact (₹ Lakh) for this plaza. % of Revenue is each
+            exception’s share of plaza ETC revenue for the selected period. Output
+            downloads match by month label (e.g. 2026-Apr-May shows for April and May).
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -329,10 +386,10 @@ export function AuditExceptionsPanel({
                       Transactions
                     </th>
                     <th className="px-2 py-3 text-body font-semibold text-right">
-                      Amount
+                      Impact (in Lakh)
                     </th>
                     <th className="px-2 py-3 text-body font-semibold text-right">
-                      % of total
+                      % of Revenue
                     </th>
                     <th className="px-2 py-3 text-body font-semibold text-right">Output</th>
                   </tr>
@@ -345,7 +402,10 @@ export function AuditExceptionsPanel({
                       const isPctMetric = line.percentage != null
                       const sharePct = isPctMetric
                         ? null
-                        : formatSharePct(line.total_amount, totalAmount)
+                        : formatSharePct(line.total_amount, periodRevenue)
+                      const emptyNote = emptyResultNote(line, {
+                        wholeYear: Boolean(wholeYear),
+                      })
                       return (
                         <tr
                           key={line.code}
@@ -363,7 +423,12 @@ export function AuditExceptionsPanel({
                             {line.code}
                           </td>
                           <td className="max-w-[28rem] px-2 py-3 text-base leading-snug">
-                            {line.label}
+                            <div>{line.label}</div>
+                            {emptyNote ? (
+                              <p className="mt-1 text-small text-muted-foreground">
+                                {emptyNote}
+                              </p>
+                            ) : null}
                           </td>
                           <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
                             {isPctMetric ? '—' : formatCount(line.total_count)}
@@ -371,10 +436,10 @@ export function AuditExceptionsPanel({
                           <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
                             {isPctMetric
                               ? `${Number(line.percentage).toFixed(2)}%`
-                              : formatMoneyCompact(line.total_amount)}
+                              : formatImpactLakh(line.total_amount)}
                           </td>
                           <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
-                            {sharePct == null ? '—' : `${sharePct.toFixed(1)}%`}
+                            {sharePct == null ? '—' : `${sharePct.toFixed(2)}%`}
                           </td>
                           <td className="px-2 py-3 text-right whitespace-nowrap">
                             <OutputCell line={line} wholeYear={Boolean(wholeYear)} />

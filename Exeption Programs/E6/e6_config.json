@@ -58,6 +58,9 @@
       "Transaction Date",
       "Txn Status",
       "Reason",
+      "Trc Vrc Reason Code",
+      "TRC VRC Reason Code",
+      "Discount Name",
       "Vehicle Class",
       "AVC Vehicle Class",
       "Mapper Vehicle Class"
@@ -107,7 +110,14 @@
         "Net Settled Amount"
       ],
       "reason": [
-        "Reason"
+        "Reason",
+        "Trc Vrc Reason Code",
+        "TRC VRC Reason Code",
+        "Trc/Vrc Reason Code",
+        "TRC/VRC Reason Code",
+        "Discount Reason",
+        "Exemption Reason",
+        "Discount Name"
       ],
       "vehicle_class": [
         "Vehicle Class",
@@ -118,7 +128,9 @@
       ]
     },
     "reason_keep_values": [
-      "Discount Local Price"
+      "Discount Local Price",
+      "DISCOUNTLP",
+      "Local Tariff Pass Comm"
     ],
     "etc_class_remove_indexes": ["1"]
   },

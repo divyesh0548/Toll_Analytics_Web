@@ -4,8 +4,9 @@ E7 — Local passes issued at a lower or zero charge (VC4 only).
 1. Read pass files from PASS_INPUT_FOLDER.
 2. Keep rows whose NPCI Vehicle Class is VC4 (e7_config.json).
 3. Drop rows whose Payment Mode is IHMCL_Exemption.
-4. Months = absolute calendar-month difference between Start/End Effective Date
-   (day of month ignored). Start after End still yields a positive month count.
+4. Months = calendar-month difference between Start/End Effective Date
+   (day of month ignored), minimum 1 when Start month ≤ End month.
+   Rows where Start month is after End month are dropped (invalid window).
 5. Monthly rate from Issuance Date: before 2026-04-01 → 350, else → 360.
 6. Receivable Amt = Months × Monthly Rate.
 7. If Receivable Amt ≤ Issuance Fees → drop the row.
@@ -13,6 +14,8 @@ E7 — Local passes issued at a lower or zero charge (VC4 only).
 8. Write those rows (Receivable Amt left of Loss) as the output CSV.
 9. Monthly metrics / S3 month label use Issuance Date year+month.
    Existing audit_exception_metrics rows are always overwritten.
+   Empty Loss still writes zero metrics (pipeline period or empty_filter) and
+   uploads the (header-only) CSV so the website has a downloadable output.
 10. Optionally upload the output file to S3.
 
 Run:
@@ -67,6 +70,13 @@ Metrics_DB_Update = True
 DB_DRY_RUN = False
 # Upload e7_vc4_loss.csv to S3 + audit_exception_output_files row.
 UPLOAD_OUTPUT_TO_S3 = True
+# Pipeline batch period (optional). When set, metrics + S3 label use this month
+# (sum of the whole run) instead of splitting by Issuance Date.
+PERIOD_YEAR: int | None = None
+PERIOD_MONTH: int | None = None
+
+EMPTY_FILTER_STATUS = "empty_filter"
+EMPTY_FILTER_NOTES = "No VC4 Loss rows after filters"
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -80,6 +90,7 @@ def apply_website_env_overrides() -> None:
     """Apply E7_* env from Website job runner."""
     global PASS_INPUT_FOLDER, PLAZA_IDENTIFIER, OUTPUT_FILE
     global Metrics_DB_Update, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+    global PERIOD_YEAR, PERIOD_MONTH
 
     if os.environ.get("E7_PASS_INPUT_FOLDER", "").strip():
         PASS_INPUT_FOLDER = os.environ["E7_PASS_INPUT_FOLDER"].strip()
@@ -93,6 +104,18 @@ def apply_website_env_overrides() -> None:
         UPLOAD_OUTPUT_TO_S3 = _env_flag("E7_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
     if "E7_DB_DRY_RUN" in os.environ:
         DB_DRY_RUN = _env_flag("E7_DB_DRY_RUN", DB_DRY_RUN)
+
+    year_raw = os.environ.get("E7_PERIOD_YEAR", "").strip()
+    month_raw = os.environ.get("E7_PERIOD_MONTH", "").strip()
+    if year_raw and month_raw:
+        year = int(year_raw)
+        month = int(month_raw)
+        if not (1990 <= year <= 2100 and 1 <= month <= 12):
+            raise RuntimeError(
+                f"Invalid E7_PERIOD_YEAR/MONTH: {year_raw!r}/{month_raw!r}"
+            )
+        PERIOD_YEAR = year
+        PERIOD_MONTH = month
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
 HEADER_SCAN_ROWS = 25
@@ -128,7 +151,11 @@ def _header_cell(value) -> str:
 
 
 def _header_key(value) -> str:
-    return _header_cell(value).casefold()
+    """Normalize so 'Issuance Fees (Rs.)' and 'Issuance Fees(Rs.)' match."""
+    text = _header_cell(value).casefold()
+    text = re.sub(r"\s*([()\[\]{}/_-])\s*", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -225,8 +252,20 @@ def read_pass_file(path: Path, keywords: list[str]) -> pd.DataFrame:
 
 def require_columns(df: pd.DataFrame, config: dict) -> dict[str, str]:
     headers = [str(column) for column in df.columns]
+    alias_extra = {
+        "issuance_fees": [
+            "Issuance Fees(Rs.)",
+            "Issuance Fees (Rs.)",
+            "Issuance Fee(Rs.)",
+            "Issuance Fee (Rs.)",
+            "Issuance Fees",
+        ],
+    }
     found = {
-        key: resolve_column(headers, [column_name(config, key)])
+        key: resolve_column(
+            headers,
+            [column_name(config, key), *(alias_extra.get(key) or [])],
+        )
         for key in INPUT_COLUMN_KEYS
     }
     missing = [column_name(config, key) for key, column in found.items() if column is None]
@@ -271,12 +310,17 @@ def parse_datetime(value) -> datetime | None:
     return parsed.to_pydatetime()
 
 
-def month_count(start: datetime, end: datetime) -> int:
+def month_count(start: datetime, end: datetime) -> int | None:
     """
-    Absolute calendar months between start and end months.
-    Day of month is ignored. Start after End still returns a positive count.
+    Calendar months between start and end months (day ignored).
+
+    Same calendar month → 1 (a one-month pass must still be billed).
+    Start month after End month → None (invalid / likely day-month swap in source).
     """
-    return abs((end.year - start.year) * 12 + (end.month - start.month))
+    if (end.year, end.month) < (start.year, start.month):
+        return None
+    diff = (end.year - start.year) * 12 + (end.month - start.month)
+    return max(diff, 1)
 
 
 def parse_fee(value) -> float | None:
@@ -489,6 +533,42 @@ def summarize_by_issuance_month(work: pd.DataFrame, loss_name: str) -> list[dict
     return rows
 
 
+def summarize_for_period(
+    work: pd.DataFrame,
+    loss_name: str,
+    *,
+    year: int,
+    month: int,
+) -> list[dict]:
+    """Roll the whole run into one pipeline batch month."""
+    if work is None or work.empty:
+        return [
+            {
+                "year": int(year),
+                "month": int(month),
+                "total_count": 0,
+                "total_amount": 0.0,
+                "status": EMPTY_FILTER_STATUS,
+                "notes": EMPTY_FILTER_NOTES,
+            }
+        ]
+    count = int(len(work))
+    amount = round(float(work[loss_name].sum()), 2)
+    print(
+        f"Pipeline period {year}-{month:02d}: count={count:,}, amount={amount:,.2f}"
+    )
+    return [
+        {
+            "year": int(year),
+            "month": int(month),
+            "total_count": count,
+            "total_amount": amount,
+            "status": None,
+            "notes": None,
+        }
+    ]
+
+
 def resolve_plaza_identifier() -> str:
     plaza = str(PLAZA_IDENTIFIER or "").strip()
     if not plaza:
@@ -571,14 +651,16 @@ def update_exception_metrics(
     insert_sql = f"""
         INSERT INTO {metrics_table} (
             plaza_identifier, exception_type_id, year, month,
-            total_amount, total_count, created_at, updated_at
+            total_amount, total_count, status, notes, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
     """
     update_sql = f"""
         UPDATE {metrics_table}
         SET total_amount = %s,
             total_count = %s,
+            status = %s,
+            notes = %s,
             updated_at = NOW()
         WHERE plaza_identifier = %s
           AND exception_type_id = %s
@@ -626,6 +708,12 @@ def update_exception_metrics(
                 new_amount = Decimal(str(row["total_amount"])).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
+                status = row.get("status")
+                notes = row.get("notes")
+                if status is not None:
+                    status = str(status).strip() or None
+                if notes is not None:
+                    notes = str(notes).strip() or None
                 current = existing.get((year, month))
                 if current is not None:
                     old_count, old_amount = current
@@ -633,6 +721,7 @@ def update_exception_metrics(
                         f"  {year}-{month:02d}: UPDATE "
                         f"count {old_count:,} -> {new_count:,}, "
                         f"amount {old_amount:,.2f} -> {new_amount:,.2f}"
+                        + (f", status={status}" if status else "")
                         + (" [dry-run]" if dry_run else "")
                     )
                     if not dry_run:
@@ -641,6 +730,8 @@ def update_exception_metrics(
                             (
                                 new_amount,
                                 new_count,
+                                status,
+                                notes,
                                 plaza,
                                 EXCEPTION_TYPE_ID,
                                 year,
@@ -652,6 +743,7 @@ def update_exception_metrics(
                 print(
                     f"  {year}-{month:02d}: INSERT count={new_count:,}, "
                     f"amount={new_amount:,.2f}"
+                    + (f", status={status}" if status else "")
                     + (" [dry-run]" if dry_run else "")
                 )
                 if not dry_run:
@@ -664,6 +756,8 @@ def update_exception_metrics(
                             month,
                             new_amount,
                             new_count,
+                            status,
+                            notes,
                         ),
                     )
                 inserted += 1
@@ -682,6 +776,8 @@ def main() -> int:
     print(f"Metrics_DB_Update = {Metrics_DB_Update}")
     print(f"DB_DRY_RUN = {DB_DRY_RUN}")
     print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
+    if PERIOD_YEAR and PERIOD_MONTH:
+        print(f"PERIOD = {PERIOD_YEAR}-{PERIOD_MONTH:02d} (pipeline rollup)")
     print("=" * 60)
 
     config = load_config()
@@ -699,29 +795,42 @@ def main() -> int:
     export.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
     print(f"Wrote: {OUTPUT_FILE} ({len(export)} rows)")
 
-    if result.empty:
-        print("No Loss rows — metrics/S3 skipped.")
-        return 0
-
-    print("-" * 60)
-    print("Monthly totals from Issuance Date:")
-    totals = summarize_by_issuance_month(result, loss_name)
-    if not totals:
-        print("No months with Loss — metrics/S3 skipped.")
-        return 0
-
     plaza_id = resolve_plaza_identifier()
     dry_run = bool(DB_DRY_RUN)
+    pipeline_period = PERIOD_YEAR is not None and PERIOD_MONTH is not None
+
+    if pipeline_period:
+        print("-" * 60)
+        print(
+            f"Monthly totals for pipeline period "
+            f"{PERIOD_YEAR}-{PERIOD_MONTH:02d}:"
+        )
+        totals = summarize_for_period(
+            result,
+            loss_name,
+            year=int(PERIOD_YEAR),
+            month=int(PERIOD_MONTH),
+        )
+    elif result.empty:
+        print("No Loss rows — metrics/S3 skipped (no pipeline period set).")
+        return 0
+    else:
+        print("-" * 60)
+        print("Monthly totals from Issuance Date:")
+        totals = summarize_by_issuance_month(result, loss_name)
+        if not totals:
+            print("No months with Loss — metrics/S3 skipped.")
+            return 0
 
     if Metrics_DB_Update:
         print("-" * 60)
         print(
-            f"Updating audit_exception_metrics (exception_type_id={EXCEPTION_TYPE_ID}); "
-            "existing months neglected…"
+            f"Updating {_metrics_table_name()} "
+            f"(exception_type_id={EXCEPTION_TYPE_ID})…"
         )
         update_exception_metrics(totals, plaza_id, dry_run=dry_run)
     else:
-        print("Metrics_DB_Update=False — audit_exception_metrics not updated.")
+        print("Metrics_DB_Update=False — metrics table not updated.")
 
     if not UPLOAD_OUTPUT_TO_S3:
         print("UPLOAD_OUTPUT_TO_S3=False — output file not uploaded.")
@@ -732,7 +841,7 @@ def main() -> int:
     print("-" * 60)
     print(
         f"Uploading {OUTPUT_FILE.name} to S3 "
-        f"(month_label={label!r}, months={len(month_periods)})…"
+        f"(month_label={label!r}, rows={len(export)})…"
     )
     upload_exception_output(
         OUTPUT_FILE,

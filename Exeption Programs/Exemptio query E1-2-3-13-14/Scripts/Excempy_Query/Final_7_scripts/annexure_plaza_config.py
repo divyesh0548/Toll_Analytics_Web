@@ -63,6 +63,17 @@ def resolve_plaza_identifier(plaza_name: str) -> Optional[str]:
     return get_plaza_identifier_map().get(key) or None
 
 
+def resolve_pipeline_plaza_key(plaza_identifier: str) -> Optional[str]:
+    """Reverse of resolve_plaza_identifier: UUID → Full Exempt codes_dump key."""
+    target = str(plaza_identifier or "").strip()
+    if not target:
+        return None
+    for plaza_key, identifier in get_plaza_identifier_map().items():
+        if str(identifier).strip() == target:
+            return plaza_key
+    return None
+
+
 def uses_approved_exemption_script(plaza_name: str) -> bool:
     key = str(plaza_name or "").strip().upper()
     return key in get_approved_exemption_map()

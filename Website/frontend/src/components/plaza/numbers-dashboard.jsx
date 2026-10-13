@@ -69,8 +69,10 @@ function inclusiveDaySpan(startIso, endIso) {
 
 export function PeriodRangeControls({
   period,
+  appliedPeriod,
   onPeriodChange,
   draft,
+  appliedRange,
   onDraftChange,
   onApply,
   availability,
@@ -101,8 +103,20 @@ export function PeriodRangeControls({
     period !== 'day' ||
     inclusiveDaySpan(draft.start, draft.end) >= MIN_DAY_RANGE_DAYS
   const rangeOrderOk = !draft.start || !draft.end || draft.start <= draft.end
+  const appliedPeriodValue = appliedPeriod ?? period
+  const appliedStart = String(appliedRange?.start || '')
+  const appliedEnd = String(appliedRange?.end || '')
+  const isDirty =
+    period !== appliedPeriodValue ||
+    String(draft.start || '') !== appliedStart ||
+    String(draft.end || '') !== appliedEnd
   const canApply =
-    !disabled && Boolean(draft.start) && Boolean(draft.end) && rangeOrderOk && daySpanOk
+    isDirty &&
+    !disabled &&
+    Boolean(draft.start) &&
+    Boolean(draft.end) &&
+    rangeOrderOk &&
+    daySpanOk
 
   function handleFromDay(iso) {
     const next = { ...draft, start: iso }
@@ -251,14 +265,15 @@ export function PeriodRangeControls({
         </>
       )}
 
-      <button
-        type="button"
-        onClick={onApply}
-        disabled={!canApply}
-        className="h-10 rounded-sm bg-primary px-3 text-small text-primary-foreground disabled:pointer-events-none disabled:opacity-50"
-      >
-        Apply
-      </button>
+      {canApply ? (
+        <button
+          type="button"
+          onClick={onApply}
+          className="h-10 rounded-sm bg-primary px-3 text-small text-primary-foreground"
+        >
+          Apply
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -812,8 +827,10 @@ const LAYOUTS = [
 export function PlazaNumbersDashboard({
   data,
   period,
+  appliedPeriod,
   onPeriodChange,
   rangeDraft,
+  appliedRange,
   onRangeDraftChange,
   onApplyRange,
   layout,
@@ -869,8 +886,10 @@ export function PlazaNumbersDashboard({
 
       <PeriodRangeControls
         period={period}
+        appliedPeriod={appliedPeriod}
         onPeriodChange={onPeriodChange}
         draft={rangeDraft}
+        appliedRange={appliedRange}
         onDraftChange={onRangeDraftChange}
         onApply={onApplyRange}
         availability={data.availability}

@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 
 export function Navbar() {
   const { theme, toggleTheme } = useTheme()
-  const { user, isSiteAdmin, logout } = useAuth()
+  const { user, isSiteAdmin, logout, showExceptionUploads } = useAuth()
   const navigate = useNavigate()
   const [confirmLogout, setConfirmLogout] = useState(false)
 
@@ -17,9 +17,10 @@ export function Navbar() {
     ? [{ to: '/admin/users', label: 'Users' }]
     : [
         { to: '/portfolio', label: 'Portfolio' },
-        { to: '/exceptions/uploads', label: 'Exceptions', newTab: true },
-        { to: '/exceptions/pipeline', label: 'Exception pipeline', newTab: true },
-        { to: '/analytics/uploads', label: 'Analytics upload', newTab: true },
+        ...(showExceptionUploads
+          ? [{ to: '/exceptions/uploads', label: 'Exceptions', newTab: true }]
+          : []),
+        { to: '/exceptions/pipeline', label: 'File Upload', newTab: true },
       ]
 
   function handleConfirmLogout() {

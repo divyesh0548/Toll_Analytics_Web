@@ -79,12 +79,22 @@ PLAZA_IDENTIFIER = "94ecdec1-550c-4b4c-a94d-1df3b5fb4ac6"
 EXCEPTION_TYPE_ID = 15
 # Date column on combined output used for S3 month/year label.
 DATE_TIME_COLUMN = "Date & Time"
-UPDATE_DB = False
+# Website jobs always pass E15_METRICS_DB_UPDATE=1; default True so metrics are on.
+UPDATE_DB = True
 DB_DRY_RUN = False
 # Upload from_to_combined.xlsx to S3 + audit_exception_output_files row.
 UPLOAD_OUTPUT_TO_S3 = True
+# Pipeline batch period (optional). When set, metrics + S3 label use this month.
+PERIOD_YEAR: int | None = None
+PERIOD_MONTH: int | None = None
 
 _CONFIG: dict | None = None
+
+# ISO date first (combined output often writes YYYY-MM-DD). dayfirst=True alone
+# can swap month/day for days 1–12 (e.g. 2026-08-01 → 8 Jan).
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?"
+)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -99,6 +109,7 @@ def apply_website_env_overrides() -> None:
     global FROM_PLAZA_FOLDER, VRN_INPUT_FOLDER, TO_PLAZA_ENTITY_NAME
     global OUTPUT_FOLDER, PLAZA_IDENTIFIER, COMBINED_OUTPUT_FILENAME
     global UPDATE_DB, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
+    global PERIOD_YEAR, PERIOD_MONTH
 
     if os.environ.get("E15_FROM_PLAZA_FOLDER", "").strip():
         FROM_PLAZA_FOLDER = os.environ["E15_FROM_PLAZA_FOLDER"].strip()
@@ -120,6 +131,18 @@ def apply_website_env_overrides() -> None:
         UPLOAD_OUTPUT_TO_S3 = _env_flag("E15_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
     if "E15_DB_DRY_RUN" in os.environ:
         DB_DRY_RUN = _env_flag("E15_DB_DRY_RUN", DB_DRY_RUN)
+
+    year_raw = os.environ.get("E15_PERIOD_YEAR", "").strip()
+    month_raw = os.environ.get("E15_PERIOD_MONTH", "").strip()
+    if year_raw and month_raw:
+        year = int(year_raw)
+        month = int(month_raw)
+        if not (1990 <= year <= 2100 and 1 <= month <= 12):
+            raise RuntimeError(
+                f"Invalid E15_PERIOD_YEAR/MONTH: {year_raw!r}/{month_raw!r}"
+            )
+        PERIOD_YEAR = year
+        PERIOD_MONTH = month
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -175,6 +198,30 @@ def resolve_plaza_identifier() -> str:
 # =========================================================
 
 
+def parse_output_datetimes(values) -> pd.Series:
+    """
+    Parse Date & Time for metrics / S3 labels.
+
+    Prefer ISO year-first (YYYY-MM-DD). Using dayfirst=True on ISO stamps
+    swaps month/day for days 1–12 (2026-08-01 → 8 Jan). Fall back to
+    dayfirst only for values that are not ISO-shaped.
+    """
+    series = pd.Series(values, dtype="object")
+    text = series.map(lambda v: "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip())
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    iso_mask = text.map(lambda s: bool(_ISO_DATETIME_RE.match(s)))
+    if iso_mask.any():
+        parsed.loc[iso_mask] = pd.to_datetime(
+            text[iso_mask], errors="coerce", dayfirst=False
+        )
+    other = (~iso_mask) & text.ne("")
+    if other.any():
+        parsed.loc[other] = pd.to_datetime(
+            text[other], errors="coerce", format="mixed", dayfirst=True
+        )
+    return parsed
+
+
 def month_periods_from_date_time(
     path: Path,
     column: str = DATE_TIME_COLUMN,
@@ -198,7 +245,7 @@ def month_periods_from_date_time(
                 f"Available: {list(frame.columns)}"
             )
         column = resolved
-    parsed = pd.to_datetime(frame[column], errors="coerce", format="mixed", dayfirst=True)
+    parsed = parse_output_datetimes(frame[column])
     periods: set[tuple[int, int]] = set()
     for ts in parsed:
         if pd.isna(ts):
@@ -1127,6 +1174,8 @@ def main() -> int:
     print(f"UPDATE_DB = {UPDATE_DB}")
     print(f"DB_DRY_RUN = {DB_DRY_RUN}")
     print(f"UPLOAD_OUTPUT_TO_S3 = {UPLOAD_OUTPUT_TO_S3}")
+    if PERIOD_YEAR and PERIOD_MONTH:
+        print(f"PERIOD = {PERIOD_YEAR}-{PERIOD_MONTH:02d} (pipeline rollup)")
     print("=" * 60)
 
     config = load_config()
@@ -1275,11 +1324,12 @@ def main() -> int:
             print("COMBINED FILE EXPORTED SUCCESSFULLY TO FALLBACK PATH")
 
         dry_run = bool(DB_DRY_RUN)
+        pipeline_period = PERIOD_YEAR is not None and PERIOD_MONTH is not None
 
         if UPDATE_DB:
             print("-" * 60)
             print(
-                f"Updating audit_exception_metrics "
+                f"Updating metrics table "
                 f"(exception_type_id={EXCEPTION_TYPE_ID})…"
             )
             date_col_cfg = str(
@@ -1297,16 +1347,29 @@ def main() -> int:
                     "DATE_TIME_TO",
                 ],
                 rate_aliases=[rate_col, "Applicable Rate"],
+                force_period=(
+                    (int(PERIOD_YEAR), int(PERIOD_MONTH))
+                    if pipeline_period
+                    else None
+                ),
             )
         else:
-            print("UPDATE_DB=False — audit_exception_metrics not updated.")
+            print("UPDATE_DB=False — metrics table not updated.")
 
         if UPLOAD_OUTPUT_TO_S3:
             print("-" * 60)
-            print(
-                f"Reading {DATE_TIME_COLUMN!r} from combined output for S3 month label…"
-            )
-            month_periods = month_periods_from_date_time(Path(out_path))
+            if pipeline_period:
+                month_periods = [(int(PERIOD_YEAR), int(PERIOD_MONTH))]
+                print(
+                    f"S3 month label from pipeline period "
+                    f"{PERIOD_YEAR}-{PERIOD_MONTH:02d}"
+                )
+            else:
+                print(
+                    f"Reading {DATE_TIME_COLUMN!r} from combined output "
+                    "for S3 month label…"
+                )
+                month_periods = month_periods_from_date_time(Path(out_path))
             label = month_label_from_periods(month_periods)
             print(
                 f"Uploading {Path(out_path).name} to S3 "

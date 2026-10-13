@@ -18,11 +18,15 @@ from app.services.exception_job_s3 import (
     presign_monthly_put_upload,
 )
 from app.services.exception_pipeline_service import (
+    cancel_batch,
     create_batch,
     period_status,
     start_batch,
 )
-from app.services.exception_program_catalog import load_pipeline_plaza_keys
+from app.services.exception_program_catalog import (
+    load_pipeline_plaza_keys,
+    load_plaza_identifier_to_pipeline_key,
+)
 from app.services.pipeline_dependency_catalog import (
     list_monthly_input_slots,
     list_pipeline_programs,
@@ -53,6 +57,7 @@ def pipeline_catalog():
             "input_slots": list_monthly_input_slots(include_system=True),
             "programs": list_pipeline_programs(),
             "pipeline_plaza_keys": load_pipeline_plaza_keys(),
+            "plaza_identifier_to_pipeline_key": load_plaza_identifier_to_pipeline_key(),
         }
     )
 
@@ -205,23 +210,26 @@ def create_pipeline_batch():
     plaza_identifier = str(body.get("plaza_identifier") or "").strip()
     pipeline_plaza_key = str(body.get("pipeline_plaza_key") or "").strip() or None
     codes = body.get("program_codes") or []
-    if not isinstance(codes, list) or not codes:
-        return jsonify({"error": "program_codes must be a non-empty list"}), 400
+    if not isinstance(codes, list):
+        return jsonify({"error": "program_codes must be a list"}), 400
+    # Empty list is allowed when VRN/ETC are present (analytics-only batch).
     try:
         year = int(body.get("year") or 0)
         month = int(body.get("month") or 0)
     except (TypeError, ValueError):
         return jsonify({"error": "year and month must be integers"}), 400
     continue_on_failure = bool(body.get("continue_on_failure", True))
+    run_analytics = bool(body.get("run_analytics", True))
     user = get_current_user()
     try:
         batch = create_batch(
             plaza_identifier=plaza_identifier,
             year=year,
             month=month,
-            program_codes=[str(c).strip() for c in codes],
+            program_codes=[str(c).strip() for c in codes if str(c).strip()],
             pipeline_plaza_key=pipeline_plaza_key,
             continue_on_failure=continue_on_failure,
+            run_analytics=run_analytics,
             created_by_user_id=getattr(user, "id", None),
         )
     except ValueError as exc:
@@ -232,11 +240,23 @@ def create_pipeline_batch():
 
 @exception_pipeline_bp.post("/batches/<batch_uuid>/start")
 def start_pipeline_batch(batch_uuid: str):
+    body = request.get_json(silent=True) or {}
+    run_analytics = bool(body.get("run_analytics", True))
     try:
-        batch = start_batch(batch_uuid)
+        batch = start_batch(batch_uuid, run_analytics=run_analytics)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    log_ok(f"pipeline batch started {batch_uuid}")
+    log_ok(f"pipeline batch started {batch_uuid} analytics={run_analytics}")
+    return jsonify({"batch": batch.to_dict()})
+
+
+@exception_pipeline_bp.post("/batches/<batch_uuid>/stop")
+def stop_pipeline_batch(batch_uuid: str):
+    try:
+        batch = cancel_batch(batch_uuid)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    log_ok(f"pipeline batch stopped {batch_uuid}")
     return jsonify({"batch": batch.to_dict()})
 
 

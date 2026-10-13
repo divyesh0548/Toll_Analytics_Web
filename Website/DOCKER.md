@@ -107,6 +107,11 @@ New tables (migration `0021_exception_pipeline`) store month-wise inputs and
 **parallel** metrics/outputs (`pipeline_audit_exception_*`). Legacy
 `exception_jobs` / `audit_exception_*` are unchanged.
 
+When VRN and/or ETC are uploaded for the month, starting a batch also queues
+**plaza analytics** (`analytics_vrn_etc`) in parallel with the exception chain
+(migration `0022_pipeline_analytics_job`). The separate Analytics upload page
+redirects to this pipeline.
+
 After deploy:
 
 ```bash

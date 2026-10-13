@@ -51,15 +51,22 @@ export function PlazaDetailPage() {
   const [error, setError] = useState('')
   const [infoOpen, setInfoOpen] = useState(false)
   const [tab, setTab] = useState(initialTab)
-  const [period, setPeriod] = useState('mtd')
+  const [periodDraft, setPeriodDraft] = useState('mtd')
+  const [periodApplied, setPeriodApplied] = useState('mtd')
   const [rangeDraft, setRangeDraft] = useState({ start: '', end: '' })
   const [appliedRange, setAppliedRange] = useState({ start: '', end: '' })
   const [layout, setLayout] = useState('overview')
   const [numbers, setNumbers] = useState(null)
   const [numbersLoading, setNumbersLoading] = useState(false)
   const [numbersError, setNumbersError] = useState('')
-  const [auditPeriod, setAuditPeriod] = useState(defaultAuditPeriod)
-  const [auditMetricsSource, setAuditMetricsSource] = useState('manual')
+  const [auditDraft, setAuditDraft] = useState(() => ({
+    ...defaultAuditPeriod(),
+    metricsSource: 'manual',
+  }))
+  const [auditApplied, setAuditApplied] = useState(() => ({
+    ...defaultAuditPeriod(),
+    metricsSource: 'manual',
+  }))
   const [auditData, setAuditData] = useState(null)
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditError, setAuditError] = useState('')
@@ -77,11 +84,15 @@ export function PlazaDetailPage() {
 
   useEffect(() => {
     suppressNumbersRefetchRef.current = false
-  }, [plazaIdentifier, period])
+  }, [plazaIdentifier, periodApplied])
 
   useEffect(() => {
     setTrafficMonth(defaultTrafficMonth())
     setTrafficAvailability(null)
+    setPeriodDraft('mtd')
+    setPeriodApplied('mtd')
+    setRangeDraft({ start: '', end: '' })
+    setAppliedRange({ start: '', end: '' })
   }, [plazaIdentifier])
 
   useEffect(() => {
@@ -121,12 +132,14 @@ export function PlazaDetailPage() {
       try {
         const hasAppliedRange = Boolean(appliedRange.start && appliedRange.end)
         const range = hasAppliedRange ? appliedRange : {}
-        const data = await getPlazaNumbers(plazaIdentifier, period, range)
+        const data = await getPlazaNumbers(plazaIdentifier, periodApplied, range)
         if (!active) return
         setNumbers(data)
         const selection =
-          data.selection || defaultRangeForPeriod(period, data.availability)
+          data.selection ||
+          defaultRangeForPeriod(periodApplied, data.availability)
         setRangeDraft(selection)
+        setPeriodDraft(periodApplied)
         if (!hasAppliedRange) {
           // Hydrate appliedRange from server defaults without triggering a second fetch.
           suppressNumbersRefetchRef.current = true
@@ -144,7 +157,24 @@ export function PlazaDetailPage() {
     return () => {
       active = false
     }
-  }, [plazaIdentifier, period, tab, appliedRange.start, appliedRange.end])
+  }, [
+    plazaIdentifier,
+    periodApplied,
+    tab,
+    appliedRange.start,
+    appliedRange.end,
+  ])
+
+  useEffect(() => {
+    const defaults = {
+      ...defaultAuditPeriod(),
+      metricsSource: 'manual',
+    }
+    setAuditDraft(defaults)
+    setAuditApplied(defaults)
+    setAuditData(null)
+    setAuditError('')
+  }, [plazaIdentifier])
 
   useEffect(() => {
     if (!plazaIdentifier || tab !== 'audit') return undefined
@@ -154,9 +184,9 @@ export function PlazaDetailPage() {
     ;(async () => {
       try {
         const data = await getPlazaAuditExceptions(plazaIdentifier, {
-          year: auditPeriod.year,
-          month: auditPeriod.wholeYear ? undefined : auditPeriod.month,
-          metricsSource: auditMetricsSource,
+          year: auditApplied.year,
+          month: auditApplied.wholeYear ? undefined : auditApplied.month,
+          metricsSource: auditApplied.metricsSource || 'manual',
         })
         if (!active) return
         setAuditData(data)
@@ -175,10 +205,10 @@ export function PlazaDetailPage() {
   }, [
     plazaIdentifier,
     tab,
-    auditPeriod.year,
-    auditPeriod.month,
-    auditPeriod.wholeYear,
-    auditMetricsSource,
+    auditApplied.year,
+    auditApplied.month,
+    auditApplied.wholeYear,
+    auditApplied.metricsSource,
   ])
 
   useEffect(() => {
@@ -246,11 +276,9 @@ export function PlazaDetailPage() {
   }, [trafficAvailability])
 
   function handlePeriodChange(nextPeriod) {
-    if (nextPeriod === period) return
-    setPeriod(nextPeriod)
-    const next = defaultRangeForPeriod(nextPeriod, numbers?.availability)
-    setRangeDraft(next)
-    setAppliedRange(next)
+    if (nextPeriod === periodDraft) return
+    setPeriodDraft(nextPeriod)
+    setRangeDraft(defaultRangeForPeriod(nextPeriod, numbers?.availability))
   }
 
   function handleRangeDraftChange(next) {
@@ -265,13 +293,14 @@ export function PlazaDetailPage() {
       ;[start, end] = [end, start]
       setRangeDraft({ start, end })
     }
-    if (period === 'day') {
+    if (periodDraft === 'day') {
       const startDate = new Date(`${start}T00:00:00`)
       const endDate = new Date(`${end}T00:00:00`)
       const span =
         Math.floor((endDate.getTime() - startDate.getTime()) / 86400000) + 1
       if (span < 5) return
     }
+    setPeriodApplied(periodDraft)
     setAppliedRange({ start, end })
   }
 
@@ -343,6 +372,8 @@ export function PlazaDetailPage() {
             <Link
               key={item.id}
               to={`${item.to}?plaza=${encodeURIComponent(plazaIdentifier)}`}
+              target="_blank"
+              rel="noopener noreferrer"
               className={cn(
                 'rounded-sm px-3 py-1.5 text-small',
                 'text-muted-foreground hover:bg-muted',
@@ -381,9 +412,11 @@ export function PlazaDetailPage() {
           {!numbers && numbersLoading && (
             <PlazaNumbersDashboard
               data={null}
-              period={period}
+              period={periodDraft}
+              appliedPeriod={periodApplied}
               onPeriodChange={handlePeriodChange}
               rangeDraft={rangeDraft}
+              appliedRange={appliedRange}
               onRangeDraftChange={handleRangeDraftChange}
               onApplyRange={handleApplyRange}
               layout={layout}
@@ -394,9 +427,11 @@ export function PlazaDetailPage() {
           {numbers && !numbersError && (
             <PlazaNumbersDashboard
               data={numbers}
-              period={period}
+              period={periodDraft}
+              appliedPeriod={periodApplied}
               onPeriodChange={handlePeriodChange}
               rangeDraft={rangeDraft}
+              appliedRange={appliedRange}
               onRangeDraftChange={handleRangeDraftChange}
               onApplyRange={handleApplyRange}
               layout={layout}
@@ -430,18 +465,29 @@ export function PlazaDetailPage() {
           data={auditData}
           loading={auditLoading}
           error={auditError}
-          yearValue={auditPeriod.year}
-          monthValue={auditPeriod.month}
-          wholeYear={auditPeriod.wholeYear}
-          metricsSource={auditMetricsSource}
+          yearValue={auditDraft.year}
+          monthValue={auditDraft.month}
+          wholeYear={auditDraft.wholeYear}
+          metricsSource={auditDraft.metricsSource}
+          canApply={
+            auditDraft.year !== auditApplied.year ||
+            auditDraft.month !== auditApplied.month ||
+            Boolean(auditDraft.wholeYear) !== Boolean(auditApplied.wholeYear) ||
+            (auditDraft.metricsSource || 'manual') !==
+              (auditApplied.metricsSource || 'manual')
+          }
           onYearChange={(year) =>
-            setAuditPeriod((prev) => ({ ...prev, year: String(year) }))
+            setAuditDraft((prev) => ({ ...prev, year: String(year) }))
           }
           onMonthChange={(month) =>
-            setAuditPeriod((prev) => ({ ...prev, month: String(month), wholeYear: false }))
+            setAuditDraft((prev) => ({
+              ...prev,
+              month: String(month),
+              wholeYear: false,
+            }))
           }
           onWholeYearChange={(enabled) =>
-            setAuditPeriod((prev) => {
+            setAuditDraft((prev) => {
               if (enabled) {
                 return { ...prev, wholeYear: true }
               }
@@ -451,7 +497,20 @@ export function PlazaDetailPage() {
               return { ...prev, wholeYear: false, month: fallback }
             })
           }
-          onMetricsSourceChange={setAuditMetricsSource}
+          onMetricsSourceChange={(source) =>
+            setAuditDraft((prev) => ({
+              ...prev,
+              metricsSource: source || 'manual',
+            }))
+          }
+          onApply={() =>
+            setAuditApplied({
+              year: String(auditDraft.year),
+              month: String(auditDraft.month),
+              wholeYear: Boolean(auditDraft.wholeYear),
+              metricsSource: auditDraft.metricsSource || 'manual',
+            })
+          }
         />
       )}
 

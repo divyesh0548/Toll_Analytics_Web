@@ -17,6 +17,9 @@ Input/**
 **/*.csv
 # Required E10 reference workbook (not job input)
 !Exeption Programs/E10/OW multiple LSW std weights.xlsx
+# Full Exempt annexure defaults (rates + approved exemption maps)
+!Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/RatesAfter April/**
+!Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/Approved Exmption/**
 !**/.env.example
 Website/frontend/.env
 Website/backend/.env

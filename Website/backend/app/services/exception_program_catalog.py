@@ -7,7 +7,7 @@ from pathlib import Path
 # Group shown as one card on the Exceptions Upload page.
 FULL_EXEMPT_PROGRAM = {
     "code": "full_exempt_e1_e2_e3_e13_e14",
-    "label": "Exempt Query — Full Pipeline",
+    "label": "Exempt Query — Full Process",
     "description": (
         "One run produces annexure workbooks and updates audit metrics for "
         "E01, E02, E03, E13, and E14."
@@ -250,6 +250,31 @@ E09_PROGRAM = {
     ],
 }
 
+E11_PROGRAM = {
+    "code": "e11",
+    "label": "E11 — AVC class consistency",
+    "description": (
+        "Upload VRN files. Builds monthly AVC pivot by vehicle, stores the "
+        "right-class percentage for E11 metrics, and uploads monthly_right_avc.csv "
+        "to S3. Plaza only — entity_name from plaza_entity_map.json."
+    ),
+    "group_exception_codes": ["E11"],
+    "group_exception_type_ids": [11],
+    "enabled": True,
+    "requires_pipeline_plaza_key": False,
+    "uses_entity_map": True,
+    "updates_metrics": True,
+    "input_slots": [
+        {
+            "key": "vrn",
+            "label": "VRN files",
+            "required": True,
+            "multiple": True,
+            "accept": ".xlsx,.xls,.xlsm,.csv",
+        },
+    ],
+}
+
 E10_PROGRAM = {
     "code": "e10",
     "label": "E10 — Overloading penalty (incl. E10-A/B/C)",
@@ -329,6 +354,7 @@ def list_programs() -> list[dict]:
         E07_PROGRAM,
         E09_PROGRAM,
         E10_PROGRAM,
+        E11_PROGRAM,
         E15_PROGRAM,
         *_PLACEHOLDER_PROGRAMS,
     ]
@@ -426,6 +452,11 @@ def e10_program_root() -> Path:
     return _exception_programs_root() / "E10"
 
 
+def e11_program_root() -> Path:
+    """Path to the E11 exception program folder."""
+    return _exception_programs_root() / "E11"
+
+
 def e15_program_root() -> Path:
     """Path to the E15 exception program folder."""
     return _exception_programs_root() / "E15"
@@ -457,6 +488,40 @@ def load_pipeline_plaza_keys() -> list[str]:
     if isinstance(data, dict):
         return sorted(str(k).strip().upper() for k in data.keys() if str(k).strip())
     return []
+
+
+def load_plaza_identifier_to_pipeline_key() -> dict[str, str]:
+    """
+    plaza_identifier UUID → Full Exempt plaza key (BASSI, ODAKHI, …).
+    Sourced from annexure_plaza_config.json plaza_identifiers (non-empty only).
+    """
+    import sys
+
+    final_dir = (
+        exempt_portal_root()
+        / "Scripts"
+        / "Excempy_Query"
+        / "Final_7_scripts"
+    )
+    if str(final_dir) not in sys.path:
+        sys.path.insert(0, str(final_dir))
+    try:
+        from annexure_plaza_config import get_plaza_identifier_map  # noqa: WPS433
+    except Exception:  # noqa: BLE001
+        return {}
+    return {
+        str(identifier).strip(): str(plaza_key).strip().upper()
+        for plaza_key, identifier in get_plaza_identifier_map().items()
+        if str(identifier).strip() and str(plaza_key).strip()
+    }
+
+
+def resolve_pipeline_plaza_key(plaza_identifier: str) -> str | None:
+    """Map plazas.plaza_identifier → Full Exempt codes_dump key."""
+    key = str(plaza_identifier or "").strip()
+    if not key:
+        return None
+    return load_plaza_identifier_to_pipeline_key().get(key)
 
 
 def load_annexure_server_defaults(pipeline_plaza_key: str) -> dict:
