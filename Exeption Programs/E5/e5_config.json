@@ -114,10 +114,6 @@
   },
   "scrape": {
     "mobile_number": "9999999999",
-    "plaza_name": "Phulwaria Toll Plaza",
-    "selenium_remote_url": "http://localhost:4444/wd/hub",
-    "max_nodes": 5,
-    "headless": false,
-    "auto_manage_nodes": true
+    "plaza_name": "Phulwaria Toll Plaza"
   }
 }

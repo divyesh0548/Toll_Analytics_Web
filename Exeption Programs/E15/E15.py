@@ -444,10 +444,21 @@ def robust_parse_datetime(series, config: dict | None = None):
 
 
 def resolve_column_name(df, possible_sources):
+    """First dataframe column whose name matches any alias (df column order)."""
     normalized_sources = [_norm_header_token(s) for s in possible_sources]
     for col in df.columns:
         if _norm_header_token(col) in normalized_sources:
             return col
+    return None
+
+
+def resolve_column_name_preferred(df, possible_sources):
+    """First alias that exists on the dataframe (alias list order wins)."""
+    by_norm = {_norm_header_token(col): col for col in df.columns}
+    for alias in possible_sources or []:
+        key = _norm_header_token(alias)
+        if key and key in by_norm:
+            return by_norm[key]
     return None
 
 
@@ -769,12 +780,15 @@ def process_and_merge(
     to_subset["CCH TRANSACTION ID"] = resolve_column(
         to_df, "CCH TRANSACTION ID", to_aliases.get("CCH TRANSACTION ID") or []
     )
+    # VRN class is usually "MVC" (see vrn_merge.merge_columns → TC Class).
     to_subset["TC Class"] = resolve_column(
         to_df,
         "TC Class",
-        (config.get("tc_class_column_aliases") or [])
+        ["MVC", "TC Class", "AVC", "CCH CLASS", "TAG CLASS"]
+        + list(config.get("tc_class_column_aliases") or [])
         + list((config.get("to_plaza_column_aliases") or {}).get("TC Class") or []),
     )
+    # Journey Type is not present on VRN exports — leave blank; rates default to single.
     to_subset["Journey Type"] = resolve_column(
         to_df,
         "Journey Type",
@@ -1045,21 +1059,21 @@ def apply_applicable_rates(
     if df is None or df.empty:
         return df
 
-    tc_aliases = list(config.get("tc_class_column_aliases") or [])
+    # Alias order matters: To-plaza TC Class_TO, then From-plaza TC Class.
+    # Do not use FARE CATEGORY here (it holds mop labels like EXEMPT).
+    tc_aliases = list(config.get("tc_class_column_aliases") or []) or [
+        "TC Class_TO",
+        "TC Class",
+    ]
     journey_aliases = list(config.get("journey_type_column_aliases") or [])
-    tc_col = resolve_column_name(df, tc_aliases)
-    journey_col = resolve_column_name(df, journey_aliases)
+    tc_col = resolve_column_name_preferred(df, tc_aliases)
+    journey_col = resolve_column_name_preferred(df, journey_aliases)
 
-    missing = []
+    # Journey Type is usually absent in VRN files — default to single below.
     if not tc_col:
-        missing.append("TC Class")
-    if not journey_col:
-        missing.append("Journey Type")
-    if missing:
         raise RuntimeError(
-            "Cannot compute Applicable Rate — missing columns: "
-            + ", ".join(missing)
-            + f". Available: {list(df.columns)}"
+            "Cannot compute Applicable Rate — missing TC Class column. "
+            f"Available: {list(df.columns)}"
         )
 
     out_col = str(config.get("applicable_rate_output") or "Applicable Rate").strip()
@@ -1070,6 +1084,38 @@ def apply_applicable_rates(
     tc_lookup = build_tc_class_index_lookup(config)
     skip_set = build_tc_class_skip_set(config)
     journey_lookup = build_journey_type_lookup(config)
+
+    # Prefer To-plaza class when present; fill blanks from From-plaza TC Class only.
+    tc_series = df[tc_col].copy()
+    for alt in ("TC Class_TO", "TC Class"):
+        if alt in df.columns and alt != tc_col:
+            empty = ~tc_series.map(lambda v: bool(_normalize_value_key(v)))
+            if bool(empty.any()):
+                tc_series = tc_series.where(~empty, df[alt])
+
+    default_journey = str(config.get("default_journey_type") or "single").strip() or "single"
+    default_journey_key = _normalize_value_key(default_journey) or "single"
+    if journey_col:
+        journey_series = df[journey_col].copy()
+        for alt in ("Journey Type_TO", "Journey Type"):
+            if alt in df.columns and alt != journey_col:
+                empty = ~journey_series.map(lambda v: bool(_normalize_value_key(v)))
+                if bool(empty.any()):
+                    journey_series = journey_series.where(~empty, df[alt])
+    else:
+        journey_series = pd.Series(default_journey, index=df.index)
+        print(
+            f"Journey Type column not present — using default {default_journey!r} "
+            "for all rows (VRN files do not include journey type)."
+        )
+
+    empty_journey = ~journey_series.map(lambda v: bool(_normalize_value_key(v)))
+    if bool(empty_journey.any()):
+        print(
+            f"WARNING: {int(empty_journey.sum()):,} row(s) missing Journey Type — "
+            f"defaulting to {default_journey!r}"
+        )
+        journey_series = journey_series.where(~empty_journey, default_journey)
 
     date_series, date_col_used = resolve_rate_date_series(df, config)
     if not date_col_used:
@@ -1083,6 +1129,11 @@ def apply_applicable_rates(
         f"(before {cutover.isoformat()} → PLAZA_RATES; "
         f"on/after → Plaza_Rates_Apr26_onwards)"
     )
+    print(
+        f"Rate TC Class column: {tc_col!r}; "
+        f"Journey Type column: {journey_col!r} "
+        f"(default={default_journey!r})"
+    )
 
     rates: list[float | None] = []
     rated = 0
@@ -1094,12 +1145,12 @@ def apply_applicable_rates(
     unknown_journey: set[str] = set()
 
     for tc_raw, journey_raw, ts in zip(
-        df[tc_col].tolist(),
-        df[journey_col].tolist(),
+        tc_series.tolist(),
+        journey_series.tolist(),
         date_series.tolist(),
     ):
         tc_key = _normalize_value_key(tc_raw)
-        journey_key = _normalize_value_key(journey_raw)
+        journey_key = _normalize_value_key(journey_raw) or default_journey_key
 
         if tc_key and tc_key in skip_set:
             rates.append(None)
@@ -1111,7 +1162,7 @@ def apply_applicable_rates(
             missing_date += 1
             continue
 
-        if not tc_key or not journey_key:
+        if not tc_key:
             rates.append(None)
             continue
 
@@ -1122,7 +1173,7 @@ def apply_applicable_rates(
 
         journey_cat = journey_lookup.get(journey_key)
         if journey_cat is None:
-            unknown_journey.add(str(journey_raw).strip())
+            unknown_journey.add(str(journey_raw).strip() or default_journey)
             rates.append(None)
             continue
 

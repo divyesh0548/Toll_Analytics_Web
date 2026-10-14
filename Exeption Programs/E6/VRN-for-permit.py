@@ -229,9 +229,10 @@ def main() -> int:
         )
 
     etc_df = etc_df.copy()
-    etc_df["_dt"] = pd.to_datetime(
-        etc_df["read_datetime"], errors="coerce", format="mixed"
-    )
+    # DD-MM-YYYY must be day-first (01-08-2026 → Aug, not Jan).
+    from e6_db_update import parse_tag_read_datetime
+
+    etc_df["_dt"] = etc_df["read_datetime"].map(parse_tag_read_datetime)
     before = len(etc_df)
     etc_df = etc_df.dropna(subset=["_dt"]).copy()
     print(f"ETC rows with valid datetime: {len(etc_df):,}/{before:,}")

@@ -22,7 +22,8 @@ def setup_driver(headless=False, remote_url=None):
     """Setup and return Chrome WebDriver"""
     chrome_options = Options()
     if headless:
-        chrome_options.add_argument("--headless")
+        # --headless=new required in Docker (no X display); old --headless can exit.
+        chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")

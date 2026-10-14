@@ -113,16 +113,26 @@ def start_managed_nodes(
     hub_name=DEFAULT_HUB_CONTAINER,
     network=DEFAULT_NETWORK,
     node_image=DEFAULT_NODE_IMAGE,
+    max_sessions=1,
 ):
+    """Create Chrome node containers; returns names started by this run.
+
+    max_sessions → SE_NODE_MAX_SESSIONS (Grid UI "Max. Concurrency" per node).
+    Use SCRAPE_MAX_CONCURRENCY so parallel scrapes are accepted by each node.
+    """
     ensure_network_exists(network)
     ensure_hub_container_running(hub_name)
     ensure_hub_on_network(hub_name, network)
 
+    sessions = max(1, int(max_sessions or 1))
     started_nodes = []
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     for index in range(1, node_count + 1):
         node_name = f"auto-chrome-node-{timestamp}-{index}"
-        print(f"Starting Chrome node: {node_name}", flush=True)
+        print(
+            f"Starting Chrome node: {node_name} (max_sessions={sessions})",
+            flush=True,
+        )
         run_docker_command(
             [
                 "docker",
@@ -132,12 +142,18 @@ def start_managed_nodes(
                 node_name,
                 "--network",
                 network,
+                "--shm-size",
+                "2g",
                 "-e",
                 f"SE_EVENT_BUS_HOST={hub_name}",
                 "-e",
                 "SE_EVENT_BUS_PUBLISH_PORT=4442",
                 "-e",
                 "SE_EVENT_BUS_SUBSCRIBE_PORT=4443",
+                "-e",
+                f"SE_NODE_MAX_SESSIONS={sessions}",
+                "-e",
+                "SE_NODE_OVERRIDE_MAX_SESSIONS=true",
                 node_image,
             ],
             check=True,

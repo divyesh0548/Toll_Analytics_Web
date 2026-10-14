@@ -6,9 +6,15 @@ import { useTheme } from '@/components/theme-provider'
 import { useToast } from '@/components/toast-provider'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartInset } from '@/components/ui/chart-inset'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SearchableSelect } from '@/components/ui/searchable-select'
+import {
+  UnderlineTabs,
+  underlineTabClass,
+} from '@/components/ui/segmented-control'
 import {
   baseChartOptions,
   chartColors,
@@ -536,36 +542,31 @@ function MonthYearApplyControls({
   }
 
   return (
-    <div className="flex flex-wrap items-end gap-2">
-      <label className="space-y-1">
+    <div className="flex flex-wrap items-end gap-2 rounded-sm border border-border bg-muted/40 p-2">
+      <label className="min-w-[6.5rem] space-y-1">
         <span className="block text-small text-muted-foreground">Year</span>
-        <select
-          className="h-10 min-w-[6rem] rounded-sm border border-input bg-background px-2 text-body"
+        <SearchableSelect
+          options={years.map((y) => ({ value: String(y), label: String(y) }))}
           value={draftYear}
+          onChange={(value) => setDraftYear(value)}
           disabled={disabled}
-          onChange={(e) => setDraftYear(e.target.value)}
-        >
-          {years.map((y) => (
-            <option key={y} value={y}>
-              {y}
-            </option>
-          ))}
-        </select>
+          placeholder="Year"
+          searchPlaceholder="Search year…"
+        />
       </label>
-      <label className="space-y-1">
+      <label className="min-w-[9rem] space-y-1">
         <span className="block text-small text-muted-foreground">Month</span>
-        <select
-          className="h-10 min-w-[9rem] rounded-sm border border-input bg-background px-2 text-body"
+        <SearchableSelect
+          options={monthsForYear.map((m) => ({
+            value: String(m.value),
+            label: m.label,
+          }))}
           value={draftMonth}
+          onChange={(value) => setDraftMonth(value)}
           disabled={disabled}
-          onChange={(e) => setDraftMonth(e.target.value)}
-        >
-          {monthsForYear.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+          placeholder="Month"
+          searchPlaceholder="Search month…"
+        />
       </label>
       {isDirty && !disabled ? (
         <Button type="button" onClick={handleApply} disabled={!draftYear || !draftMonth}>
@@ -839,7 +840,7 @@ export function TrafficStudyPanel({
         />
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b border-border pb-2">
+      <UnderlineTabs>
         {[
           { id: 'peaks', label: 'Peaks & profiles' },
           { id: 'events', label: 'Events calendar' },
@@ -848,17 +849,12 @@ export function TrafficStudyPanel({
             key={tab.id}
             type="button"
             onClick={() => setStudyTab(tab.id)}
-            className={cn(
-              'rounded-sm px-3 py-1.5 text-body',
-              studyTab === tab.id
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-muted',
-            )}
+            className={underlineTabClass(studyTab === tab.id)}
           >
             {tab.label}
           </button>
         ))}
-      </div>
+      </UnderlineTabs>
 
       {error ? (
         <Card>
@@ -923,12 +919,14 @@ export function TrafficStudyPanel({
               </Button>
             </CardHeader>
             <CardContent>
-              <MonthTrafficChart
-                dailyTrend={dailyTrend}
-                monthValue={monthValue}
-                visibleEvents={visibleEvents}
-                dark={dark}
-              />
+              <ChartInset>
+                <MonthTrafficChart
+                  dailyTrend={dailyTrend}
+                  monthValue={monthValue}
+                  visibleEvents={visibleEvents}
+                  dark={dark}
+                />
+              </ChartInset>
             </CardContent>
           </Card>
 
@@ -977,7 +975,7 @@ export function TrafficStudyPanel({
               ) : null}
             </CardHeader>
             <CardContent className="overflow-x-auto">
-              <table className="w-full min-w-[40rem] border-collapse text-left text-body">
+              <table className="dashboard-table min-w-[40rem]">
                 <thead>
                   <tr className="border-b border-border text-small text-muted-foreground">
                     <th className="px-2 py-2 font-medium">Label</th>
@@ -1081,18 +1079,15 @@ export function TrafficStudyPanel({
           </div>
           <div className="space-y-2">
             <Label htmlFor="ev-type">Event type</Label>
-            <select
-              id="ev-type"
-              className="h-10 w-full rounded-sm border border-input bg-background px-2 text-body"
+            <SearchableSelect
+              options={EVENT_TYPE_OPTIONS.map((opt) => ({
+                value: opt.value,
+                label: opt.label,
+              }))}
               value={form.event_type}
-              onChange={(e) => setForm((p) => ({ ...p, event_type: e.target.value }))}
-            >
-              {EVENT_TYPE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => setForm((p) => ({ ...p, event_type: value }))}
+              placeholder="Event type"
+            />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">

@@ -426,14 +426,128 @@ def clear_pipeline_env() -> None:
         os.environ.pop(key, None)
 
 
+def find_full_exempt_final_path(process_dir, process_name: str | None = None):
+    """Locate Full Exempt `*_final.xlsx` under the process folder."""
+    from pathlib import Path
+
+    process_dir = Path(process_dir)
+    name = str(process_name or process_dir.name).strip()
+    candidates = [
+        process_dir / "output" / f"{name}_final.xlsx",
+        process_dir / "Intermediate_Files" / "output" / f"{name}_final.xlsx",
+        process_dir / f"{name}_final.xlsx",
+    ]
+    out_dir = process_dir / "output"
+    if out_dir.is_dir():
+        candidates.extend(sorted(out_dir.glob("*_final.xlsx")))
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def build_full_exempt_final_display_name(
+    *,
+    plaza_name: str,
+    year: int,
+    month: int,
+    created_at=None,
+    suffix: str = ".xlsx",
+) -> str:
+    """
+    Human-readable Full Exempt final name for E15 picker / job attachments.
+
+    Example: Bassi_Exempt_Final_Sep2026_20261014_173045.xlsx
+    """
+    import calendar
+    import re
+    from datetime import datetime, timezone
+
+    plaza = re.sub(r"[^\w.\- ]+", "", str(plaza_name or "Plaza")).strip(" ._") or "Plaza"
+    plaza = re.sub(r"\s+", "_", plaza)
+    try:
+        month_i = int(month)
+        year_i = int(year)
+        month_abbr = calendar.month_abbr[month_i] if 1 <= month_i <= 12 else f"M{month_i}"
+        period = f"{month_abbr}{year_i}"
+    except (TypeError, ValueError):
+        period = "Unknown"
+
+    stamp = created_at
+    if stamp is None:
+        stamp = datetime.now(timezone.utc)
+    elif getattr(stamp, "tzinfo", None) is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    else:
+        stamp = stamp.astimezone(timezone.utc)
+    ts = stamp.strftime("%Y%m%d_%H%M%S")
+
+    ext = suffix if str(suffix).startswith(".") else f".{suffix}"
+    if not ext:
+        ext = ".xlsx"
+    return f"{plaza}_Exempt_Final_{period}_{ts}{ext}"
+
+
+def _periods_from_final_workbook(path) -> list[tuple[int, int]]:
+    """Unique (year, month) from Date & Time on the exempt final workbook."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return []
+    try:
+        frame = pd.read_excel(path, sheet_name=0, dtype=str)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not read final workbook for period detection: %s", path)
+        return []
+    if frame is None or frame.empty:
+        return []
+    date_col = None
+    for col in frame.columns:
+        key = str(col).strip().casefold().replace("_", " ")
+        if key in {"date & time", "date and time", "datetime", "date"}:
+            date_col = col
+            break
+    if date_col is None:
+        return []
+    parsed = pd.to_datetime(frame[date_col], errors="coerce", dayfirst=True)
+    if parsed.isna().all():
+        parsed = pd.to_datetime(frame[date_col], errors="coerce", dayfirst=False)
+    periods: set[tuple[int, int]] = set()
+    for stamp in parsed.dropna():
+        year = int(stamp.year)
+        month = int(stamp.month)
+        if 1990 <= year <= 2100 and 1 <= month <= 12:
+            periods.add((year, month))
+    return sorted(periods)
+
+
+def _resolve_full_exempt_periods(job: ExceptionJob, path) -> list[tuple[int, int]]:
+    """
+    Periods for monthly S3 registration (feeds E15).
+
+    Prefer pipeline batch year/month; else dates in the workbook;
+    else the job created_at month.
+    """
+    step = find_batch_step_for_job(job.job_uuid)
+    if step is not None and step.batch is not None:
+        return [(int(step.batch.year), int(step.batch.month))]
+
+    from_file = _periods_from_final_workbook(path)
+    if from_file:
+        return from_file
+
+    created = job.created_at or _utc_now()
+    return [(int(created.year), int(created.month))]
+
+
 def register_full_exempt_final_local(
     job: ExceptionJob,
     process_dir,
 ) -> PlazaMonthlyExceptionInput | None:
     """
-    Upload Full Exempt `*_final.xlsx` from the process folder into S3 and
-    register plaza_monthly_exception_inputs.slot=full_exempt_final for E15.
+    Upload Full Exempt `*_final.xlsx` to S3 and register
+    plaza_monthly_exception_inputs.slot=full_exempt_final for E15.
+
+    Works for one-click pipeline batches and separate Exempt Query jobs.
     """
+    import os
     from pathlib import Path
 
     from app.services.exception_job_s3 import (
@@ -443,40 +557,45 @@ def register_full_exempt_final_local(
         s3_client,
     )
 
-    step = find_batch_step_for_job(job.job_uuid)
-    if step is None:
-        return None
-    batch = step.batch
     process_dir = Path(process_dir)
     process_name = str(job.process_name or process_dir.name).strip()
-    candidates = [
-        process_dir / "output" / f"{process_name}_final.xlsx",
-        process_dir / "Intermediate_Files" / "output" / f"{process_name}_final.xlsx",
-        process_dir / f"{process_name}_final.xlsx",
-    ]
-    # Also accept any *_final.xlsx under output/
-    out_dir = process_dir / "output"
-    if out_dir.is_dir():
-        candidates.extend(sorted(out_dir.glob("*_final.xlsx")))
-    path = next((p for p in candidates if p.is_file()), None)
+    path = find_full_exempt_final_path(process_dir, process_name)
     if path is None:
         logger.warning(
             "Full Exempt final workbook not found under %s", process_dir
         )
         return None
 
-    plaza = batch.plaza
-    plaza_name = (plaza.plaza_name if plaza else None) or batch.plaza_identifier
+    plaza_identifier = str(job.plaza_identifier or "").strip()
+    if not plaza_identifier:
+        logger.warning("Job %s has no plaza_identifier — skip final upload", job.job_uuid)
+        return None
+
+    plaza = job.plaza or Plaza.query.filter_by(plaza_identifier=plaza_identifier).first()
+    plaza_name = (plaza.plaza_name if plaza else None) or plaza_identifier
+
+    periods = _resolve_full_exempt_periods(job, path)
+    if not periods:
+        logger.warning("No periods resolved for full_exempt_final on job %s", job.job_uuid)
+        return None
+
+    # One S3 object (keyed by primary period); same key registered for every month.
+    primary_year, primary_month = periods[0]
+    friendly_name = build_full_exempt_final_display_name(
+        plaza_name=plaza_name,
+        year=primary_year,
+        month=primary_month,
+        created_at=_utc_now(),
+        suffix=path.suffix or ".xlsx",
+    )
     key = build_monthly_input_key(
         plaza_name=plaza_name,
-        year=batch.year,
-        month=batch.month,
+        year=primary_year,
+        month=primary_month,
         slot="full_exempt_final",
-        original_file_name=path.name,
+        original_file_name=friendly_name,
     )
     bucket = bucket_name()
-    import os
-
     region = os.getenv("AWS_REGION", "us-east-1").strip() or "us-east-1"
     client = s3_client()
     client.upload_file(
@@ -492,39 +611,44 @@ def register_full_exempt_final_local(
     )
     file_url = object_url(bucket, region, key)
     size = path.stat().st_size
-
-    PlazaMonthlyExceptionInput.query.filter_by(
-        plaza_identifier=batch.plaza_identifier,
-        year=batch.year,
-        month=batch.month,
-        slot="full_exempt_final",
-        source="pipeline_output",
-    ).delete()
-
-    row = PlazaMonthlyExceptionInput(
-        plaza_identifier=batch.plaza_identifier,
-        year=batch.year,
-        month=batch.month,
-        slot="full_exempt_final",
-        original_file_name=path.name,
-        s3_key=key,
-        file_url=file_url,
-        file_size_bytes=size,
-        content_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
-        source="pipeline_output",
+    content_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    db.session.add(row)
+
+    first_row: PlazaMonthlyExceptionInput | None = None
+    for year, month in periods:
+        PlazaMonthlyExceptionInput.query.filter_by(
+            plaza_identifier=plaza_identifier,
+            year=year,
+            month=month,
+            slot="full_exempt_final",
+            source="pipeline_output",
+        ).delete()
+        row = PlazaMonthlyExceptionInput(
+            plaza_identifier=plaza_identifier,
+            year=year,
+            month=month,
+            slot="full_exempt_final",
+            original_file_name=friendly_name,
+            s3_key=key,
+            file_url=file_url,
+            file_size_bytes=size,
+            content_type=content_type,
+            source="pipeline_output",
+        )
+        db.session.add(row)
+        if first_row is None:
+            first_row = row
+
     db.session.commit()
+    period_label = ", ".join(f"{y}-{m:02d}" for y, m in periods)
     logger.info(
-        "Registered full_exempt_final %s for %s %s-%02d",
-        path.name,
-        batch.plaza_identifier,
-        batch.year,
-        batch.month,
+        "Registered full_exempt_final %s for %s periods=[%s]",
+        friendly_name,
+        plaza_identifier,
+        period_label,
     )
-    return row
+    return first_row
 
 
 def register_full_exempt_final_from_job(job: ExceptionJob) -> PlazaMonthlyExceptionInput | None:
@@ -695,9 +819,10 @@ def _cancel_batch_inplace(
 
     if kill_children:
         try:
-            from app.services.exception_job_worker import kill_active_job_children
+            from app.services.exception_job_worker import stop_job_runtime_resources
 
-            killed = kill_active_job_children()
+            cleanup = stop_job_runtime_resources()
+            killed = int(cleanup.get("killed_children") or 0)
             logger.info(
                 "Cancelled pipeline batch %s (killed %s active child process(es))",
                 batch.batch_uuid,
@@ -756,9 +881,9 @@ def reconcile_duplicate_active_batches() -> int:
     if cancelled:
         db.session.commit()
         try:
-            from app.services.exception_job_worker import kill_active_job_children
+            from app.services.exception_job_worker import stop_job_runtime_resources
 
-            kill_active_job_children()
+            stop_job_runtime_resources()
         except Exception:  # noqa: BLE001
             logger.exception("Failed killing children during batch reconcile")
         logger.info(
@@ -811,9 +936,9 @@ def supersede_active_batches_for_period(
     db.session.commit()
     # Kill once after marking all superseded jobs cancelled.
     try:
-        from app.services.exception_job_worker import kill_active_job_children
+        from app.services.exception_job_worker import stop_job_runtime_resources
 
-        kill_active_job_children()
+        stop_job_runtime_resources()
     except Exception:  # noqa: BLE001
         logger.exception("Failed killing children while superseding batches")
     logger.info(

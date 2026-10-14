@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import Chart from 'react-apexcharts'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartInset } from '@/components/ui/chart-inset'
 import {
   categoryTooltipXFormatter,
   categoryXAxis,
@@ -32,6 +33,8 @@ export function formatGapSec(value) {
 export function chartColors(dark) {
   return {
     primary: dark ? '#6fbf7a' : '#2f7a45',
+    /** Cool steel/blue — revenue accent (pairs with green traffic) */
+    revenue: dark ? '#93c5fd' : '#2563eb',
     muted: dark ? '#9ca3af' : '#94a3b8',
     danger: dark ? '#f87171' : '#dc2626',
     series: dark
@@ -76,12 +79,58 @@ export function baseChartOptions(dark) {
   }
 }
 
-export function Kpi({ label, value, hint }) {
+/**
+ * accent: 'traffic' (green) | 'revenue' (steel) | 'neutral'
+ * delta: optional { value: number|string, label?: string } for ↑/↓ chip
+ */
+export function Kpi({ label, value, hint, accent = 'neutral', delta }) {
+  const barClass =
+    accent === 'traffic'
+      ? 'bg-primary'
+      : accent === 'revenue'
+        ? 'bg-revenue'
+        : 'bg-border'
+  const labelClass =
+    accent === 'traffic'
+      ? 'text-primary'
+      : accent === 'revenue'
+        ? 'text-revenue'
+        : 'text-muted-foreground'
+
+  let deltaNode = null
+  if (delta != null && delta.value != null && delta.value !== '') {
+    const raw = delta.value
+    const num = typeof raw === 'number' ? raw : Number(String(raw).replace(/[+%]/g, ''))
+    const up = Number.isFinite(num) ? num > 0 : String(raw).startsWith('+')
+    const down = Number.isFinite(num) ? num < 0 : String(raw).startsWith('-')
+    deltaNode = (
+      <span
+        className={cn(
+          'inline-flex items-center gap-0.5 rounded-sm px-1.5 py-0.5 text-small font-medium tabular-nums',
+          up && 'bg-primary/10 text-primary',
+          down && 'bg-destructive/10 text-destructive',
+          !up && !down && 'bg-muted text-muted-foreground',
+        )}
+      >
+        {up ? <ArrowUp className="h-3 w-3" /> : null}
+        {down ? <ArrowDown className="h-3 w-3" /> : null}
+        {typeof raw === 'number' ? formatPct(raw) : String(raw)}
+        {delta.label ? (
+          <span className="font-normal text-muted-foreground"> {delta.label}</span>
+        ) : null}
+      </span>
+    )
+  }
+
   return (
-    <Card>
-      <CardContent className="space-y-1 p-4">
-        <p className="text-small text-muted-foreground">{label}</p>
-        <p className="text-header">{value}</p>
+    <Card className="overflow-hidden shadow-sm">
+      <div className={cn('h-0.5 w-full', barClass)} aria-hidden />
+      <CardContent className="space-y-1.5 p-4">
+        <div className="flex items-start justify-between gap-2">
+          <p className={cn('text-small font-medium', labelClass)}>{label}</p>
+          {deltaNode}
+        </div>
+        <p className="text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
         {hint ? <p className="text-small text-muted-foreground">{hint}</p> : null}
       </CardContent>
     </Card>
@@ -455,9 +504,9 @@ function MatrixTable({ rowKey, rows, series, valueLabel = 'count' }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[28rem] border-collapse text-left text-small">
+      <table className="dashboard-table min-w-[28rem] text-small">
         <thead>
-          <tr className="border-b border-border text-muted-foreground">
+          <tr>
             <SortHeader label={rowKey} sortKey="row" />
             {columns.map((col) => (
               <SortHeader key={col} label={col} sortKey={col} align="right" />
@@ -467,19 +516,14 @@ function MatrixTable({ rowKey, rows, series, valueLabel = 'count' }) {
         </thead>
         <tbody>
           {tableRows.map((row) => (
-            <tr key={row.rowLabel} className="border-b border-border/70">
-              <td className="px-2 py-2 font-medium">{row.rowLabel}</td>
+            <tr key={row.rowLabel}>
+              <td className="font-medium">{row.rowLabel}</td>
               {row.cells.map((value, index) => (
-                <td
-                  key={`${row.rowLabel}-${columns[index]}`}
-                  className="px-2 py-2 text-right tabular-nums"
-                >
+                <td key={`${row.rowLabel}-${columns[index]}`} className="num">
                   {valueLabel === 'gap' ? formatGapSec(value) : formatCount(value)}
                 </td>
               ))}
-              <td className="px-2 py-2 text-right font-medium tabular-nums">
-                {formatCount(row.total)}
-              </td>
+              <td className="num font-medium">{formatCount(row.total)}</td>
             </tr>
           ))}
         </tbody>
@@ -496,7 +540,12 @@ export function LayoutGap({ data, dark }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Kpi label="Overall avg gap" value={formatGapSec(overall.avg)} hint={data.range_label} />
+        <Kpi
+          label="Overall avg gap"
+          value={formatGapSec(overall.avg)}
+          hint={data.range_label}
+          accent="traffic"
+        />
         <Kpi
           label="Min hourly avg"
           value={formatGapSec(overall.min)}
@@ -511,47 +560,56 @@ export function LayoutGap({ data, dark }) {
           label="Gaps < 2s"
           value={formatCount(overall.lt2_count)}
           hint="Flagged headways under 2 seconds"
+          accent="traffic"
         />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Average gap by lane</CardTitle>
+            <CardTitle className="text-subheader text-muted-foreground">
+              Average gap by lane
+            </CardTitle>
             <CardDescription>Mean of hourly averages in the selected window</CardDescription>
           </CardHeader>
           <CardContent>
-            <SimpleBarChart
-              categories={byLane.map((row) => row.lane)}
-              values={byLane.map((row) => row.avg)}
-              dark={dark}
-              yAxisTitle="Avg gap (seconds)"
-              seriesName="Avg gap (s)"
-              valueSuffix="s"
-            />
+            <ChartInset>
+              <SimpleBarChart
+                categories={byLane.map((row) => row.lane)}
+                values={byLane.map((row) => row.avg)}
+                dark={dark}
+                yAxisTitle="Avg gap (seconds)"
+                seriesName="Avg gap (s)"
+                valueSuffix="s"
+              />
+            </ChartInset>
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Gaps &lt; 2 seconds by lane</CardTitle>
+            <CardTitle className="text-subheader text-muted-foreground">
+              Gaps &lt; 2 seconds by lane
+            </CardTitle>
             <CardDescription>LT2 counts summed over the selected window</CardDescription>
           </CardHeader>
           <CardContent>
-            <SimpleBarChart
-              categories={byLane.map((row) => row.lane)}
-              values={byLane.map((row) => row.lt2_count)}
-              dark={dark}
-              yAxisTitle="Gaps < 2s (count)"
-              seriesName="Gaps < 2s"
-              valueSuffix="gaps"
-            />
+            <ChartInset>
+              <SimpleBarChart
+                categories={byLane.map((row) => row.lane)}
+                values={byLane.map((row) => row.lt2_count)}
+                dark={dark}
+                yAxisTitle="Gaps < 2s (count)"
+                seriesName="Gaps < 2s"
+                valueSuffix="gaps"
+              />
+            </ChartInset>
           </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Gap trend</CardTitle>
+          <CardTitle className="text-subheader text-muted-foreground">Gap trend</CardTitle>
           <CardDescription>
             {data.trend_grain === 'hour'
               ? 'Hourly average gap and LT2 counts'
@@ -559,7 +617,9 @@ export function LayoutGap({ data, dark }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <GapTrendChart trend={gap.trend || []} dark={dark} />
+          <ChartInset>
+            <GapTrendChart trend={gap.trend || []} dark={dark} />
+          </ChartInset>
         </CardContent>
       </Card>
 
@@ -573,24 +633,24 @@ export function LayoutGap({ data, dark }) {
             <p className="text-body text-muted-foreground">No gap rows for this period.</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[32rem] border-collapse text-left text-small">
+              <table className="dashboard-table min-w-[32rem] text-small">
                 <thead>
-                  <tr className="border-b border-border text-muted-foreground">
-                    <th className="px-2 py-2 font-medium">Lane</th>
-                    <th className="px-2 py-2 font-medium">Avg</th>
-                    <th className="px-2 py-2 font-medium">Min</th>
-                    <th className="px-2 py-2 font-medium">Max</th>
-                    <th className="px-2 py-2 font-medium">Gaps &lt; 2s</th>
+                  <tr>
+                    <th>Lane</th>
+                    <th>Avg</th>
+                    <th>Min</th>
+                    <th>Max</th>
+                    <th>Gaps &lt; 2s</th>
                   </tr>
                 </thead>
                 <tbody>
                   {byLane.map((row) => (
-                    <tr key={row.lane} className="border-b border-border/70">
-                      <td className="px-2 py-2 font-medium">{row.lane}</td>
-                      <td className="px-2 py-2">{formatGapSec(row.avg)}</td>
-                      <td className="px-2 py-2">{formatGapSec(row.min)}</td>
-                      <td className="px-2 py-2">{formatGapSec(row.max)}</td>
-                      <td className="px-2 py-2">{formatCount(row.lt2_count)}</td>
+                    <tr key={row.lane}>
+                      <td className="font-medium">{row.lane}</td>
+                      <td className="num">{formatGapSec(row.avg)}</td>
+                      <td className="num">{formatGapSec(row.min)}</td>
+                      <td className="num">{formatGapSec(row.max)}</td>
+                      <td className="num">{formatCount(row.lt2_count)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -622,8 +682,13 @@ export function LayoutClassDistribution({ data, dark }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
-        <Kpi label="Period traffic" value={formatCount(top?.total)} hint={data.range_label} />
-        <Kpi label="Top class" value={top ? `${top.pct}%` : '—'} hint={top?.name} />
+        <Kpi
+          label="Period traffic"
+          value={formatCount(top?.total)}
+          hint={data.range_label}
+          accent="traffic"
+        />
+        <Kpi label="Top class" value={top ? `${top.pct}%` : '—'} hint={top?.name} accent="traffic" />
         <Kpi label="Classes" value={formatCount(totals.length)} hint="Distinct vehicle classes" />
       </div>
 
@@ -637,31 +702,37 @@ export function LayoutClassDistribution({ data, dark }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <StackedCategoryChart
-            categories={trend.categories}
-            series={trend.series}
-            isoDates={trend.dates}
-            dark={dark}
-            chartType="line"
-            stacked={false}
-            height={320}
-          />
+          <ChartInset>
+            <StackedCategoryChart
+              categories={trend.categories}
+              series={trend.series}
+              isoDates={trend.dates}
+              dark={dark}
+              chartType="line"
+              stacked={false}
+              height={320}
+            />
+          </ChartInset>
         </CardContent>
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Vehicle class mix</CardTitle>
+            <CardTitle className="text-subheader text-muted-foreground">
+              Vehicle class mix
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <SimpleBarChart
-              categories={totals.map((row) => row.vehicle_class)}
-              values={totals.map((row) => row.count)}
-              dark={dark}
-              horizontal
-              height={Math.max(220, totals.length * 28)}
-            />
+            <ChartInset>
+              <SimpleBarChart
+                categories={totals.map((row) => row.vehicle_class)}
+                values={totals.map((row) => row.count)}
+                dark={dark}
+                horizontal
+                height={Math.max(220, totals.length * 28)}
+              />
+            </ChartInset>
           </CardContent>
         </Card>
         <Card>
@@ -698,8 +769,13 @@ export function LayoutMopDistribution({ data, dark }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
-        <Kpi label="Period traffic" value={formatCount(top?.total)} hint={data.range_label} />
-        <Kpi label="Top MOP" value={top ? `${top.pct}%` : '—'} hint={top?.name} />
+        <Kpi
+          label="Period traffic"
+          value={formatCount(top?.total)}
+          hint={data.range_label}
+          accent="traffic"
+        />
+        <Kpi label="Top MOP" value={top ? `${top.pct}%` : '—'} hint={top?.name} accent="traffic" />
         <Kpi label="MOP types" value={formatCount(totals.length)} />
       </div>
 
@@ -713,22 +789,24 @@ export function LayoutMopDistribution({ data, dark }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <StackedCategoryChart
-            categories={trend.categories}
-            series={trend.series}
-            isoDates={trend.dates}
-            dark={dark}
-            chartType="line"
-            stacked={false}
-            height={320}
-          />
+          <ChartInset>
+            <StackedCategoryChart
+              categories={trend.categories}
+              series={trend.series}
+              isoDates={trend.dates}
+              dark={dark}
+              chartType="line"
+              stacked={false}
+              height={320}
+            />
+          </ChartInset>
         </CardContent>
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>MOP × lane</CardTitle>
+            <CardTitle className="text-subheader text-muted-foreground">MOP × lane</CardTitle>
             <CardDescription>Counts by payment mode across lanes</CardDescription>
           </CardHeader>
           <CardContent>

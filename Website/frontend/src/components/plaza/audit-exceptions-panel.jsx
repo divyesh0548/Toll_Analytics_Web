@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Download } from 'lucide-react'
+import { Download, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { Switch } from '@/components/ui/switch'
+import { Kpi } from '@/components/plaza/numbers-tabs'
 import { formatMoneyCompact } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 
@@ -61,7 +63,9 @@ function emptyResultNote(line, { wholeYear }) {
         ? 'No UNSETTLED rows after filters'
         : code === 'E04' || code === 'E4'
           ? 'No qualifying passes after filters'
-          : 'No transactions after filters',
+          : code === 'E07' || code === 'E7'
+            ? 'No output — no VC4 Loss rows after filters'
+            : 'No transactions after filters',
     no_trips: 'No trips recorded for qualifying passes',
     no_amount: 'No countable unsettled amounts',
   }
@@ -230,6 +234,7 @@ export function AuditExceptionsPanel({
   onWholeYearChange,
   onMetricsSourceChange,
   onApply,
+  onRefresh,
 }) {
   const yearOptions = useMemo(
     () => buildAuditYearOptions(data?.availability?.years || [], yearValue || data?.selection?.year),
@@ -255,18 +260,19 @@ export function AuditExceptionsPanel({
             Standard findings for this plaza by month or full year. Impact in ₹ Lakh.
           </p>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="space-y-1">
-            <span className="block text-body text-foreground">Metrics source</span>
-            <select
-              className="h-10 min-w-[10rem] rounded-sm border border-input bg-background px-2 text-body"
+        <div className="flex flex-wrap items-end gap-3 rounded-sm border border-border bg-muted/40 p-3">
+          <label className="min-w-[10rem] space-y-1">
+            <span className="block text-small text-muted-foreground">Metrics source</span>
+            <SearchableSelect
+              options={[
+                { value: 'manual', label: 'Manual upload' },
+                { value: 'pipeline', label: 'File Upload' },
+              ]}
               value={metricsSource || data?.metrics_source || 'manual'}
-              onChange={(e) => onMetricsSourceChange?.(e.target.value)}
+              onChange={(value) => onMetricsSourceChange?.(value)}
               disabled={loading}
-            >
-              <option value="manual">Manual upload</option>
-              <option value="pipeline">File Upload</option>
-            </select>
+              placeholder="Source"
+            />
           </label>
           <label className="flex h-10 items-center gap-2">
             <Switch
@@ -277,39 +283,34 @@ export function AuditExceptionsPanel({
             />
             <span className="text-body text-foreground">Whole year</span>
           </label>
-          <label className="space-y-1">
-            <span className="block text-body text-foreground">Year</span>
-            <select
-              className="h-10 min-w-[7rem] rounded-sm border border-input bg-background px-2 text-body"
+          <label className="min-w-[7rem] space-y-1">
+            <span className="block text-small text-muted-foreground">Year</span>
+            <SearchableSelect
+              options={yearOptions.map((year) => ({
+                value: String(year),
+                label: String(year),
+              }))}
               value={selectedYear}
-              onChange={(e) => onYearChange?.(e.target.value)}
+              onChange={(value) => onYearChange?.(value)}
               disabled={loading}
-            >
-              {yearOptions.map((year) => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
+              placeholder="Year"
+              searchPlaceholder="Search year…"
+            />
           </label>
           {!wholeYear ? (
-            <label className="space-y-1">
-              <span className="block text-body text-foreground">Month</span>
-              <select
-                className="h-10 min-w-[8rem] rounded-sm border border-input bg-background px-2 text-body"
+            <label className="min-w-[8rem] space-y-1">
+              <span className="block text-small text-muted-foreground">Month</span>
+              <SearchableSelect
+                options={MONTH_NAMES.map((label, index) => ({
+                  value: String(index + 1).padStart(2, '0'),
+                  label,
+                }))}
                 value={selectedMonth}
-                onChange={(e) => onMonthChange?.(e.target.value)}
+                onChange={(value) => onMonthChange?.(value)}
                 disabled={loading || !selectedYear}
-              >
-                {MONTH_NAMES.map((label, index) => {
-                  const value = String(index + 1).padStart(2, '0')
-                  return (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  )
-                })}
-              </select>
+                placeholder="Month"
+                searchPlaceholder="Search month…"
+              />
             </label>
           ) : null}
           {canApply ? (
@@ -322,6 +323,17 @@ export function AuditExceptionsPanel({
               Apply
             </Button>
           ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10"
+            disabled={loading}
+            onClick={() => onRefresh?.()}
+            aria-label="Refresh audit exceptions"
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+            Refresh
+          </Button>
         </div>
       </div>
 
@@ -335,30 +347,21 @@ export function AuditExceptionsPanel({
       ) : null}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <Card>
-          <CardContent className="space-y-1 p-4">
-            <p className="text-body text-foreground">Findings</p>
-            <p className="text-display text-2xl font-semibold tracking-tight">
-              {formatCount(summary?.exception_types ?? 14)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="space-y-1 p-4">
-            <p className="text-body text-foreground">Total transactions</p>
-            <p className="text-display text-2xl font-semibold tracking-tight">
-              {formatCount(summary?.total_count)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="space-y-1 p-4">
-            <p className="text-body text-foreground">Total Impact</p>
-            <p className="text-display text-2xl font-semibold tracking-tight">
-              {formatMoneyCompact(summary?.total_amount)}
-            </p>
-          </CardContent>
-        </Card>
+        <Kpi
+          label="Findings"
+          value={formatCount(summary?.exception_types ?? 14)}
+          accent="neutral"
+        />
+        <Kpi
+          label="Total transactions"
+          value={formatCount(summary?.total_count)}
+          accent="traffic"
+        />
+        <Kpi
+          label="Total Impact"
+          value={formatMoneyCompact(summary?.total_amount)}
+          accent="revenue"
+        />
       </div>
 
       <Card className={cn(loading && 'opacity-70')}>
@@ -377,21 +380,15 @@ export function AuditExceptionsPanel({
             <p className="text-body text-muted-foreground">Loading audit exceptions…</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[48rem] border-collapse text-left text-body">
+              <table className="dashboard-table min-w-[48rem]">
                 <thead>
-                  <tr className="border-b border-border text-foreground">
-                    <th className="px-2 py-3 text-body font-semibold">Code</th>
-                    <th className="px-2 py-3 text-body font-semibold">Exception</th>
-                    <th className="px-2 py-3 text-body font-semibold text-right">
-                      Transactions
-                    </th>
-                    <th className="px-2 py-3 text-body font-semibold text-right">
-                      Impact (in Lakh)
-                    </th>
-                    <th className="px-2 py-3 text-body font-semibold text-right">
-                      % of Revenue
-                    </th>
-                    <th className="px-2 py-3 text-body font-semibold text-right">Output</th>
+                  <tr>
+                    <th>Code</th>
+                    <th>Exception</th>
+                    <th className="num">Transactions</th>
+                    <th className="num">Impact (in Lakh)</th>
+                    <th className="num">% of Revenue</th>
+                    <th className="num">Output</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -410,19 +407,19 @@ export function AuditExceptionsPanel({
                         <tr
                           key={line.code}
                           className={cn(
-                            'border-b border-border/70 align-top',
-                            nested && 'bg-muted/40',
+                            'align-top',
+                            nested && 'dashboard-table-row-nested bg-muted/40',
                           )}
                         >
                           <td
                             className={cn(
-                              'px-2 py-3 text-base font-semibold whitespace-nowrap',
+                              'text-base font-semibold whitespace-nowrap',
                               nested && 'pl-8',
                             )}
                           >
                             {line.code}
                           </td>
-                          <td className="max-w-[28rem] px-2 py-3 text-base leading-snug">
+                          <td className="max-w-[28rem] text-base leading-snug">
                             <div>{line.label}</div>
                             {emptyNote ? (
                               <p className="mt-1 text-small text-muted-foreground">
@@ -430,18 +427,18 @@ export function AuditExceptionsPanel({
                               </p>
                             ) : null}
                           </td>
-                          <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
+                          <td className="num text-base font-semibold whitespace-nowrap">
                             {isPctMetric ? '—' : formatCount(line.total_count)}
                           </td>
-                          <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
+                          <td className="num text-base font-semibold whitespace-nowrap">
                             {isPctMetric
                               ? `${Number(line.percentage).toFixed(2)}%`
                               : formatImpactLakh(line.total_amount)}
                           </td>
-                          <td className="px-2 py-3 text-right text-base font-semibold tabular-nums whitespace-nowrap">
+                          <td className="num text-base font-semibold whitespace-nowrap">
                             {sharePct == null ? '—' : `${sharePct.toFixed(2)}%`}
                           </td>
-                          <td className="px-2 py-3 text-right whitespace-nowrap">
+                          <td className="num whitespace-nowrap">
                             <OutputCell line={line} wholeYear={Boolean(wholeYear)} />
                           </td>
                         </tr>

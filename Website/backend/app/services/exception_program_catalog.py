@@ -101,15 +101,15 @@ E04_PROGRAM = {
     ],
 }
 
-# Single E05 job: lifecycle → Valid/Invalid (internal) → E05 with uploaded scrape.
-# No live IHMCL scrape; user always provides the scraped vehicle file.
+# Single E05 job: lifecycle → Valid/Invalid (internal) → E05.
+# IHMCL scrape file optional: live scrape, or export VRNs for offline scrape.
 E05_PROGRAM = {
     "code": "e05",
     "label": "E05 — Incorrect FASTag issuance",
     "description": (
-        "Upload lifecycle/ETC and a scraped IHMCL vehicle file. "
-        "Runs Valid/Invalid Lookup internally, then Incorrect FASTag "
-        "(metrics + final S3). No live scrape. "
+        "Upload lifecycle/ETC. Optionally upload a scraped IHMCL vehicle file. "
+        "If omitted, Start asks: live IHMCL scrape, or download vehicles to scrape "
+        "offline (job stops so you can attach the scrape later). "
         "Plaza only — entity_name from plaza_entity_map.json."
     ),
     "group_exception_codes": ["E05"],
@@ -120,6 +120,8 @@ E05_PROGRAM = {
     "updates_metrics": True,
     "produces_staging_invalid": False,
     "allows_staging_invalid_pick": False,
+    "may_live_scrape": True,
+    "scrape_slot": "ihmcl",
     # Include legacy prep jobs in the Recent list on this card.
     "job_program_codes": ["e05", "valid_invalid_lookup"],
     "input_slots": [
@@ -132,8 +134,8 @@ E05_PROGRAM = {
         },
         {
             "key": "ihmcl",
-            "label": "Scraped vehicle data (IHMCL)",
-            "required": True,
+            "label": "Scraped vehicle data (IHMCL) — optional",
+            "required": False,
             "multiple": False,
             "accept": ".xlsx,.xls,.xlsm,.csv",
         },
@@ -164,8 +166,9 @@ E06_PROGRAM = {
     "code": "e06",
     "label": "E06 — Discounted passes / national permit",
     "description": (
-        "Upload ETC and VRN for the period. Optionally upload permit files; "
-        "if omitted, Parivahan is scraped (EXCEPTION_USE_SELENIUM in .env). "
+        "Upload ETC and VRN for the period. Optionally upload permit files. "
+        "If omitted, Start asks: live Parivahan scrape, or download vehicles to "
+        "scrape offline (job stops so you can attach permits later). "
         "Updates E06 metrics and uploads enriched output to S3. "
         "Plaza only — entity_name from plaza_entity_map.json."
     ),
@@ -175,6 +178,8 @@ E06_PROGRAM = {
     "requires_pipeline_plaza_key": False,
     "uses_entity_map": True,
     "updates_metrics": True,
+    "may_live_scrape": True,
+    "scrape_slot": "permit",
     "input_slots": [
         {
             "key": "etc",
@@ -315,7 +320,8 @@ E15_PROGRAM = {
         "Upload From-plaza exempt files and To-plaza VRN. Merges on vehicle + "
         "side, keeps MATCH=Yes and non-EXEMPT payment, applies To-plaza rates, "
         "updates E15 metrics, and uploads from_to_combined.xlsx to S3 "
-        "(month from Date & Time). Plaza only — entity_name from plaza_entity_map."
+        "(month from Date & Time). Plaza only — entity_name from plaza_entity_map. "
+        "From-plaza can reuse a Full Exempt *_final.xlsx already generated for this plaza."
     ),
     "group_exception_codes": ["E15"],
     "group_exception_type_ids": [15],
@@ -323,6 +329,9 @@ E15_PROGRAM = {
     "requires_pipeline_plaza_key": False,
     "uses_entity_map": True,
     "updates_metrics": True,
+    # Reuse Full Exempt finals registered as plaza_monthly_exception_inputs
+    # (slot=full_exempt_final) after Exempt Query — Full Process succeeds.
+    "allows_exempt_final_pick": True,
     "input_slots": [
         {
             "key": "from_plaza",
@@ -330,6 +339,7 @@ E15_PROGRAM = {
             "required": True,
             "multiple": True,
             "accept": ".xlsx,.xls,.xlsm,.csv",
+            "or_exempt_final_pick": True,
         },
         {
             "key": "vrn",

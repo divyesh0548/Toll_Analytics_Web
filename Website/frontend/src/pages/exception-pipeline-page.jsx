@@ -4,6 +4,8 @@ import { ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
+import { PageHeader } from '@/components/ui/page-header'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import {
   createExceptionPipelineBatch,
   deleteExceptionPipelineInput,
@@ -325,29 +327,30 @@ export function ExceptionPipelinePage() {
 
   return (
     <section className="space-y-6">
-      <div className="space-y-1">
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-1">
-          <Link to="/portfolio">
-            <ArrowLeft className="h-4 w-4" />
-            Portfolio
-          </Link>
-        </Button>
-        <p className="text-small uppercase tracking-[0.14em] text-muted-foreground">
-          Toll operations
-        </p>
-        <h1 className="text-display">File Upload</h1>
-        <p className="max-w-3xl text-body text-muted-foreground">
-          Select plaza files for a month, upload them together, then start the
-          process. Exception checks run in order from the shared files; when VRN
-          and/or ETC are present, plaza analytics also runs.
-        </p>
-        <p className="max-w-3xl rounded-sm border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
+      <PageHeader
+        eyebrow={
+          <div className="space-y-1">
+            <Button asChild variant="ghost" size="sm" className="-ml-2">
+              <Link to="/portfolio">
+                <ArrowLeft className="h-4 w-4" />
+                Portfolio
+              </Link>
+            </Button>
+            <p className="text-small uppercase tracking-[0.14em] text-muted-foreground">
+              Toll operations
+            </p>
+          </div>
+        }
+        title="File Upload"
+        description="Select plaza files for a month, upload them together, then start the process. Exception checks run in order from the shared files; when VRN and/or ETC are present, plaza analytics also runs."
+      >
+        <p className="mt-2 max-w-3xl rounded-sm border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
           Recommendation: upload and process one calendar month at a time. Mixing
           multiple months in a single run can confuse period matching and make
           results harder to review.
         </p>
         {showExceptionUploads ? (
-          <p className="max-w-3xl text-body text-muted-foreground">
+          <p className="mt-2 max-w-3xl text-body text-muted-foreground">
             Prefer the classic flow?{' '}
             <Link
               to="/exceptions/uploads"
@@ -357,7 +360,7 @@ export function ExceptionPipelinePage() {
             </Link>
           </p>
         ) : null}
-      </div>
+      </PageHeader>
 
       {error ? (
         <p className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-body">
@@ -373,49 +376,42 @@ export function ExceptionPipelinePage() {
           <CardTitle>Period</CardTitle>
           <CardDescription>Plaza + calendar month for shared inputs.</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-3">
-          <label className="space-y-1">
-            <span className="block text-body">Plaza</span>
-            <select
-              className="h-10 min-w-[14rem] rounded-sm border border-input bg-background px-2"
+        <CardContent className="flex flex-wrap gap-3 rounded-b-sm bg-muted/20">
+          <label className="min-w-[14rem] flex-1 space-y-1">
+            <span className="block text-small text-muted-foreground">Plaza</span>
+            <SearchableSelect
+              options={(Array.isArray(plazas) ? plazas : []).map((p) => ({
+                value: p.plaza_identifier,
+                label: p.plaza_name || p.plaza_identifier,
+              }))}
               value={plazaIdentifier}
-              onChange={(e) => setPlazaIdentifier(e.target.value)}
-            >
-              <option value="">Select plaza…</option>
-              {(Array.isArray(plazas) ? plazas : []).map((p) => (
-                <option key={p.plaza_identifier} value={p.plaza_identifier}>
-                  {p.plaza_name || p.plaza_identifier}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => setPlazaIdentifier(value)}
+              placeholder="Select plaza…"
+              searchPlaceholder="Search plaza…"
+            />
           </label>
-          <label className="space-y-1">
-            <span className="block text-body">Year</span>
-            <select
-              className="h-10 rounded-sm border border-input bg-background px-2"
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-            >
-              {years.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
+          <label className="min-w-[7rem] space-y-1">
+            <span className="block text-small text-muted-foreground">Year</span>
+            <SearchableSelect
+              options={years.map((y) => ({ value: String(y), label: String(y) }))}
+              value={String(year)}
+              onChange={(value) => setYear(Number(value))}
+              placeholder="Year"
+              searchPlaceholder="Search year…"
+            />
           </label>
-          <label className="space-y-1">
-            <span className="block text-body">Month</span>
-            <select
-              className="h-10 rounded-sm border border-input bg-background px-2"
-              value={month}
-              onChange={(e) => setMonth(Number(e.target.value))}
-            >
-              {MONTHS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+          <label className="min-w-[7rem] space-y-1">
+            <span className="block text-small text-muted-foreground">Month</span>
+            <SearchableSelect
+              options={MONTHS.map((m) => ({
+                value: String(m.value),
+                label: m.label,
+              }))}
+              value={String(month)}
+              onChange={(value) => setMonth(Number(value))}
+              placeholder="Month"
+              searchPlaceholder="Search month…"
+            />
           </label>
           {plazaIdentifier ? (
             <p className="w-full text-small text-muted-foreground">

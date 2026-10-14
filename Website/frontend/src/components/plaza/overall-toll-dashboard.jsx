@@ -1,5 +1,6 @@
 import Chart from 'react-apexcharts'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartInset } from '@/components/ui/chart-inset'
 import {
   Kpi,
   baseChartOptions,
@@ -435,16 +436,13 @@ function CategoryPanel({
         ) : (
           <div className="grid items-start gap-4 lg:grid-cols-2">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-md border-collapse text-left text-body">
+              <table className="dashboard-table min-w-md">
                 <thead>
-                  <tr className="border-b border-border text-small text-muted-foreground">
+                  <tr>
                     {columns.map((col) => (
                       <th
                         key={col.key}
-                        className={cn(
-                          'px-2 py-2 font-medium',
-                          col.align === 'right' && 'text-right',
-                        )}
+                        className={cn(col.align === 'right' && 'num')}
                       >
                         {col.label}
                       </th>
@@ -453,14 +451,11 @@ function CategoryPanel({
                 </thead>
                 <tbody>
                   {rows.map((row, index) => (
-                    <tr key={row.vehicle_class} className="border-b border-border/60">
+                    <tr key={row.vehicle_class}>
                       {columns.map((col) => (
                         <td
                           key={col.key}
-                          className={cn(
-                            'px-2 py-2',
-                            col.align === 'right' && 'text-right tabular-nums',
-                          )}
+                          className={cn(col.align === 'right' && 'num')}
                         >
                           {col.key === 'class' ? (
                             <span className="inline-flex items-center gap-2 font-medium">
@@ -483,12 +478,14 @@ function CategoryPanel({
                 </tbody>
               </table>
             </div>
-            <CategorySharePie
-              rows={rows}
-              valueKey={pieValueKey}
-              dark={dark}
-              valueFormatter={pieValueFormatter}
-            />
+            <ChartInset>
+              <CategorySharePie
+                rows={rows}
+                valueKey={pieValueKey}
+                dark={dark}
+                valueFormatter={pieValueFormatter}
+              />
+            </ChartInset>
           </div>
         )}
       </CardContent>
@@ -590,11 +587,13 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
           label="Total Transactions"
           value={formatCount(kpis.traffic_period)}
           hint={data.range_label}
+          accent="traffic"
         />
         <Kpi
           label="Total Revenue"
           value={formatMoneyCompact(kpis.revenue_period)}
           hint={data.range_label}
+          accent="revenue"
         />
         <Kpi
           label="YoY Revenue Growth"
@@ -604,6 +603,7 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
               ? 'vs same window last year'
               : 'Shown for a single year when prior year has ≥350 days of data'
           }
+          accent="revenue"
         />
         <Kpi
           label="Avg. Revenue / Day"
@@ -611,6 +611,7 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
             avgRevenuePerDay == null ? '—' : formatMoneyCompact(avgRevenuePerDay)
           }
           hint={daySpan ? `${daySpan} days in selection` : 'Selected interval'}
+          accent="revenue"
         />
       </div>
 
@@ -644,7 +645,9 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
         </CardHeader>
         <CardContent>
           {comparison.length ? (
-            <CategoryComparisonChart rows={comparison} dark={dark} />
+            <ChartInset>
+              <CategoryComparisonChart rows={comparison} dark={dark} />
+            </ChartInset>
           ) : (
             <p className="text-body text-muted-foreground">
               No category comparison for this period.
@@ -655,12 +658,16 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>{trendMeta.title}</CardTitle>
+          <CardTitle className="text-subheader text-muted-foreground">
+            {trendMeta.title}
+          </CardTitle>
           <CardDescription>{trendMeta.description}</CardDescription>
         </CardHeader>
         <CardContent>
           {trend.length ? (
-            <MonthlyTrendChart rows={trend} dark={dark} />
+            <ChartInset>
+              <MonthlyTrendChart rows={trend} dark={dark} />
+            </ChartInset>
           ) : (
             <p className="text-body text-muted-foreground">{trendMeta.empty}</p>
           )}

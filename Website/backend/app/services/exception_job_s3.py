@@ -6,12 +6,14 @@ Layout:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
-import time
 import uuid
 from pathlib import Path
 from typing import BinaryIO
+
+logger = logging.getLogger(__name__)
 
 try:
     from boto3.s3.transfer import TransferConfig
@@ -374,50 +376,26 @@ def download_to_path(s3_key: str, local_path: Path) -> Path:
     """
     Download S3 object to local_path.
 
-    Does not use boto3 download_file (its internal rename hits WinError 32).
-    Uses a short .part name to avoid Windows MAX_PATH FileNotFoundError.
+    Writes directly to the destination (no boto3 download_file rename).
+    On Windows, if the target is locked, fall back to a unique sibling name.
     """
     local_path = Path(local_path)
-    # Enforce short final name as well.
+    # Enforce short final name as well (deep job paths / Windows MAX_PATH).
     local_path = local_path.with_name(shorten_local_filename(local_path.name))
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Short temp name — do NOT embed the original filename (that blew past MAX_PATH).
-    tmp_path = local_path.parent / f".dl_{uuid.uuid4().hex[:12]}.part"
     try:
-        _download_bytes_to_file(s3_key, tmp_path)
-
-        if not local_path.exists():
-            for attempt in range(5):
-                try:
-                    os.replace(_win_long_path(tmp_path), _win_long_path(local_path))
-                    return local_path
-                except PermissionError:
-                    time.sleep(0.3 * (attempt + 1))
-                except OSError:
-                    # os.replace may not accept \\?\ on all builds — try plain paths.
-                    try:
-                        os.replace(str(tmp_path), str(local_path))
-                        return local_path
-                    except PermissionError:
-                        time.sleep(0.3 * (attempt + 1))
-
+        return _download_bytes_to_file(s3_key, local_path)
+    except PermissionError:
+        # Destination locked (Windows) — write beside it under a unique name.
         alt = _unique_sibling(local_path)
-        try:
-            try:
-                os.replace(_win_long_path(tmp_path), _win_long_path(alt))
-            except OSError:
-                os.replace(str(tmp_path), str(alt))
-            return alt
-        except PermissionError:
-            alt2 = _unique_sibling(local_path)
-            return _download_bytes_to_file(s3_key, alt2)
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+        return _download_bytes_to_file(s3_key, alt)
+    except OSError as exc:
+        # Rare: parent vanished mid-write — recreate and retry once beside original.
+        logger.warning("download_to_path retry after %s: %s", type(exc).__name__, exc)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        alt = _unique_sibling(local_path)
+        return _download_bytes_to_file(s3_key, alt)
 
 
 def delete_object(s3_key: str) -> None:

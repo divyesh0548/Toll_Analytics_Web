@@ -1,9 +1,17 @@
+import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import pandas as pd
 from selenium import webdriver
+
+_E6_DIR = Path(__file__).resolve().parent
+_EXCEPTION_ROOT = _E6_DIR.parent
+if str(_EXCEPTION_ROOT) not in sys.path:
+    sys.path.insert(0, str(_EXCEPTION_ROOT))
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
@@ -24,11 +32,17 @@ URL = "https://parivahan.gov.in/"
 WAIT_TIME = 30
 ELEMENT_WAIT = 15
 
-# Defaults — overridden by scrape_vehicle_details_for_permit(..., scrape_cfg=...)
-USE_SELENIUM_GRID = True
+# Defaults — overridden by Website/backend/.env via apply_scrape_settings / scrape_cfg
+USE_SELENIUM_GRID = False
 SELENIUM_REMOTE_URL = "http://localhost:4444/wd/hub"
-MAX_SELENIUM_GRID_NODES = 6
-SELENIUM_AUTO_MANAGE_NODES = True
+MAX_SELENIUM_GRID_NODES = 3
+MAX_SELENIUM_GRID_CONCURRENCY = 3
+SELENIUM_AUTO_MANAGE_NODES = False
+SELENIUM_HUB_CONTAINER = "selenium-hub"
+SELENIUM_NETWORK = "selenium-grid"
+SELENIUM_NODE_IMAGE = "selenium/node-chrome:latest"
+# Required in Docker (no DISPLAY). Set via SCRAPE_HEADLESS in Website/backend/.env.
+SCRAPE_HEADLESS = True
 
 PERMIT_FIELDS = ["Permit Type", "Permit/Authorization No", "Permit Validity"]
 
@@ -37,16 +51,114 @@ _thread_remote_url = threading.local()
 
 
 def apply_scrape_settings(scrape_cfg: dict | None) -> None:
-    """Apply e6_config.json scrape block onto module defaults."""
-    global SELENIUM_REMOTE_URL, MAX_SELENIUM_GRID_NODES, SELENIUM_AUTO_MANAGE_NODES
-    if not scrape_cfg:
-        return
-    if scrape_cfg.get("selenium_remote_url"):
-        SELENIUM_REMOTE_URL = str(scrape_cfg["selenium_remote_url"]).strip()
-    if scrape_cfg.get("max_nodes") is not None:
-        MAX_SELENIUM_GRID_NODES = int(scrape_cfg["max_nodes"])
-    if scrape_cfg.get("auto_manage_nodes") is not None:
-        SELENIUM_AUTO_MANAGE_NODES = bool(scrape_cfg["auto_manage_nodes"])
+    """
+    Apply scrape settings onto module defaults.
+    Prefer dict from load_selenium_scrape_config (Website/backend/.env);
+    if None, load env directly.
+    """
+    global USE_SELENIUM_GRID, SELENIUM_REMOTE_URL, MAX_SELENIUM_GRID_NODES
+    global MAX_SELENIUM_GRID_CONCURRENCY, SELENIUM_AUTO_MANAGE_NODES, SCRAPE_HEADLESS
+    global SELENIUM_HUB_CONTAINER, SELENIUM_NETWORK, SELENIUM_NODE_IMAGE
+
+    cfg = scrape_cfg
+    if not cfg:
+        try:
+            from common.selenium_scrape_config import load_selenium_scrape_config
+
+            cfg = load_selenium_scrape_config(program="E6")
+        except Exception:
+            return
+
+    if cfg.get("use_grid") is not None:
+        USE_SELENIUM_GRID = bool(cfg["use_grid"])
+    if cfg.get("selenium_remote_url"):
+        SELENIUM_REMOTE_URL = str(cfg["selenium_remote_url"]).strip()
+    if cfg.get("max_nodes") is not None:
+        MAX_SELENIUM_GRID_NODES = max(1, int(cfg["max_nodes"]))
+    if cfg.get("max_concurrency") is not None:
+        MAX_SELENIUM_GRID_CONCURRENCY = max(1, int(cfg["max_concurrency"]))
+    elif cfg.get("max_nodes") is not None:
+        MAX_SELENIUM_GRID_CONCURRENCY = MAX_SELENIUM_GRID_NODES
+    if cfg.get("auto_manage_nodes") is not None:
+        SELENIUM_AUTO_MANAGE_NODES = bool(cfg["auto_manage_nodes"])
+    if cfg.get("headless") is not None:
+        SCRAPE_HEADLESS = bool(cfg["headless"])
+    if cfg.get("selenium_hub_container"):
+        SELENIUM_HUB_CONTAINER = str(cfg["selenium_hub_container"]).strip()
+    if cfg.get("selenium_network"):
+        SELENIUM_NETWORK = str(cfg["selenium_network"]).strip()
+    if cfg.get("selenium_node_image"):
+        SELENIUM_NODE_IMAGE = str(cfg["selenium_node_image"]).strip()
+
+
+def _chrome_binary_location() -> str | None:
+    for key in ("CHROME_BIN", "GOOGLE_CHROME_BIN", "CHROME_PATH"):
+        path = (os.environ.get(key) or "").strip()
+        if path and Path(path).is_file():
+            return path
+    for candidate in (
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def _use_headless() -> bool:
+    """Headless when configured, or automatically in Linux with no DISPLAY (Docker)."""
+    if SCRAPE_HEADLESS:
+        return True
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or "").strip():
+        return True
+    return False
+
+
+def _build_chrome_options(*, minimal: bool = False) -> webdriver.ChromeOptions:
+    options = webdriver.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--remote-allow-origins=*")
+    options.add_argument("--window-size=1920,1080")
+
+    if _use_headless():
+        # Chrome 109+ prefers --headless=new; required in Docker (no X display).
+        options.add_argument("--headless=new")
+
+    chrome_bin = _chrome_binary_location()
+    if chrome_bin:
+        options.binary_location = chrome_bin
+
+    if minimal:
+        return options
+
+    options.add_argument("--disable-images")
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-features=TranslateUI")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    options.page_load_strategy = "normal"
+    options.add_experimental_option(
+        "prefs",
+        {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.default_content_settings.popups": 0,
+        },
+    )
+    return options
 
 
 def setup_driver(remote_url=None):
@@ -54,44 +166,17 @@ def setup_driver(remote_url=None):
     if remote_url is None:
         remote_url = getattr(_thread_remote_url, "value", None)
     try:
-        options = webdriver.ChromeOptions()
-
-        # Basic options
-        options.add_argument('--disable-images')
-        options.add_argument('--blink-settings=imagesEnabled=false')
-        options.add_argument('--disable-gpu')
-        options.page_load_strategy = 'normal'
-
-        # Stability and compatibility options
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-software-rasterizer')
-        options.add_argument('--disable-background-timer-throttling')
-        options.add_argument('--disable-backgrounding-occluded-windows')
-        options.add_argument('--disable-renderer-backgrounding')
-        options.add_argument('--disable-features=TranslateUI')
-        options.add_argument('--remote-allow-origins=*')
-        options.add_argument('--disable-web-security')
-        options.add_argument('--allow-running-insecure-content')
-
-        # User agent to avoid detection
-        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-
-        # Preferences
-        prefs = {
-            "profile.managed_default_content_settings.images": 2,
-            "profile.default_content_setting_values.notifications": 2,
-            "profile.default_content_settings.popups": 0
-        }
-        options.add_experimental_option("prefs", prefs)
+        options = _build_chrome_options()
+        print(
+            f"Chrome options: headless={_use_headless()}, "
+            f"binary={options.binary_location or '(selenium manager default)'}"
+        )
 
         if remote_url:
             ensure_grid_ready(remote_url)
             driver = webdriver.Remote(command_executor=remote_url, options=options)
             print(f"Browser connected to Selenium Grid: {remote_url}")
         else:
-            # Try to create local driver with service
             try:
                 driver = webdriver.Chrome(options=options)
             except Exception as e1:
@@ -102,16 +187,15 @@ def setup_driver(remote_url=None):
                     driver = webdriver.Chrome(service=service, options=options)
                 except Exception as e2:
                     print(f"  [WARN] Second attempt failed: {e2}")
-                    print("  [INFO] Retrying with minimal options...")
-                    minimal_options = webdriver.ChromeOptions()
-                    minimal_options.add_argument('--no-sandbox')
-                    minimal_options.add_argument('--disable-dev-shm-usage')
+                    print("  [INFO] Retrying with minimal Docker-safe options...")
+                    minimal_options = _build_chrome_options(minimal=True)
                     driver = webdriver.Chrome(options=minimal_options)
 
-        try:
-            driver.maximize_window()
-        except Exception as e:
-            print(f"  [WARNING] Could not maximize window: {e}")
+        if not _use_headless():
+            try:
+                driver.maximize_window()
+            except Exception as e:
+                print(f"  [WARNING] Could not maximize window: {e}")
 
         try:
             _ = driver.current_url
@@ -120,7 +204,7 @@ def setup_driver(remote_url=None):
             print(f"  [ERROR] Driver is not responsive: {url_error}")
             try:
                 driver.quit()
-            except:
+            except Exception:  # noqa: BLE001
                 pass
             return None
 
@@ -675,15 +759,23 @@ def scrape_vehicle_details_for_permit(
     use_grid = use_selenium_grid or (remote_url is not None)
     grid_url = remote_url or SELENIUM_REMOTE_URL
 
-    print("=" * 80)
-    print("STARTING VEHICLE DETAILS SCRAPING")
-    print("=" * 80)
+    vehicle_count = 0 if df_input is None else len(df_input)
+    print("=" * 80, flush=True)
+    print("STARTING VEHICLE DETAILS SCRAPING", flush=True)
+    print(f"VEHICLES TO SCRAPE: {vehicle_count:,} unique VRN(s) (E6 Parivahan)", flush=True)
+    print("=" * 80, flush=True)
 
     if not use_grid:
-        print("Web scrape mode: local Chrome (single browser)")
+        print("Web scrape mode: local Chrome (single browser)", flush=True)
         return _scrape_chunk(df_input, None, vehicle_column=vehicle_column)
 
-    print(f"Web scrape mode: Selenium Grid ({grid_url}, auto_nodes={SELENIUM_AUTO_MANAGE_NODES})")
+    print(
+        f"Web scrape mode: Selenium Grid ({grid_url}, "
+        f"auto_nodes={SELENIUM_AUTO_MANAGE_NODES}, "
+        f"nodes={MAX_SELENIUM_GRID_NODES}, "
+        f"concurrency={MAX_SELENIUM_GRID_CONCURRENCY})",
+        flush=True,
+    )
     return _run_grid_scrape(df_input, grid_url, vehicle_column=vehicle_column)
 
 
@@ -701,11 +793,16 @@ def _run_grid_scrape(df_input, remote_url, vehicle_column=None):
     Auto-start Chrome nodes (if enabled), split the work across parallel Grid sessions,
     merge results, and fall back to local Chrome on failure.
     """
-    chunks = split_df_for_grid(df_input, MAX_SELENIUM_GRID_NODES)
+    chunks = split_df_for_grid(df_input, MAX_SELENIUM_GRID_CONCURRENCY)
     if not chunks:
         return df_input
 
-    print(f"  [SELENIUM GRID] {len(chunks)} chunk(s) -> {remote_url}", flush=True)
+    workers = min(len(chunks), MAX_SELENIUM_GRID_CONCURRENCY)
+    print(
+        f"  [SELENIUM GRID] {len(chunks)} chunk(s), concurrency={workers}, "
+        f"nodes={MAX_SELENIUM_GRID_NODES} -> {remote_url}",
+        flush=True,
+    )
 
     managed_nodes = []
     merged = None
@@ -713,14 +810,20 @@ def _run_grid_scrape(df_input, remote_url, vehicle_column=None):
 
     try:
         if SELENIUM_AUTO_MANAGE_NODES:
-            managed_nodes = start_managed_nodes(len(chunks))
+            managed_nodes = start_managed_nodes(
+                MAX_SELENIUM_GRID_NODES,
+                hub_name=SELENIUM_HUB_CONTAINER,
+                network=SELENIUM_NETWORK,
+                node_image=SELENIUM_NODE_IMAGE,
+                max_sessions=MAX_SELENIUM_GRID_CONCURRENCY,
+            )
             wait_for_grid_ready(remote_url)
         else:
             assert_grid_ready(remote_url)
 
         result_frames = []
         failures = []
-        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_chunk = {
                 executor.submit(_scrape_chunk, chunk, remote_url, vehicle_column): chunk_id
                 for chunk_id, chunk in enumerate(chunks, start=1)
@@ -812,8 +915,11 @@ def _scrape_vehicle_details_for_permit_impl(df_input, vehicle_column=None):
     # Start browser (local or grid session via _thread_remote_url)
     driver = setup_driver()
     if not driver:
-        print("[ERROR] Could not start browser — aborting")
-        return df
+        raise RuntimeError(
+            "Could not start Chrome for permit scrape. "
+            "In Docker set SCRAPE_HEADLESS=1 (and rebuild if this code is new). "
+            "Or use SCRAPE_USE_GRID=1 with the selenium Compose profile."
+        )
 
     wait = WebDriverWait(driver, WAIT_TIME)
 

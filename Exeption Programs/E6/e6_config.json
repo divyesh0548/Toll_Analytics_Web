@@ -417,10 +417,5 @@
       "time_part": ["TIME", "Time"]
     }
   },
-  "scrape": {
-    "selenium_remote_url": "http://localhost:4444/wd/hub",
-    "max_nodes": 6,
-    "headless": false,
-    "auto_manage_nodes": true
-  }
+  "scrape": {}
 }

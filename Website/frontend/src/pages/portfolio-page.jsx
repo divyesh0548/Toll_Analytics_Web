@@ -4,6 +4,9 @@ import { Building2, ChevronDown, ChevronRight, Plus } from 'lucide-react'
 import Chart from 'react-apexcharts'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartInset } from '@/components/ui/chart-inset'
+import { PageHeader } from '@/components/ui/page-header'
+import { DashboardSkeleton } from '@/components/ui/skeleton'
 import { getPortfolioRollup, getPortfolioVolume, listCompanies } from '@/lib/api'
 import {
   categoryTooltipXFormatter,
@@ -108,13 +111,13 @@ function PortfolioRollupTable({ rollup }) {
         {yearLabel ? (
           <p className="mb-3 text-small font-medium text-muted-foreground">{yearLabel}</p>
         ) : null}
-        <table className="w-full min-w-[40rem] border-collapse text-left text-body">
+        <table className="dashboard-table min-w-[40rem]">
           <thead>
-            <tr className="border-b border-border text-small text-muted-foreground">
-              <th className="px-2 py-2 font-medium">Entity</th>
-              <th className="px-2 py-2 font-medium">Type</th>
-              <th className="px-2 py-2 font-medium text-right">Traffic</th>
-              <th className="px-2 py-2 font-medium text-right">Revenue</th>
+            <tr>
+              <th>Entity</th>
+              <th>Type</th>
+              <th className="num">Traffic</th>
+              <th className="num">Revenue</th>
             </tr>
           </thead>
           <tbody>
@@ -149,8 +152,8 @@ function PortfolioRollupTable({ rollup }) {
 function FragmentRows({ company, companyOpen, openSpvs, onToggleCompany, onToggleSpv }) {
   return (
     <>
-      <tr className="border-b border-border/70 bg-muted/20">
-        <td className="px-2 py-2">
+      <tr className="dashboard-table-row-open">
+        <td>
           <button
             type="button"
             onClick={onToggleCompany}
@@ -170,9 +173,9 @@ function FragmentRows({ company, companyOpen, openSpvs, onToggleCompany, onToggl
             </Link>
           </button>
         </td>
-        <td className="px-2 py-2 text-muted-foreground">Company</td>
-        <td className="px-2 py-2 text-right font-medium">{formatCount(company.traffic)}</td>
-        <td className="px-2 py-2 text-right font-medium">{formatMoney(company.revenue)}</td>
+        <td className="text-muted-foreground">Company</td>
+        <td className="num font-medium">{formatCount(company.traffic)}</td>
+        <td className="num font-medium text-revenue">{formatMoney(company.revenue)}</td>
       </tr>
       {companyOpen
         ? (company.spvs || []).map((spv) => {
@@ -194,8 +197,8 @@ function FragmentRows({ company, companyOpen, openSpvs, onToggleCompany, onToggl
 function SpvRows({ spv, spvOpen, onToggleSpv }) {
   return (
     <>
-      <tr className="border-b border-border/50">
-        <td className="px-2 py-2 pl-8">
+      <tr className={spvOpen ? 'dashboard-table-row-open' : undefined}>
+        <td className="pl-8">
           <button
             type="button"
             onClick={onToggleSpv}
@@ -215,14 +218,14 @@ function SpvRows({ spv, spvOpen, onToggleSpv }) {
             </Link>
           </button>
         </td>
-        <td className="px-2 py-2 text-muted-foreground">SPV</td>
-        <td className="px-2 py-2 text-right">{formatCount(spv.traffic)}</td>
-        <td className="px-2 py-2 text-right">{formatMoney(spv.revenue)}</td>
+        <td className="text-muted-foreground">SPV</td>
+        <td className="num">{formatCount(spv.traffic)}</td>
+        <td className="num text-revenue">{formatMoney(spv.revenue)}</td>
       </tr>
       {spvOpen
         ? (spv.plazas || []).map((plaza) => (
-            <tr key={plaza.plaza_identifier} className="border-b border-border/40">
-              <td className="px-2 py-2 pl-14">
+            <tr key={plaza.plaza_identifier}>
+              <td className="pl-14">
                 <Link
                   to={`/companies/spvs/plazas/${plaza.plaza_identifier}`}
                   className="hover:underline"
@@ -230,9 +233,9 @@ function SpvRows({ spv, spvOpen, onToggleSpv }) {
                   {plaza.plaza_name}
                 </Link>
               </td>
-              <td className="px-2 py-2 text-muted-foreground">Plaza</td>
-              <td className="px-2 py-2 text-right">{formatCount(plaza.traffic)}</td>
-              <td className="px-2 py-2 text-right">{formatMoney(plaza.revenue)}</td>
+              <td className="text-muted-foreground">Plaza</td>
+              <td className="num">{formatCount(plaza.traffic)}</td>
+              <td className="num text-revenue">{formatMoney(plaza.revenue)}</td>
             </tr>
           ))
         : null}
@@ -291,7 +294,16 @@ export function PortfolioPage() {
   }, [companies, volumeByCompany])
 
   if (loading) {
-    return <p className="text-body text-muted-foreground">Loading portfolio…</p>
+    return (
+      <section className="space-y-6">
+        <div className="border-b border-border/80 pb-5 space-y-2">
+          <div className="h-3 w-24 animate-pulse rounded-sm bg-muted" />
+          <div className="h-8 w-48 animate-pulse rounded-sm bg-muted" />
+          <div className="h-4 w-72 max-w-full animate-pulse rounded-sm bg-muted" />
+        </div>
+        <DashboardSkeleton kpis={3} />
+      </section>
+    )
   }
 
   if (error) {
@@ -335,43 +347,43 @@ export function PortfolioPage() {
 
   return (
     <section className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="space-y-1">
+      <PageHeader
+        eyebrow={
           <p className="text-small uppercase tracking-[0.14em] text-muted-foreground">
             Portfolio
           </p>
-          <h1 className="text-display">Companies</h1>
-          <p className="text-body text-muted-foreground">
-            Top companies by volume, with full expandable hierarchy below.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {showExceptionUploads ? (
+        }
+        title="Companies"
+        description="Top companies by volume, with full expandable hierarchy below."
+        actions={
+          <>
+            {showExceptionUploads ? (
+              <Button asChild variant="outline">
+                <a href="/exceptions/uploads" target="_blank" rel="noopener noreferrer">
+                  Exception uploads
+                </a>
+              </Button>
+            ) : null}
             <Button asChild variant="outline">
-              <a href="/exceptions/uploads" target="_blank" rel="noopener noreferrer">
-                Exception uploads
+              <a href="/exceptions/pipeline" target="_blank" rel="noopener noreferrer">
+                File Upload
               </a>
             </Button>
-          ) : null}
-          <Button asChild variant="outline">
-            <a href="/exceptions/pipeline" target="_blank" rel="noopener noreferrer">
-              File Upload
-            </a>
-          </Button>
-          <Button asChild variant="outline">
-            <Link to="/companies/spvs/new">
-              <Plus className="h-4 w-4" />
-              New SPV
-            </Link>
-          </Button>
-          <Button asChild>
-            <Link to="/companies/new">
-              <Plus className="h-4 w-4" />
-              New company
-            </Link>
-          </Button>
-        </div>
-      </div>
+            <Button asChild variant="outline">
+              <Link to="/companies/spvs/new">
+                <Plus className="h-4 w-4" />
+                New SPV
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link to="/companies/new">
+                <Plus className="h-4 w-4" />
+                New company
+              </Link>
+            </Button>
+          </>
+        }
+      />
 
       <div>
         <p className="mb-3 text-small text-muted-foreground">
@@ -414,7 +426,9 @@ export function PortfolioPage() {
                     </div>
                   </div>
                   {series.length > 0 ? (
-                    <CompanyVolumeChart series={series} dark={dark} />
+                    <ChartInset>
+                      <CompanyVolumeChart series={series} dark={dark} />
+                    </ChartInset>
                   ) : (
                     <p className="py-6 text-center text-small text-muted-foreground">
                       No traffic data yet

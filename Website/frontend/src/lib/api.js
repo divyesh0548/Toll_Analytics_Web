@@ -63,6 +63,8 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data.error || `Request failed (${response.status})`)
     error.status = response.status
+    error.data = data
+    if (data?.needs_scrape_mode) error.needs_scrape_mode = true
     throw error
   }
   return data
@@ -377,6 +379,20 @@ export function attachStagingInvalidFile(jobUuid, outputFileId) {
   })
 }
 
+export function listExemptFinalFiles(plazaIdentifier, limit = 20) {
+  const params = new URLSearchParams()
+  params.set('plaza_identifier', plazaIdentifier || '')
+  params.set('limit', String(limit || 20))
+  return request(`/api/exception-jobs/exempt-final-files?${params.toString()}`)
+}
+
+export function attachExemptFinalFile(jobUuid, monthlyInputId) {
+  return request(`/api/exception-jobs/${jobUuid}/attach-exempt-final`, {
+    method: 'POST',
+    body: JSON.stringify({ monthly_input_id: monthlyInputId }),
+  })
+}
+
 export function getExceptionJob(jobUuid) {
   return request(`/api/exception-jobs/${jobUuid}`)
 }
@@ -461,10 +477,25 @@ export function deleteExceptionJobFile(jobUuid, fileId) {
   })
 }
 
-export function startExceptionJob(jobUuid) {
+export function deleteExceptionJob(jobUuid) {
+  return request(`/api/exception-jobs/${jobUuid}`, {
+    method: 'DELETE',
+  })
+}
+
+export function startExceptionJob(jobUuid, { scrapeMode } = {}) {
+  const mode = String(scrapeMode || '').trim().toLowerCase()
+  const body = {
+    scrape_mode: mode === 'export' ? 'export' : 'live',
+  }
   return request(`/api/exception-jobs/${jobUuid}/start`, {
     method: 'POST',
+    body: JSON.stringify(body),
   })
+}
+
+export function downloadExceptionJobFile(jobUuid, fileId) {
+  return request(`/api/exception-jobs/${jobUuid}/files/${fileId}/download`)
 }
 
 export function markExceptionJobFailed(jobUuid, reason) {

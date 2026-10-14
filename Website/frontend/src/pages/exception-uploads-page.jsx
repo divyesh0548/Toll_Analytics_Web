@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, FileUp, Loader2, Play, Trash2, Upload } from 'lucide-react'
+import { ArrowLeft, Download, FileUp, Loader2, Play, Trash2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 import {
+  attachExemptFinalFile,
   attachStagingInvalidFile,
   createExceptionJob,
+  deleteExceptionJob,
   deleteExceptionJobFile,
+  downloadExceptionJobFile,
   getAnnexureServerDefaults,
   getExceptionJob,
   listExceptionJobs,
   listExceptionPrograms,
+  listExemptFinalFiles,
   listPlazas,
   listStagingInvalidFiles,
   markExceptionJobFailed,
@@ -80,11 +85,83 @@ function statusClass(status) {
   }
 }
 
+/** Browse → stage files (shared Upload below all slots — no per-slot upload). */
+function SlotPendingUpload({
+  slot,
+  pendingFiles,
+  isUploading,
+  busy,
+  chooseLabel,
+  onSelect,
+  onClear,
+}) {
+  const pending = pendingFiles || []
+  return (
+    <div className="space-y-2">
+      <label
+        className={cn(
+          'inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-sm border border-border bg-background px-3 py-2 text-small hover:bg-accent',
+          (busy || isUploading) && 'pointer-events-none opacity-70',
+        )}
+      >
+        <FileUp className="h-3.5 w-3.5" />
+        {chooseLabel ||
+          (pending.length
+            ? slot.multiple
+              ? 'Add more files…'
+              : 'Change file…'
+            : slot.multiple
+              ? 'Choose files…'
+              : 'Choose file…')}
+        <input
+          type="file"
+          className="hidden"
+          accept={slot.accept}
+          multiple={Boolean(slot.multiple)}
+          disabled={busy || isUploading}
+          onChange={(event) => {
+            onSelect(slot.key, event.target.files)
+            event.target.value = ''
+          }}
+        />
+      </label>
+
+      {pending.length > 0 ? (
+        <div className="space-y-2 rounded-sm border border-border bg-secondary/20 px-3 py-2">
+          <p className="text-small text-muted-foreground">
+            Selected {pending.length} file{pending.length === 1 ? '' : 's'} — not uploaded yet
+          </p>
+          <ul className="space-y-1">
+            {pending.map((file) => (
+              <li
+                key={`${file.name}-${file.size}-${file.lastModified}`}
+                className="truncate text-body"
+              >
+                {file.name}
+              </li>
+            ))}
+          </ul>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy || isUploading}
+            onClick={() => onClear(slot.key)}
+          >
+            Clear
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function ExceptionUploadsPage() {
   const [programs, setPrograms] = useState([])
   const [pipelineKeys, setPipelineKeys] = useState([])
   const [plazas, setPlazas] = useState([])
   const [jobs, setJobs] = useState([])
+  const [jobsLoading, setJobsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedProgram, setSelectedProgram] = useState(null)
@@ -95,32 +172,81 @@ export function ExceptionUploadsPage() {
   const [activeJob, setActiveJob] = useState(null)
   const [busy, setBusy] = useState(false)
   const [uploadingSlot, setUploadingSlot] = useState(null)
-  const [uploadingNames, setUploadingNames] = useState([])
+  const [pendingBySlot, setPendingBySlot] = useState({})
   const [notice, setNotice] = useState('')
   const [serverDefaults, setServerDefaults] = useState(null)
   const [stagingFiles, setStagingFiles] = useState([])
   const [stagingFileId, setStagingFileId] = useState('')
+  const [exemptFinalFiles, setExemptFinalFiles] = useState([])
+  const [exemptFinalFileId, setExemptFinalFileId] = useState('')
+  const [scrapeModeOpen, setScrapeModeOpen] = useState(false)
+  const [jobSelectMode, setJobSelectMode] = useState(false)
+  const [selectedJobUuids, setSelectedJobUuids] = useState(() => new Set())
 
   const activeProcess = selectedProcess || processesFor(selectedProgram)[0] || null
+  const recentJobs = useMemo(() => jobs.slice(0, 20), [jobs])
 
-  const loadCatalog = useCallback(async (program) => {
-    const filterCode = jobFilterCode(program)
-    const [catalog, plazaData, jobData] = await Promise.all([
+  const programCode = String(
+    activeProcess?.code || selectedProgram?.code || activeJob?.program_code || '',
+  ).toLowerCase()
+  const scrapeSlotKey =
+    activeProcess?.scrape_slot ||
+    selectedProgram?.scrape_slot ||
+    (programCode === 'e05' ? 'ihmcl' : programCode === 'e06' ? 'permit' : '')
+  const mayLiveScrape = Boolean(
+    activeProcess?.may_live_scrape ??
+      selectedProgram?.may_live_scrape ??
+      (programCode === 'e05' || programCode === 'e06'),
+  )
+  const needsScrapeModeChoice = useMemo(() => {
+    if (!activeJob || !mayLiveScrape || !scrapeSlotKey) return false
+    const hasScrapeInput = (activeJob.files || []).some((f) => f.slot === scrapeSlotKey)
+    return !hasScrapeInput
+  }, [activeJob, mayLiveScrape, scrapeSlotKey])
+  const scrapeExportFiles = useMemo(
+    () => (activeJob?.files || []).filter((f) => f.slot === 'scrape_vehicles'),
+    [activeJob],
+  )
+
+  const pendingEntries = useMemo(
+    () =>
+      Object.entries(pendingBySlot).filter(
+        ([, files]) => Array.isArray(files) && files.length > 0,
+      ),
+    [pendingBySlot],
+  )
+  const pendingCount = pendingEntries.reduce(
+    (sum, [, files]) => sum + files.length,
+    0,
+  )
+  const isUploading = Boolean(uploadingSlot)
+
+  const loadCatalog = useCallback(async () => {
+    const [catalog, plazaData] = await Promise.all([
       listExceptionPrograms(),
       listPlazas(),
-      listExceptionJobs(undefined, filterCode || undefined),
     ])
     setPrograms(catalog.programs || [])
     setPipelineKeys(catalog.pipeline_plaza_keys || [])
     setPlazas(plazaData.plazas || [])
+  }, [])
+
+  const loadJobsForProgram = useCallback(async (program) => {
+    const filterCode = jobFilterCode(program)
+    if (!filterCode) {
+      setJobs([])
+      return
+    }
+    const jobData = await listExceptionJobs(undefined, filterCode)
     setJobs(jobData.jobs || [])
   }, [])
 
+  // Programs + plazas once (no unfiltered job list).
   useEffect(() => {
     let active = true
     ;(async () => {
       try {
-        await loadCatalog(selectedProgram)
+        await loadCatalog()
       } catch (err) {
         if (active) setError(err.message || 'Failed to load exception programs')
       } finally {
@@ -130,7 +256,36 @@ export function ExceptionUploadsPage() {
     return () => {
       active = false
     }
-  }, [loadCatalog, selectedProgram])
+  }, [loadCatalog])
+
+  // Load jobs only for the selected program (never show a mixed list first).
+  useEffect(() => {
+    setJobSelectMode(false)
+    setSelectedJobUuids(new Set())
+    if (!selectedProgram) {
+      setJobs([])
+      setJobsLoading(false)
+      return undefined
+    }
+    let active = true
+    setJobs([])
+    setJobsLoading(true)
+    ;(async () => {
+      try {
+        await loadJobsForProgram(selectedProgram)
+      } catch (err) {
+        if (active) {
+          setJobs([])
+          setError(err.message || 'Failed to load jobs')
+        }
+      } finally {
+        if (active) setJobsLoading(false)
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [selectedProgram, loadJobsForProgram])
 
   // Default / sync process when opening a program group.
   useEffect(() => {
@@ -197,6 +352,33 @@ export function ExceptionUploadsPage() {
     activeJob?.status,
   ])
 
+  // Full Exempt finals for E15 From-plaza (this plaza only, latest first).
+  useEffect(() => {
+    const plazaId = activeJob?.plaza_identifier || plazaIdentifier
+    if (!plazaId || !activeProcess?.allows_exempt_final_pick) {
+      setExemptFinalFiles([])
+      setExemptFinalFileId('')
+      return undefined
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await listExemptFinalFiles(plazaId, 20)
+        if (!cancelled) setExemptFinalFiles(data.files || [])
+      } catch {
+        if (!cancelled) setExemptFinalFiles([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeJob?.plaza_identifier,
+    plazaIdentifier,
+    activeProcess?.allows_exempt_final_pick,
+    activeJob?.status,
+  ])
+
   // Poll active job while queued/running
   useEffect(() => {
     if (!activeJob?.job_uuid) return undefined
@@ -255,7 +437,10 @@ export function ExceptionUploadsPage() {
           : {}),
       })
       setActiveJob(data.job)
-      setNotice('Job created. Upload the required files, then Start.')
+      setPendingBySlot({})
+      setStagingFileId('')
+      setExemptFinalFileId('')
+      setNotice('Job created. Choose files for each slot, click Upload files, then Start.')
       const jobData = await listExceptionJobs(
         undefined,
         jobFilterCode(selectedProgram) || process.code,
@@ -268,31 +453,57 @@ export function ExceptionUploadsPage() {
     }
   }
 
-  async function handleUpload(slotKey, fileList) {
-    if (!activeJob || !fileList?.length) return
+  function handleSelectPendingFiles(slotKey, fileList) {
+    if (!fileList?.length) return
     const files = Array.from(fileList)
-    setUploadingSlot(slotKey)
-    setUploadingNames(files.map((f) => f.name))
+    setPendingBySlot((prev) => {
+      const slot = (activeProcess?.input_slots || selectedProgram?.input_slots || []).find(
+        (s) => s.key === slotKey,
+      )
+      if (slot?.multiple && prev[slotKey]?.length) {
+        return { ...prev, [slotKey]: [...prev[slotKey], ...files] }
+      }
+      return { ...prev, [slotKey]: files }
+    })
+    setNotice('')
+    setError('')
+  }
+
+  function handleClearPending(slotKey) {
+    setPendingBySlot((prev) => {
+      const next = { ...prev }
+      delete next[slotKey]
+      return next
+    })
+  }
+
+  async function handleUploadAllPending() {
+    if (!activeJob || pendingCount === 0) return
     setBusy(true)
     setError('')
     setNotice('')
     try {
       let job = activeJob
-      for (const file of files) {
-        const data = await uploadExceptionJobFile(activeJob.job_uuid, slotKey, file)
-        job = data.job
+      let uploaded = 0
+      for (const [slotKey, files] of pendingEntries) {
+        setUploadingSlot(slotKey)
+        for (const file of files) {
+          const data = await uploadExceptionJobFile(activeJob.job_uuid, slotKey, file)
+          job = data.job
+          uploaded += 1
+        }
       }
       setActiveJob(job)
+      setPendingBySlot({})
       setNotice(
-        files.length === 1
-          ? `Uploaded ${files[0].name}`
-          : `Uploaded ${files.length} files`,
+        uploaded === 1
+          ? 'Uploaded 1 file. You can Start the job when ready.'
+          : `Uploaded ${uploaded} files. You can Start the job when ready.`,
       )
     } catch (err) {
       setError(err.message || 'Upload failed')
     } finally {
       setUploadingSlot(null)
-      setUploadingNames([])
       setBusy(false)
     }
   }
@@ -332,17 +543,130 @@ export function ExceptionUploadsPage() {
     }
   }
 
-  async function handleStart() {
-    if (!activeJob) return
+  function exitJobSelectMode() {
+    setJobSelectMode(false)
+    setSelectedJobUuids(new Set())
+  }
+
+  function toggleJobSelected(jobUuid) {
+    setSelectedJobUuids((prev) => {
+      const next = new Set(prev)
+      if (next.has(jobUuid)) next.delete(jobUuid)
+      else next.add(jobUuid)
+      return next
+    })
+  }
+
+  function toggleSelectAllRecentJobs() {
+    setSelectedJobUuids((prev) => {
+      const ids = recentJobs.map((j) => j.job_uuid)
+      if (ids.length > 0 && ids.every((id) => prev.has(id))) {
+        return new Set()
+      }
+      return new Set(ids)
+    })
+  }
+
+  async function handleDeleteSelectedJobs() {
+    const targets = [...selectedJobUuids]
+    if (!targets.length) return
+    const ok = window.confirm(
+      `Delete ${targets.length} job${targets.length === 1 ? '' : 's'}? Input files will be removed. Outputs and scrape cache are kept.`,
+    )
+    if (!ok) return
     setBusy(true)
     setError('')
     setNotice('')
     try {
-      const data = await startExceptionJob(activeJob.job_uuid)
-      setActiveJob(data.job)
-      setNotice('Job queued. Progress updates automatically.')
+      let deleted = 0
+      const errors = []
+      for (const jobUuid of targets) {
+        try {
+          await deleteExceptionJob(jobUuid)
+          deleted += 1
+          if (activeJob?.job_uuid === jobUuid) {
+            setActiveJob(null)
+            setPendingBySlot({})
+            setStagingFileId('')
+            setExemptFinalFileId('')
+          }
+        } catch (err) {
+          errors.push(err.message || `Failed to delete ${jobUuid.slice(0, 8)}`)
+        }
+      }
+      exitJobSelectMode()
+      const jobData = await listExceptionJobs(
+        undefined,
+        jobFilterCode(selectedProgram),
+      )
+      setJobs(jobData.jobs || [])
+      if (deleted) {
+        setNotice(
+          deleted === 1
+            ? 'Job deleted. Outputs and scrape cache were kept.'
+            : `${deleted} jobs deleted. Outputs and scrape cache were kept.`,
+        )
+      }
+      if (errors.length) {
+        setError(errors.slice(0, 3).join(' · '))
+      }
     } catch (err) {
-      setError(err.message || 'Could not start job')
+      setError(err.message || 'Could not delete jobs')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function queueJobWithScrapeMode(scrapeMode) {
+    if (!activeJob) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    setScrapeModeOpen(false)
+    try {
+      const data = await startExceptionJob(activeJob.job_uuid, {
+        scrapeMode: scrapeMode || undefined,
+      })
+      setActiveJob(data.job)
+      setNotice(
+        scrapeMode === 'export'
+          ? 'Job queued — will export vehicles to scrape, then stop.'
+          : 'Job queued. Progress updates automatically.',
+      )
+    } catch (err) {
+      if (err?.needs_scrape_mode || err?.data?.needs_scrape_mode) {
+        setScrapeModeOpen(true)
+        setError('')
+      } else {
+        setError(err.message || 'Could not start job')
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleStart() {
+    if (!activeJob) return
+    if (needsScrapeModeChoice) {
+      setScrapeModeOpen(true)
+      return
+    }
+    await queueJobWithScrapeMode('live')
+  }
+
+  async function handleDownloadJobFile(fileId) {
+    if (!activeJob) return
+    setBusy(true)
+    setError('')
+    try {
+      const data = await downloadExceptionJobFile(activeJob.job_uuid, fileId)
+      if (data?.download_url) {
+        window.open(data.download_url, '_blank', 'noopener,noreferrer')
+      } else {
+        setError('Download URL missing')
+      }
+    } catch (err) {
+      setError(err.message || 'Download failed')
     } finally {
       setBusy(false)
     }
@@ -366,6 +690,24 @@ export function ExceptionUploadsPage() {
     }
   }
 
+  async function handleAttachExemptFinal(fileIdOverride) {
+    const id = fileIdOverride ?? exemptFinalFileId
+    if (!activeJob || !id) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const data = await attachExemptFinalFile(activeJob.job_uuid, Number(id))
+      setActiveJob(data.job)
+      setExemptFinalFileId(String(id))
+      setNotice('Full Exempt final attached as From-plaza. Upload To-plaza VRN, then Start.')
+    } catch (err) {
+      setError(err.message || 'Could not attach exempt final file')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const stagingOptions = useMemo(
     () =>
       stagingFiles.map((f) => ({
@@ -376,12 +718,32 @@ export function ExceptionUploadsPage() {
     [stagingFiles],
   )
 
+  const exemptFinalOptions = useMemo(
+    () =>
+      exemptFinalFiles.map((f) => ({
+        value: String(f.id),
+        label:
+          f.display_name ||
+          f.original_file_name ||
+          `${f.plaza_name || 'Plaza'} · ${f.period_label || 'Exempt final'}`,
+        meta: [
+          f.period_label,
+          formatLocalDateTime(f.created_at),
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      })),
+    [exemptFinalFiles],
+  )
   async function openJob(jobUuid) {
     setBusy(true)
     setError('')
     try {
       const data = await getExceptionJob(jobUuid)
       setActiveJob(data.job)
+      setPendingBySlot({})
+      setStagingFileId('')
+      setExemptFinalFileId('')
       const jobCode = data.job.program_code
       const parent =
         programs.find((p) => p.code === jobCode) ||
@@ -420,12 +782,35 @@ export function ExceptionUploadsPage() {
     <section className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
-          <Button asChild variant="ghost" size="sm" className="-ml-2 mb-1">
-            <Link to="/portfolio">
+          {selectedProgram ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-2 mb-1"
+              onClick={() => {
+                setSelectedProgram(null)
+                setSelectedProcess(null)
+                setActiveJob(null)
+                setJobs([])
+                setPendingBySlot({})
+                setNotice('')
+                setError('')
+                setStagingFileId('')
+                setExemptFinalFileId('')
+              }}
+            >
               <ArrowLeft className="h-4 w-4" />
-              Portfolio
-            </Link>
-          </Button>
+              All programs
+            </Button>
+          ) : (
+            <Button asChild variant="ghost" size="sm" className="-ml-2 mb-1">
+              <Link to="/portfolio">
+                <ArrowLeft className="h-4 w-4" />
+                Portfolio
+              </Link>
+            </Button>
+          )}
           <p className="text-small uppercase tracking-[0.14em] text-muted-foreground">
             Exceptions
           </p>
@@ -461,6 +846,11 @@ export function ExceptionUploadsPage() {
                 if (!program.enabled) return
                 setSelectedProgram(program)
                 setActiveJob(null)
+                setJobs([])
+                setJobsLoading(true)
+                setPendingBySlot({})
+                setStagingFileId('')
+                setExemptFinalFileId('')
                 setNotice('')
               }}
               className={cn(
@@ -521,6 +911,9 @@ export function ExceptionUploadsPage() {
                     setSelectedProgram(null)
                     setSelectedProcess(null)
                     setActiveJob(null)
+                    setPendingBySlot({})
+                    setStagingFileId('')
+                    setExemptFinalFileId('')
                   }}
                 >
                   All programs
@@ -644,12 +1037,14 @@ export function ExceptionUploadsPage() {
                   {(activeProcess?.input_slots || selectedProgram.input_slots || []).map((slot) => {
                     const slotFiles = (activeJob.files || []).filter((f) => f.slot === slot.key)
                     const canEdit = ['draft', 'failed'].includes(activeJob.status)
-                    const isUploading = uploadingSlot === slot.key
                     const defaults = slot.server_default ? serverDefaultForSlot(slot.key) : null
                     const hasServerFile = Boolean(defaults?.exists && defaults?.file_name)
                     const hasOverrideUpload = slotFiles.length > 0
                     const isInvalidPickSlot = Boolean(slot.or_staging_pick)
                     const hasInvalidReady = isInvalidPickSlot && slotFiles.length > 0
+                    const isExemptFinalPickSlot = Boolean(slot.or_exempt_final_pick)
+                    const hasExemptFinalReady =
+                      isExemptFinalPickSlot && slotFiles.length > 0
 
                     // Clearer two-path UX for Incorrect FASTag invalid table.
                     if (isInvalidPickSlot) {
@@ -664,8 +1059,8 @@ export function ExceptionUploadsPage() {
                               <span className="text-primary"> *</span>
                             </p>
                             <p className="mt-1 text-small text-muted-foreground">
-                              Pick one path: reuse a file from Valid/Invalid Lookup, or upload
-                              a new file. Then click Start job.
+                              Pick one path: reuse a file from Valid/Invalid Lookup, or choose
+                              a new file and use Upload files below. Then Start job.
                             </p>
                           </div>
 
@@ -702,7 +1097,7 @@ export function ExceptionUploadsPage() {
                                 <div>
                                   <p className="text-body font-medium">A. From Valid/Invalid</p>
                                   <p className="text-small text-muted-foreground">
-                                    Latest files for this plaza first. Selecting one attaches it.
+                                    Latest files for this plaza first. Choose one, then Attach.
                                   </p>
                                 </div>
                                 {stagingOptions.length === 0 ? (
@@ -711,61 +1106,145 @@ export function ExceptionUploadsPage() {
                                     or use upload on the right.
                                   </p>
                                 ) : (
-                                  <SearchableSelect
-                                    value={stagingFileId}
-                                    onChange={(value) => {
-                                      setStagingFileId(value)
-                                      if (value) handleAttachStaging(value)
-                                    }}
-                                    options={stagingOptions}
-                                    placeholder="Choose existing invalid file…"
-                                    disabled={busy}
-                                  />
+                                  <>
+                                    <SearchableSelect
+                                      value={stagingFileId}
+                                      onChange={(value) => setStagingFileId(value)}
+                                      options={stagingOptions}
+                                      placeholder="Choose existing invalid file…"
+                                      disabled={busy}
+                                    />
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled={busy || !stagingFileId}
+                                      onClick={() => handleAttachStaging()}
+                                    >
+                                      Attach
+                                    </Button>
+                                  </>
                                 )}
                               </div>
 
                               <div className="space-y-3 rounded-sm border border-border bg-secondary/20 p-3">
                                 <div>
-                                  <p className="text-body font-medium">B. Upload new file</p>
+                                  <p className="text-body font-medium">B. Choose new file</p>
                                   <p className="text-small text-muted-foreground">
-                                    Use this if you already have an invalid_table CSV/Excel.
+                                    Select a file here, then click Upload files below.
                                   </p>
                                 </div>
-                                <label
-                                  className={cn(
-                                    'inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-sm border border-border bg-background px-3 py-2 text-small hover:bg-accent',
-                                    isUploading && 'pointer-events-none opacity-70',
-                                  )}
-                                >
-                                  {isUploading ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  ) : (
-                                    <Upload className="h-3.5 w-3.5" />
-                                  )}
-                                  {isUploading ? 'Uploading…' : 'Browse & upload invalid table'}
-                                  <input
-                                    type="file"
-                                    className="hidden"
-                                    accept={slot.accept}
-                                    disabled={busy}
-                                    onChange={(event) => {
-                                      handleUpload(slot.key, event.target.files)
-                                      event.target.value = ''
-                                    }}
-                                  />
-                                </label>
+                                <SlotPendingUpload
+                                  slot={slot}
+                                  pendingFiles={pendingBySlot[slot.key]}
+                                  isUploading={isUploading}
+                                  busy={busy}
+                                  chooseLabel="Choose invalid table…"
+                                  onSelect={handleSelectPendingFiles}
+                                  onClear={handleClearPending}
+                                />
                               </div>
                             </div>
                           ) : null}
+                        </div>
+                      )
+                    }
 
-                          {isUploading ? (
-                            <div className="flex items-start gap-2 rounded-sm bg-amber-500/10 px-3 py-2 text-small text-amber-900 dark:text-amber-100">
-                              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-                              <div className="min-w-0">
-                                <p className="font-medium">Uploading invalid table…</p>
-                                <p className="truncate text-muted-foreground">
-                                  {uploadingNames.join(', ')}
-                                </p>
+                    // E15 From-plaza: reuse Full Exempt final for this plaza, or upload.
+                    if (isExemptFinalPickSlot) {
+                      return (
+                        <div
+                          key={slot.key}
+                          className="space-y-3 rounded-sm border border-border p-4"
+                        >
+                          <div>
+                            <p className="text-subheader">
+                              From-plaza exempt
+                              <span className="text-primary"> *</span>
+                            </p>
+                            <p className="mt-1 text-small text-muted-foreground">
+                              Reuse a Full Exempt *_final.xlsx already generated for this plaza,
+                              or upload a new file.
+                            </p>
+                          </div>
+
+                          {hasExemptFinalReady ? (
+                            <div className="space-y-2 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-3 py-3">
+                              <p className="text-body font-medium text-emerald-800 dark:text-emerald-200">
+                                Ready — From-plaza exempt attached
+                              </p>
+                              {slotFiles.map((file) => (
+                                <div
+                                  key={file.id}
+                                  className="flex items-center justify-between gap-2 text-body"
+                                >
+                                  <span className="truncate">{file.original_file_name}</span>
+                                  {canEdit ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      disabled={busy}
+                                      onClick={() => handleDeleteFile(file.id)}
+                                    >
+                                      Change
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {canEdit && !hasExemptFinalReady ? (
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div className="space-y-3 rounded-sm border border-border bg-secondary/20 p-3">
+                                <div>
+                                  <p className="text-body font-medium">A. From Full Exempt</p>
+                                  <p className="text-small text-muted-foreground">
+                                    Most recent finals for this plaza. Choose one, then Attach.
+                                  </p>
+                                </div>
+                                {exemptFinalOptions.length === 0 ? (
+                                  <p className="text-small text-muted-foreground">
+                                    None yet — run “Exempt Query — Full Process” for this plaza
+                                    first, or upload on the right.
+                                  </p>
+                                ) : (
+                                  <>
+                                    <SearchableSelect
+                                      value={exemptFinalFileId}
+                                      onChange={(value) => setExemptFinalFileId(value)}
+                                      options={exemptFinalOptions}
+                                      placeholder="Choose existing exempt final…"
+                                      disabled={busy}
+                                    />
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled={busy || !exemptFinalFileId}
+                                      onClick={() => handleAttachExemptFinal()}
+                                    >
+                                      Attach
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+
+                              <div className="space-y-3 rounded-sm border border-border bg-secondary/20 p-3">
+                                <div>
+                                  <p className="text-body font-medium">B. Choose new file</p>
+                                  <p className="text-small text-muted-foreground">
+                                    Select a file here, then click Upload files below.
+                                  </p>
+                                </div>
+                                <SlotPendingUpload
+                                  slot={slot}
+                                  pendingFiles={pendingBySlot[slot.key]}
+                                  isUploading={isUploading}
+                                  busy={busy}
+                                  chooseLabel="Choose exempt file…"
+                                  onSelect={handleSelectPendingFiles}
+                                  onClear={handleClearPending}
+                                />
                               </div>
                             </div>
                           ) : null}
@@ -786,33 +1265,21 @@ export function ExceptionUploadsPage() {
                               )}
                             </p>
                           </div>
-                          {canEdit ? (
-                            <label
-                              className={cn(
-                                'inline-flex cursor-pointer items-center gap-2 rounded-sm border border-border px-3 py-1.5 text-small hover:bg-accent',
-                                isUploading && 'pointer-events-none opacity-70',
-                              )}
-                            >
-                              {isUploading ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Upload className="h-3.5 w-3.5" />
-                              )}
-                              {isUploading ? 'Uploading…' : hasServerFile ? 'Override' : 'Upload'}
-                              <input
-                                type="file"
-                                className="hidden"
-                                accept={slot.accept}
-                                multiple={Boolean(slot.multiple)}
-                                disabled={busy}
-                                onChange={(event) => {
-                                  handleUpload(slot.key, event.target.files)
-                                  event.target.value = ''
-                                }}
-                              />
-                            </label>
-                          ) : null}
                         </div>
+
+                        {canEdit ? (
+                          <SlotPendingUpload
+                            slot={slot}
+                            pendingFiles={pendingBySlot[slot.key]}
+                            isUploading={isUploading}
+                            busy={busy}
+                            chooseLabel={
+                              hasServerFile ? 'Choose override file…' : undefined
+                            }
+                            onSelect={handleSelectPendingFiles}
+                            onClear={handleClearPending}
+                          />
+                        ) : null}
 
                         {hasServerFile && !hasOverrideUpload ? (
                           <div className="rounded-sm border border-dashed border-border bg-secondary/30 px-3 py-2 text-small">
@@ -832,19 +1299,10 @@ export function ExceptionUploadsPage() {
                           </p>
                         ) : null}
 
-                        {isUploading ? (
-                          <div className="flex items-start gap-2 rounded-sm bg-amber-500/10 px-3 py-2 text-small text-amber-900 dark:text-amber-100">
-                            <Loader2 className="mt-0.5 h-4 w-4 animate-spin" />
-                            <div className="min-w-0">
-                              <p className="font-medium">Uploading to S3…</p>
-                              <p className="truncate text-muted-foreground">
-                                {uploadingNames.join(', ')}
-                              </p>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {!isUploading && slotFiles.length === 0 && !hasServerFile ? (
+                        {!isUploading &&
+                        slotFiles.length === 0 &&
+                        !hasServerFile &&
+                        !(pendingBySlot[slot.key] || []).length ? (
                           <p className="text-small text-muted-foreground">No files yet.</p>
                         ) : null}
 
@@ -877,14 +1335,32 @@ export function ExceptionUploadsPage() {
                   })}
 
                   {['draft', 'failed'].includes(activeJob.status) ? (
-                    <Button type="button" disabled={busy} onClick={handleStart}>
-                      {busy && !uploadingSlot ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Play className="h-4 w-4" />
-                      )}
-                      {activeJob.status === 'failed' ? 'Retry job' : 'Start job'}
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        disabled={busy || pendingCount === 0}
+                        onClick={handleUploadAllPending}
+                      >
+                        {isUploading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Upload className="h-4 w-4" />
+                        )}
+                        {isUploading
+                          ? 'Uploading…'
+                          : pendingCount > 0
+                            ? `Upload ${pendingCount} file${pendingCount === 1 ? '' : 's'}`
+                            : 'Upload files'}
+                      </Button>
+                      <Button type="button" disabled={busy || isUploading} onClick={handleStart}>
+                        {busy && !isUploading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Play className="h-4 w-4" />
+                        )}
+                        {activeJob.status === 'failed' ? 'Retry job' : 'Start job'}
+                      </Button>
+                    </div>
                   ) : null}
 
                   {['queued', 'running'].includes(activeJob.status) ? (
@@ -896,6 +1372,32 @@ export function ExceptionUploadsPage() {
                     >
                       Mark as failed (unstick)
                     </Button>
+                  ) : null}
+
+                  {scrapeExportFiles.length > 0 ? (
+                    <div className="space-y-2 rounded-sm border border-amber-500/40 bg-amber-500/10 px-3 py-3">
+                      <p className="text-body font-medium">
+                        Vehicles to scrape (download, scrape offline, then upload result)
+                      </p>
+                      {scrapeExportFiles.map((file) => (
+                        <div
+                          key={file.id}
+                          className="flex flex-wrap items-center justify-between gap-2"
+                        >
+                          <span className="truncate text-body">{file.original_file_name}</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => handleDownloadJobFile(file.id)}
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Download
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
                   ) : null}
 
                   {activeJob.progress_message ? (
@@ -911,7 +1413,12 @@ export function ExceptionUploadsPage() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => setActiveJob(null)}
+                    onClick={() => {
+                      setActiveJob(null)
+                      setPendingBySlot({})
+                      setStagingFileId('')
+                      setExemptFinalFileId('')
+                    }}
                   >
                     New job for this program
                   </Button>
@@ -921,47 +1428,165 @@ export function ExceptionUploadsPage() {
           </Card>
 
           <Card>
-            <CardHeader>
-              <CardTitle>Recent jobs</CardTitle>
-              <CardDescription>
-                {selectedProgram.label}
-                {selectedProgram.is_process_group
-                  ? ' — both processes; named as plaza + date/time.'
-                  : ' — named as plaza + date/time.'}
-              </CardDescription>
+            <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+              <div className="min-w-0 space-y-1">
+                <CardTitle>Recent jobs</CardTitle>
+                <CardDescription>
+                  {selectedProgram.label}
+                  {selectedProgram.is_process_group
+                    ? ' — both processes; named as plaza + date/time.'
+                    : ' — named as plaza + date/time.'}
+                </CardDescription>
+              </div>
+              {jobs.length > 0 && !jobsLoading ? (
+                jobSelectMode ? (
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={busy || recentJobs.length === 0}
+                      onClick={toggleSelectAllRecentJobs}
+                    >
+                      {recentJobs.length > 0 &&
+                      recentJobs.every((j) => selectedJobUuids.has(j.job_uuid))
+                        ? 'Clear'
+                        : 'Select all'}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={exitJobSelectMode}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={busy || selectedJobUuids.size === 0}
+                      className="bg-red-600 text-white hover:bg-red-700"
+                      onClick={handleDeleteSelectedJobs}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Delete
+                      {selectedJobUuids.size > 0 ? ` (${selectedJobUuids.size})` : ''}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => {
+                      setJobSelectMode(true)
+                      setSelectedJobUuids(new Set())
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete
+                  </Button>
+                )
+              ) : null}
             </CardHeader>
             <CardContent className="space-y-2">
-              {jobs.length === 0 ? (
+              {jobsLoading ? (
+                <p className="text-body text-muted-foreground">Loading jobs…</p>
+              ) : jobs.length === 0 ? (
                 <p className="text-body text-muted-foreground">No jobs yet.</p>
               ) : (
-                jobs.slice(0, 20).map((job) => (
-                  <button
-                    key={job.job_uuid}
-                    type="button"
-                    className="flex w-full items-center justify-between gap-2 rounded-sm border border-border px-3 py-2 text-left hover:bg-accent/50"
-                    onClick={() => openJob(job.job_uuid)}
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-body">{jobDisplayName(job)}</p>
-                      <p className="truncate text-small text-muted-foreground">
-                        {job.pipeline_plaza_key} · {job.job_uuid.slice(0, 8)}
-                      </p>
-                    </div>
-                    <span
+                recentJobs.map((job) => {
+                  const selected = selectedJobUuids.has(job.job_uuid)
+                  return (
+                    <div
+                      key={job.job_uuid}
                       className={cn(
-                        'shrink-0 rounded-sm px-2 py-0.5 text-small capitalize',
-                        statusClass(job.status),
+                        'flex items-stretch gap-2 rounded-sm border border-border px-3 py-2',
+                        jobSelectMode && selected && 'border-red-500/40 bg-red-500/5',
                       )}
                     >
-                      {job.status}
-                    </span>
-                  </button>
-                ))
+                      {jobSelectMode ? (
+                        <label className="flex shrink-0 cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-red-600"
+                            checked={selected}
+                            disabled={busy}
+                            onChange={() => toggleJobSelected(job.job_uuid)}
+                            aria-label={`Select ${jobDisplayName(job)}`}
+                          />
+                        </label>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left hover:opacity-90"
+                        disabled={busy && jobSelectMode}
+                        onClick={() => {
+                          if (jobSelectMode) {
+                            toggleJobSelected(job.job_uuid)
+                            return
+                          }
+                          openJob(job.job_uuid)
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-body">{jobDisplayName(job)}</p>
+                            <p className="truncate text-small text-muted-foreground">
+                              {job.pipeline_plaza_key} · {job.job_uuid.slice(0, 8)}
+                            </p>
+                          </div>
+                          <span
+                            className={cn(
+                              'shrink-0 rounded-sm px-2 py-0.5 text-small capitalize',
+                              statusClass(job.status),
+                            )}
+                          >
+                            {job.status}
+                          </span>
+                        </div>
+                      </button>
+                    </div>
+                  )
+                })
               )}
             </CardContent>
           </Card>
         </div>
       )}
+
+      <Dialog
+        open={scrapeModeOpen}
+        onClose={() => setScrapeModeOpen(false)}
+        title="How should scraping run?"
+        description={
+          activeProcess?.code === 'e06' || selectedProgram?.code === 'e06'
+            ? 'No permit file uploaded. Choose live Parivahan scrape, or download the vehicle list and stop so you can scrape offline and attach the file later.'
+            : 'No IHMCL scrape file uploaded. Choose live IHMCL scrape, or download the vehicle list and stop so you can scrape offline and attach the file later.'
+        }
+      >
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => queueJobWithScrapeMode('export')}
+          >
+            <Download className="h-4 w-4" />
+            Download vehicles &amp; stop
+          </Button>
+          <Button
+            type="button"
+            disabled={busy}
+            onClick={() => queueJobWithScrapeMode('live')}
+          >
+            <Play className="h-4 w-4" />
+            Continue live scraping
+          </Button>
+        </div>
+      </Dialog>
     </section>
   )
 }

@@ -52,6 +52,12 @@ from common.s3_output_upload import (  # noqa: E402
     month_label_from_periods,
     upload_exception_output,
 )
+from common.scrape_export import (  # noqa: E402
+    announce_scrape_export_and_exit,
+    resolve_scrape_mode,
+    write_vehicles_export,
+)
+from common.selenium_scrape_config import load_selenium_scrape_config  # noqa: E402
 
 CONFIG_JSON = BASE_DIR / "e5_config.json"
 OUTPUT_DIR = BASE_DIR / "output"
@@ -63,7 +69,7 @@ if str(BASE_DIR) not in sys.path:
 from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Runtime inputs (Website overrides via E5_* / EXCEPTION_USE_SELENIUM env)
+# Runtime inputs (Website overrides via E5_* / SCRAPE_* env)
 # ---------------------------------------------------------------------------
 INPUT_FILE = BASE_DIR / "invalid_table-aug-bassi.csv"  # change to your invalid Excel/CSV
 ENTITY_NAME = "bassi"  # plaza_rates key for single-journey rates
@@ -75,10 +81,10 @@ DB_DRY_RUN = False
 UPLOAD_OUTPUT_TO_S3 = True
 # True  = IHMCL_bot_selenium.py (Selenium Chrome)
 # False = IHMCL_bot.py (legacy non-selenium path)
-# Overridden by EXCEPTION_USE_SELENIUM / IHMCL_USE_SELENIUM in .env (global scrape flag).
+# Overridden by Website/backend/.env (SCRAPE_ENABLED / SCRAPE_USE_GRID).
 USE_SELENIUM = True
 # Used only when USE_SELENIUM=True. True = Selenium Grid; False = local Chrome.
-USE_SELENIUM_GRID = True
+USE_SELENIUM_GRID = False
 SKIP_SCRAPE = False  # True = split sheets only, no IHMCL
 # Optional pre-scraped IHMCL Excel/CSV (Vehicle Number + Mapper Vehicle Class).
 IHMCL_INPUT_FILE = ""
@@ -110,8 +116,6 @@ def apply_website_env_overrides() -> None:
         UPLOAD_OUTPUT_TO_S3 = _env_flag("E5_UPLOAD_OUTPUT_TO_S3", UPLOAD_OUTPUT_TO_S3)
     if "E5_DB_DRY_RUN" in os.environ:
         DB_DRY_RUN = _env_flag("E5_DB_DRY_RUN", DB_DRY_RUN)
-    if "E5_USE_SELENIUM_GRID" in os.environ:
-        USE_SELENIUM_GRID = _env_flag("E5_USE_SELENIUM_GRID", USE_SELENIUM_GRID)
     if os.environ.get("E5_IHMCL_INPUT_FILE", "").strip():
         IHMCL_INPUT_FILE = os.environ["E5_IHMCL_INPUT_FILE"].strip()
         SKIP_SCRAPE = False  # use uploaded scrape file instead of live scrape
@@ -122,11 +126,10 @@ def apply_website_env_overrides() -> None:
     else:
         MERGED_OUTPUT_HINT = OUTPUT_DIR
 
-    # Global scrape backend for all programs that need IHMCL.
-    if "EXCEPTION_USE_SELENIUM" in os.environ:
-        USE_SELENIUM = _env_flag("EXCEPTION_USE_SELENIUM", USE_SELENIUM)
-    elif "IHMCL_USE_SELENIUM" in os.environ:
-        USE_SELENIUM = _env_flag("IHMCL_USE_SELENIUM", USE_SELENIUM)
+    # Shared scrape flags from Website/backend/.env (all web-scrape programs).
+    scrape = load_selenium_scrape_config(program="E5")
+    USE_SELENIUM = bool(scrape.get("use_selenium", USE_SELENIUM))
+    USE_SELENIUM_GRID = bool(scrape.get("use_grid", USE_SELENIUM_GRID))
 
 CHARGED_CLASS_COLUMN = "Charged Vehicle Class"
 CORRECT_CLASS_COLUMN = "Correct Vehicle Class"
@@ -164,7 +167,11 @@ def load_config(path: Path = CONFIG_JSON) -> dict:
 
 
 def load_scrape_config(path: Path = CONFIG_JSON) -> dict:
-    return load_config(path).get("scrape") or {}
+    """IHMCL scrape settings: Website/backend/.env wins over e5_config.json."""
+    return load_selenium_scrape_config(
+        load_config(path).get("scrape") or {},
+        program="E5",
+    )
 
 
 def normalize_value_key(value) -> str:
@@ -433,17 +440,30 @@ def scrape_via_grid(
     )
 
     remote_url = scrape_cfg.get("selenium_remote_url", "http://localhost:4444/wd/hub")
-    max_nodes = int(scrape_cfg.get("max_nodes", 3))
+    max_nodes = max(1, int(scrape_cfg.get("max_nodes", 3)))
+    max_concurrency = max(
+        1,
+        int(scrape_cfg.get("max_concurrency", scrape_cfg.get("max_nodes", 3))),
+    )
     headless = bool(scrape_cfg.get("headless", False))
-    auto_manage = bool(scrape_cfg.get("auto_manage_nodes", True))
+    auto_manage = bool(scrape_cfg.get("auto_manage_nodes", False))
     mobile = scrape_cfg.get("mobile_number", "9999999999")
     plaza = scrape_cfg.get("plaza_name", "Phulwaria Toll Plaza")
+    hub_name = str(scrape_cfg.get("selenium_hub_container") or "selenium-hub")
+    network = str(scrape_cfg.get("selenium_network") or "selenium-grid")
+    node_image = str(
+        scrape_cfg.get("selenium_node_image") or "selenium/node-chrome:latest"
+    )
 
-    chunks = split_dataframe(vehicle_df, max_nodes)
+    chunks = split_dataframe(vehicle_df, max_concurrency)
     if not chunks:
         return pd.DataFrame()
 
-    print(f"Grid scrape: {len(vehicle_df)} VRN(s) in {len(chunks)} chunk(s) → {remote_url}")
+    workers = min(len(chunks), max_concurrency)
+    print(
+        f"Grid scrape: {len(vehicle_df)} VRN(s) in {len(chunks)} chunk(s), "
+        f"concurrency={workers}, nodes={max_nodes}, auto_manage={auto_manage} → {remote_url}"
+    )
 
     managed_nodes: list[str] = []
     results: list[pd.DataFrame] = []
@@ -451,7 +471,13 @@ def scrape_via_grid(
 
     try:
         if auto_manage:
-            managed_nodes = start_managed_nodes(len(chunks))
+            managed_nodes = start_managed_nodes(
+                max_nodes,
+                hub_name=hub_name,
+                network=network,
+                node_image=node_image,
+                max_sessions=max_concurrency,
+            )
             wait_for_grid_ready(remote_url)
         else:
             assert_grid_ready(remote_url)
@@ -472,7 +498,7 @@ def scrape_via_grid(
             out["source_chunk"] = chunk_id
             return out
 
-        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(_run_chunk, chunk, idx): idx
                 for idx, chunk in enumerate(chunks, start=1)
@@ -505,6 +531,10 @@ def scrape_vehicles(
     scrape_cfg: dict,
 ) -> pd.DataFrame:
     """Dispatch IHMCL scrape based on USE_SELENIUM / USE_SELENIUM_GRID."""
+    count = 0 if vehicle_df is None else len(vehicle_df)
+    print("=" * 60, flush=True)
+    print(f"VEHICLES TO SCRAPE: {count:,} unique VRN(s) (E5 IHMCL)", flush=True)
+    print("=" * 60, flush=True)
     if not USE_SELENIUM:
         return scrape_legacy(vehicle_df, vehicle_col, scrape_cfg)
     if USE_SELENIUM_GRID:
@@ -751,13 +781,28 @@ def main() -> int:
             index_lookup,
         )
     else:
-        scrape_cfg = load_scrape_config()
         unique_df = unique_vehicle_frame(above_df, vehicle_col)
-        print(f"Unique VRNs to scrape (2-axel and above): {len(unique_df):,}")
+        print(
+            f"2-axel sheet rows: {len(above_df):,} | "
+            f"unique VRNs to scrape: {len(unique_df):,}",
+            flush=True,
+        )
         if unique_df.empty:
             above_df = above_df.copy()
             above_df["Matched"] = ""
         else:
+            scrape_mode = resolve_scrape_mode(env_key="E5_SCRAPE_MODE", default="live")
+            print(f"E5 scrape mode: {scrape_mode}", flush=True)
+            if scrape_mode == "export":
+                export_path = write_vehicles_export(
+                    unique_df,
+                    output_dir=out_dir,
+                    program="E05",
+                    vehicle_column=vehicle_col,
+                )
+                return announce_scrape_export_and_exit(export_path)
+
+            scrape_cfg = load_scrape_config()
             scraped = scrape_vehicles(unique_df, vehicle_col, scrape_cfg)
             if scraped is None:
                 scraped = pd.DataFrame()

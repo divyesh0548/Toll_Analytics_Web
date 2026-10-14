@@ -15,12 +15,14 @@ export function SearchableSelect({
   searchPlaceholder = 'Search…',
   emptyText = 'No matches',
   disabled = false,
+  className,
+  triggerClassName,
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const rootRef = useRef(null)
 
-  const selected = options.find((opt) => opt.value === value) || null
+  const selected = options.find((opt) => String(opt.value) === String(value)) || null
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -42,7 +44,7 @@ export function SearchableSelect({
   }, [])
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className={cn('relative', className)} ref={rootRef}>
       <button
         type="button"
         disabled={disabled}
@@ -50,6 +52,7 @@ export function SearchableSelect({
           'flex h-10 w-full items-center justify-between rounded-sm border border-input bg-background px-3 text-left text-body',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           disabled && 'opacity-50',
+          triggerClassName,
         )}
         onClick={() => setOpen((prev) => !prev)}
       >
@@ -81,7 +84,7 @@ export function SearchableSelect({
                   type="button"
                   className={cn(
                     'flex w-full flex-col gap-0.5 rounded-sm px-2 py-2 text-left text-body hover:bg-accent',
-                    opt.value === value && 'bg-accent',
+                    String(opt.value) === String(value) && 'bg-accent',
                   )}
                   onClick={() => {
                     onChange?.(opt.value, opt)

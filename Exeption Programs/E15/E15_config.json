@@ -118,8 +118,7 @@
       "Veh Reg No.",
       "Date & Time",
       "TC Class",
-      "Journey Type",
-      "Fare Type",
+      "MVC",
       "Lane",
       "Lane No",
       "MOP",
@@ -137,6 +136,7 @@
       "Veh Reg No.": [
         "Veh Reg No.",
         "Veh Reg No",
+        "VEH REG NO",
         "Vehicle Reg No",
         "Vehicle No",
         "VRN"
@@ -148,6 +148,7 @@
         "Transaction Date Time",
         "Tag Read Date Time",
         "Transaction Date",
+        "DATE",
         "Date"
       ],
       "Lane No": [
@@ -155,34 +156,35 @@
         "Lane No.",
         "Lane",
         "LANE NO",
+        "LANE ",
         "LANE"
       ],
       "TC Class": [
+        "MVC",
         "TC Class",
         "Tc Class",
         "TcClass",
         "Operator Class",
-        "Vehicle Class"
-      ],
-      "Journey Type": [
-        "Journey Type",
-        "JourneyType",
-        "Journey",
-        "Fare Type",
-        "TripType"
+        "Vehicle Class",
+        "FARE CATEGORY",
+        "Vehicle Category",
+        "AVC",
+        "CCH CLASS",
+        "TAG CLASS"
       ],
       "PAYMENT METHOD": [
+        "MVC MOP",
         "PAYMENT METHOD",
         "PAYMENT_METHOD",
-        "MVC MOP",
         "SUB MOP",
         "MOP"
       ],
       "SVC FARE": [
+        "OP AMT",
         "SVC FARE",
-        "SVC",
-        "FARE",
-        "TOTAL FARE"
+        "TOTAL FARE",
+        "SVC AMT",
+        "TC AMT"
       ],
       "DESCRIPTION": [
         "DESCRIPTION",
@@ -247,17 +249,18 @@
   "rate_cutover_date": "2026-05-01",
   "applicable_rate_output": "Applicable Rate",
   "tc_class_column_aliases": [
-    "TC Class",
     "TC Class_TO",
+    "TC Class",
     "Tc Class",
     "TcClass",
     "tc_class",
+    "MVC",
     "Operator Class",
     "Vehicle Class"
   ],
   "journey_type_column_aliases": [
-    "Journey Type",
     "Journey Type_TO",
+    "Journey Type",
     "JourneyType",
     "Journey",
     "Fare Type",
@@ -301,8 +304,14 @@
       "car/jeep",
       "car / jeep",
       "car/jeep/van",
+      "car\\jeep",
       "jeep",
-      "van"
+      "van",
+      "tractor",
+      "3wheeler",
+      "3 wheeler",
+      "three wheeler",
+      "auto rickshaw"
     ],
     "2": [
       "lcv",
@@ -319,7 +328,10 @@
       "bus 2 axle",
       "bus-2 axle",
       "truck 2 axle",
-      "truck-2 axle"
+      "truck-2 axle",
+      "trk 2 axle",
+      "trk-2 axle",
+      "trk2 axle"
     ],
     "4": [
       "truck3x",
@@ -341,7 +353,8 @@
       "mav 5 axle",
       "mav 6 ax",
       "mav 6 axle",
-      "truck 4-6 axle"
+      "truck 4-6 axle",
+      "truck 4 6 axle"
     ],
     "6": [
       "osv"
@@ -351,6 +364,9 @@
     "auto",
     "na",
     "unknown",
+    "exempt",
+    "exempt-na",
     "---select vehicle class---"
-  ]
+  ],
+  "default_journey_type": "single"
 }

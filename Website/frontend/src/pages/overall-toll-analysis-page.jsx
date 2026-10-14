@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { PageHeader } from '@/components/ui/page-header'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { DashboardSkeleton } from '@/components/ui/skeleton'
 import { PeriodRangeControls } from '@/components/plaza/numbers-dashboard'
 import {
   OverallTollDashboard,
@@ -285,22 +287,26 @@ export function OverallTollAnalysisPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <p className="text-small text-muted-foreground">
-          <Link to="/portfolio" className="hover:text-foreground">
-            Portfolio
-          </Link>
-          {' / '}
-          Overall toll analysis
-        </p>
-        <h1 className="text-display">Overall toll analysis</h1>
-        <p className="mt-1 text-body text-muted-foreground">
-          Plaza-level transactions, revenue, and category mix
-          {selectedPlaza ? ` · ${selectedPlaza.plaza_name}` : ''}
-        </p>
-      </div>
+      <PageHeader
+        eyebrow={
+          <p className="text-small text-muted-foreground">
+            <Link to="/portfolio" className="hover:text-foreground">
+              Portfolio
+            </Link>
+            {' / '}
+            Overall toll analysis
+          </p>
+        }
+        title="Overall toll analysis"
+        description={
+          <>
+            Plaza-level transactions, revenue, and category mix
+            {selectedPlaza ? ` · ${selectedPlaza.plaza_name}` : ''}
+          </>
+        }
+      />
 
-      <div className="grid gap-3 rounded-sm border border-border bg-card p-3 sm:grid-cols-3">
+      <div className="grid gap-3 rounded-sm border border-border bg-muted/40 p-3 sm:grid-cols-3">
         <label className="space-y-1">
           <span className="block text-small text-muted-foreground">Company</span>
           <SearchableSelect
@@ -374,12 +380,7 @@ export function OverallTollAnalysisPage() {
         </Card>
       ) : null}
 
-      {plazaId && numbersLoading && !numbers ? (
-        <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-          <Loader2 className="h-6 w-6 animate-spin" />
-          <span>Loading dataset…</span>
-        </div>
-      ) : null}
+      {plazaId && numbersLoading && !numbers ? <DashboardSkeleton kpis={4} /> : null}
 
       {plazaId && numbers ? (
         <div className="relative">

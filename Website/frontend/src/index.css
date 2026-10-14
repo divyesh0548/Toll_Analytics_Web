@@ -46,6 +46,9 @@
   --border: oklch(0.88 0.02 145);
   --input: oklch(0.88 0.02 145);
   --ring: oklch(0.55 0.12 145);
+  /* Cool secondary accent for revenue (primary green stays traffic/actions) */
+  --accent-revenue: oklch(0.48 0.1 250);
+  --accent-revenue-foreground: oklch(0.98 0.01 250);
   --content-max: 90rem;
 }
 
@@ -69,6 +72,8 @@
   --border: oklch(0.28 0 0);
   --input: oklch(0.28 0 0);
   --ring: oklch(0.78 0.14 145);
+  --accent-revenue: oklch(0.72 0.1 250);
+  --accent-revenue-foreground: oklch(0.14 0 0);
 }
 
 @layer base {
@@ -125,5 +130,51 @@
     .content-shell {
       padding-inline: 1.5rem;
     }
+  }
+
+  .text-revenue {
+    color: var(--accent-revenue);
+  }
+
+  .bg-revenue {
+    background-color: var(--accent-revenue);
+  }
+
+  /* Shared dashboard table density
+     (use core Tailwind sizes — @apply cannot nest custom utilities like text-body) */
+  .dashboard-table {
+    @apply w-full border-collapse text-left text-sm leading-relaxed;
+  }
+
+  .dashboard-table thead tr {
+    @apply border-b border-border text-xs leading-snug text-muted-foreground;
+  }
+
+  .dashboard-table th {
+    @apply px-3 py-2.5 font-medium;
+  }
+
+  .dashboard-table td {
+    @apply px-3 py-2.5;
+  }
+
+  .dashboard-table tbody tr {
+    @apply border-b border-border/60;
+  }
+
+  .dashboard-table tbody tr:nth-child(even):not(.dashboard-table-row-open):not(.dashboard-table-row-nested) {
+    @apply bg-muted/25;
+  }
+
+  .dashboard-table tbody tr.dashboard-table-row-open {
+    @apply bg-muted/35;
+  }
+
+  .dashboard-table tbody tr:hover {
+    @apply bg-muted/40;
+  }
+
+  .dashboard-table .num {
+    @apply text-right tabular-nums;
   }
 }

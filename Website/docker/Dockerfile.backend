@@ -12,11 +12,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WEBSITE_BACKEND_ROOT=/app/Website/backend \
     EXCEPTION_PROGRAMS_ROOT="/app/Exeption Programs" \
     PLAZA_DB_UPDATE_ROOT=/app/Plaza_db_update \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    CHROME_BIN=/usr/bin/google-chrome \
+    SCRAPE_HEADLESS=1
 
 WORKDIR /app
 
-# System libs for pandas/openpyxl + Google Chrome (local scrape, not Selenium Grid)
+# System libs for pandas/openpyxl + Google Chrome (local scrape fallback)
+# + Docker CLI (client only) so SCRAPE_AUTO_MANAGE_NODES can spawn Chrome nodes
+#   via the mounted docker.sock.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -42,8 +46,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
         > /etc/apt/sources.list.d/google-chrome.list \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && apt-get install -y --no-install-recommends google-chrome-stable docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Website/backend/requirements.txt /tmp/requirements.txt

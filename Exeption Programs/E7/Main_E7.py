@@ -76,7 +76,7 @@ PERIOD_YEAR: int | None = None
 PERIOD_MONTH: int | None = None
 
 EMPTY_FILTER_STATUS = "empty_filter"
-EMPTY_FILTER_NOTES = "No VC4 Loss rows after filters"
+EMPTY_FILTER_NOTES = "No VC4 Loss rows after filters (Months x rate <= Issuance Fees)"
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -130,6 +130,14 @@ INPUT_COLUMN_KEYS = (
 )
 
 _BLANK = {"", "na", "n/a", "null", "none", "nat", "nan", "-"}
+# ISO year-first must win so 2026-08-04 is Aug 4 as written — unless we later
+# detect the column was Excel MDY-corrupted DD-MM (see swap_excel_mdy).
+_ISO_DATETIME_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?"
+)
+_DMY_STRING_RE = re.compile(
+    r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?"
+)
 _DATE_FORMATS = (
     "%d-%m-%Y %H:%M:%S",
     "%d-%m-%Y %H:%M",
@@ -295,16 +303,65 @@ def is_excluded_payment_mode(value, excluded: str) -> bool:
     return bool(target) and text == target
 
 
-def parse_datetime(value) -> datetime | None:
+def _swap_day_month(dt: datetime) -> datetime:
+    """Recover DD-MM values that Excel stored as MDY (day and month both ≤ 12)."""
+    if dt.day > 12 or dt.month > 12 or dt.day == dt.month:
+        return dt
+    try:
+        return dt.replace(month=dt.day, day=dt.month)
+    except ValueError:
+        return dt
+
+
+def column_has_dayfirst_strings(values) -> bool:
+    """True when the column contains unambiguous DD-MM strings (day > 12)."""
+    for value in values:
+        text = _header_cell(value)
+        match = _DMY_STRING_RE.match(text)
+        if match and int(match.group(1)) > 12:
+            return True
+    return False
+
+
+def parse_datetime(value, *, swap_excel_mdy: bool = False) -> datetime | None:
+    """
+    Parse pass dates.
+
+    - Explicit DD-MM / DD/MM strings → day-first
+    - ISO YYYY-MM-DD → year-first as written
+    - When swap_excel_mdy=True (column also has day>12 DD-MM strings), ISO /
+      datetime values with day≤12 are treated as Excel MDY misreads of DD-MM
+      (e.g. 08-04-2026 stored as 2026-08-04 → corrected to 2026-04-08).
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        dt = value.to_pydatetime()
+        return _swap_day_month(dt) if swap_excel_mdy else dt
+    if isinstance(value, datetime):
+        return _swap_day_month(value) if swap_excel_mdy else value
+
     text = _header_cell(value)
     if text.casefold() in _BLANK:
         return None
+
+    if _ISO_DATETIME_RE.match(text):
+        parsed = pd.to_datetime(text, dayfirst=False, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        dt = parsed.to_pydatetime()
+        return _swap_day_month(dt) if swap_excel_mdy else dt
+
     for fmt in _DATE_FORMATS:
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
     parsed = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(text, dayfirst=False, errors="coerce")
     if pd.isna(parsed):
         return None
     return parsed.to_pydatetime()
@@ -393,12 +450,27 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
         f"{before_pay - len(vc4):,} (kept {len(vc4):,})"
     )
 
+    start_raw = vc4[columns["start_effective_date"]]
+    end_raw = vc4[columns["end_effective_date"]]
+    issuance_raw = vc4[columns["issuance_date"]]
+    # Excel often stores ambiguous DD-MM as MDY datetimes (format m/d/yy). When
+    # the same column also has clear DD-MM strings (day>12), swap ISO/datetime
+    # day↔month for values with day≤12.
+    swap_start = column_has_dayfirst_strings(start_raw.tolist())
+    swap_end = column_has_dayfirst_strings(end_raw.tolist())
+    swap_issuance = column_has_dayfirst_strings(issuance_raw.tolist())
+    if swap_start or swap_end or swap_issuance:
+        print(
+            "Date parse: correcting Excel MDY misreads of DD-MM "
+            f"(start={swap_start}, end={swap_end}, issuance={swap_issuance})"
+        )
+
     work = pd.DataFrame(
         {
             class_name: vc4[columns["npci_vehicle_class"]].map(_header_cell).to_numpy(),
-            start_name: vc4[columns["start_effective_date"]].map(_header_cell).to_numpy(),
-            end_name: vc4[columns["end_effective_date"]].map(_header_cell).to_numpy(),
-            issuance_name: vc4[columns["issuance_date"]].map(_header_cell).to_numpy(),
+            start_name: start_raw.map(_header_cell).to_numpy(),
+            end_name: end_raw.map(_header_cell).to_numpy(),
+            issuance_name: issuance_raw.map(_header_cell).to_numpy(),
             fee_name: vc4[columns["issuance_fees"]].map(_header_cell).to_numpy(),
             payment_name: vc4[columns["payment_mode"]].map(_header_cell).to_numpy(),
         }
@@ -410,17 +482,26 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
     receivable_out: list[float] = []
     losses_out: list[float] = []
     issuance_parsed: list[datetime] = []
+    start_out: list[str] = []
+    end_out: list[str] = []
+    issuance_out: list[str] = []
     keep_mask: list[bool] = []
 
     bad_dates = 0
+    bad_window = 0
     bad_issuance = 0
     bad_fees = 0
     dropped_no_loss = 0
 
+    def _fmt_dt(dt: datetime) -> str:
+        if dt.hour or dt.minute or dt.second:
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
     for record in work.itertuples(index=False):
-        start = parse_datetime(record[1])
-        end = parse_datetime(record[2])
-        issuance = parse_datetime(record[3])
+        start = parse_datetime(record[1], swap_excel_mdy=swap_start)
+        end = parse_datetime(record[2], swap_excel_mdy=swap_end)
+        issuance = parse_datetime(record[3], swap_excel_mdy=swap_issuance)
         fee = parse_fee(record[4])
 
         if start is None or end is None:
@@ -432,6 +513,9 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             receivable_out.append(0.0)
             losses_out.append(0.0)
             issuance_parsed.append(datetime.min)
+            start_out.append(str(record[1]))
+            end_out.append(str(record[2]))
+            issuance_out.append(str(record[3]))
             continue
         if issuance is None:
             bad_issuance += 1
@@ -442,6 +526,9 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             receivable_out.append(0.0)
             losses_out.append(0.0)
             issuance_parsed.append(datetime.min)
+            start_out.append(_fmt_dt(start))
+            end_out.append(_fmt_dt(end))
+            issuance_out.append(str(record[3]))
             continue
         if fee is None:
             bad_fees += 1
@@ -452,9 +539,26 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             receivable_out.append(0.0)
             losses_out.append(0.0)
             issuance_parsed.append(issuance)
+            start_out.append(_fmt_dt(start))
+            end_out.append(_fmt_dt(end))
+            issuance_out.append(_fmt_dt(issuance))
             continue
 
         count = month_count(start, end)
+        if count is None:
+            bad_window += 1
+            keep_mask.append(False)
+            months_out.append(0)
+            rates_out.append(0.0)
+            fees_out.append(fee)
+            receivable_out.append(0.0)
+            losses_out.append(0.0)
+            issuance_parsed.append(issuance)
+            start_out.append(_fmt_dt(start))
+            end_out.append(_fmt_dt(end))
+            issuance_out.append(_fmt_dt(issuance))
+            continue
+
         rate = monthly_rate_for_issuance(issuance, config, cutover)
         receivable = round(count * rate, 2)
         if receivable <= fee:
@@ -466,6 +570,9 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
             receivable_out.append(receivable)
             losses_out.append(0.0)
             issuance_parsed.append(issuance)
+            start_out.append(_fmt_dt(start))
+            end_out.append(_fmt_dt(end))
+            issuance_out.append(_fmt_dt(issuance))
             continue
 
         loss = round(receivable - fee, 2)
@@ -476,7 +583,13 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
         receivable_out.append(receivable)
         losses_out.append(loss)
         issuance_parsed.append(issuance)
+        start_out.append(_fmt_dt(start))
+        end_out.append(_fmt_dt(end))
+        issuance_out.append(_fmt_dt(issuance))
 
+    work[start_name] = start_out
+    work[end_name] = end_out
+    work[issuance_name] = issuance_out
     work[months_name] = months_out
     work[rate_col] = rates_out
     # Receivable Amt = Months × Monthly Rate; keep immediately left of Loss.
@@ -486,19 +599,52 @@ def build_vc4_loss(df: pd.DataFrame, columns: dict[str, str], config: dict) -> p
 
     if bad_dates:
         print(f"Dropped (unreadable Start/End Effective Date): {bad_dates}")
+    if bad_window:
+        print(f"Dropped (Start month after End month): {bad_window}")
     if bad_issuance:
         print(f"Dropped (unreadable Issuance Date): {bad_issuance}")
     if bad_fees:
         print(f"Dropped (non-numeric Issuance Fees): {bad_fees}")
     print(
-        f"Dropped (Months×rate ≤ Issuance Fees): {dropped_no_loss}"
+        f"Dropped (Months x rate <= Issuance Fees): {dropped_no_loss}"
     )
 
     out = work.loc[keep_mask].copy().reset_index(drop=True)
+    # Issuance months that were evaluated (even when every row was dropped for
+    # zero Loss) — used to write empty_filter metrics for separate jobs.
+    evaluated_months = sorted(
+        {
+            (int(dt.year), int(dt.month))
+            for dt in work["_issuance"].tolist()
+            if dt is not None and dt != datetime.min
+        }
+    )
+    out.attrs["evaluated_issuance_months"] = evaluated_months
     print(f"Output rows with {loss_name} > 0: {len(out)}")
     if len(out):
         print(f"Total {loss_name}: {float(out[loss_name].sum()):,.2f}")
+    elif evaluated_months:
+        label = ", ".join(f"{y}-{m:02d}" for y, m in evaluated_months)
+        print(f"No Loss rows — evaluated issuance months: {label}")
     return out
+
+
+def summarize_empty_filter_months(months: list[tuple[int, int]]) -> list[dict]:
+    """Zero metrics with empty_filter status for each issuance month evaluated."""
+    rows: list[dict] = []
+    for year, month in months:
+        rows.append(
+            {
+                "year": int(year),
+                "month": int(month),
+                "total_count": 0,
+                "total_amount": 0.0,
+                "status": EMPTY_FILTER_STATUS,
+                "notes": EMPTY_FILTER_NOTES,
+            }
+        )
+        print(f"  {year}-{month:02d}: empty_filter (no Loss rows)")
+    return rows
 
 
 def summarize_by_issuance_month(work: pd.DataFrame, loss_name: str) -> list[dict]:
@@ -799,6 +945,7 @@ def main() -> int:
     dry_run = bool(DB_DRY_RUN)
     pipeline_period = PERIOD_YEAR is not None and PERIOD_MONTH is not None
 
+    empty_result = result is None or result.empty
     if pipeline_period:
         print("-" * 60)
         print(
@@ -811,9 +958,20 @@ def main() -> int:
             year=int(PERIOD_YEAR),
             month=int(PERIOD_MONTH),
         )
-    elif result.empty:
-        print("No Loss rows — metrics/S3 skipped (no pipeline period set).")
-        return 0
+    elif empty_result:
+        evaluated = list(result.attrs.get("evaluated_issuance_months") or [])
+        if not evaluated:
+            print(
+                "No Loss rows and no evaluable Issuance Date months — "
+                "metrics/S3 skipped."
+            )
+            return 0
+        print("-" * 60)
+        print(
+            "No Loss rows — writing empty_filter metrics for evaluated "
+            "Issuance Date months (website shows no output):"
+        )
+        totals = summarize_empty_filter_months(evaluated)
     else:
         print("-" * 60)
         print("Monthly totals from Issuance Date:")
@@ -839,10 +997,16 @@ def main() -> int:
     month_periods = [(int(row["year"]), int(row["month"])) for row in totals]
     label = month_label_from_periods(month_periods)
     print("-" * 60)
-    print(
-        f"Uploading {OUTPUT_FILE.name} to S3 "
-        f"(month_label={label!r}, rows={len(export)})…"
-    )
+    if empty_result:
+        print(
+            f"Uploading header-only {OUTPUT_FILE.name} to S3 "
+            f"(month_label={label!r}, empty_filter — no Loss rows)…"
+        )
+    else:
+        print(
+            f"Uploading {OUTPUT_FILE.name} to S3 "
+            f"(month_label={label!r}, rows={len(export)})…"
+        )
     upload_exception_output(
         OUTPUT_FILE,
         plaza_id,

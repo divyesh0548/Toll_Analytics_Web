@@ -4,6 +4,12 @@ import { Info, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
+import { PageHeader } from '@/components/ui/page-header'
+import { DashboardSkeleton } from '@/components/ui/skeleton'
+import {
+  UnderlineTabs,
+  underlineTabClass,
+} from '@/components/ui/segmented-control'
 import { EntityBreadcrumb } from '@/components/entity-breadcrumb'
 import { AuditExceptionsPanel, defaultAuditPeriod } from '@/components/plaza/audit-exceptions-panel'
 import { PlazaNumbersDashboard } from '@/components/plaza/numbers-dashboard'
@@ -21,7 +27,7 @@ import {
   getPlazaNumbers,
   getSpv,
 } from '@/lib/api'
-import { cn, formatLocalDateTime } from '@/lib/utils'
+import { formatLocalDateTime } from '@/lib/utils'
 
 const TABS = [
   { id: 'overall', label: 'Overall', to: '/overall-toll-analysis' },
@@ -70,6 +76,7 @@ export function PlazaDetailPage() {
   const [auditData, setAuditData] = useState(null)
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditError, setAuditError] = useState('')
+  const [auditRefreshKey, setAuditRefreshKey] = useState(0)
   const [trafficMonth, setTrafficMonth] = useState(defaultTrafficMonth)
   const [trafficEvents, setTrafficEvents] = useState([])
   const [trafficLoading, setTrafficLoading] = useState(false)
@@ -209,6 +216,7 @@ export function PlazaDetailPage() {
     auditApplied.month,
     auditApplied.wholeYear,
     auditApplied.metricsSource,
+    auditRefreshKey,
   ])
 
   useEffect(() => {
@@ -307,7 +315,16 @@ export function PlazaDetailPage() {
   const spvIdentifier = plaza?.spv_identifier || spv?.spv_identifier
 
   if (loading) {
-    return <p className="text-body text-muted-foreground">Loading plaza…</p>
+    return (
+      <section className="space-y-6">
+        <div className="border-b border-border/80 pb-5 space-y-2">
+          <div className="h-3 w-48 animate-pulse rounded-sm bg-muted" />
+          <div className="h-8 w-64 animate-pulse rounded-sm bg-muted" />
+          <div className="h-4 w-40 animate-pulse rounded-sm bg-muted" />
+        </div>
+        <DashboardSkeleton kpis={5} />
+      </section>
+    )
   }
 
   if (error || !plaza) {
@@ -330,8 +347,8 @@ export function PlazaDetailPage() {
 
   return (
     <section className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+      <PageHeader
+        eyebrow={
           <EntityBreadcrumb
             items={[
               { label: 'Portfolio', to: '/portfolio' },
@@ -346,27 +363,31 @@ export function PlazaDetailPage() {
               { label: plaza.plaza_name },
             ]}
           />
-          <h1 className="text-display">{plaza.plaza_name}</h1>
-          <p className="mt-1 text-body text-muted-foreground">
+        }
+        title={plaza.plaza_name}
+        description={
+          <>
             {plaza.plaza_code || 'Toll plaza'}
             {plaza.district_state ? ` · ${plaza.district_state}` : ''}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={() => setInfoOpen(true)}>
-            <Info className="h-4 w-4" />
-            Plaza info
-          </Button>
-          <Button asChild variant="outline">
-            <Link to={`/companies/spvs/plazas/${plazaIdentifier}/edit`}>
-              <Pencil className="h-4 w-4" />
-              Edit
-            </Link>
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          <>
+            <Button type="button" variant="outline" onClick={() => setInfoOpen(true)}>
+              <Info className="h-4 w-4" />
+              Plaza info
+            </Button>
+            <Button asChild variant="outline">
+              <Link to={`/companies/spvs/plazas/${plazaIdentifier}/edit`}>
+                <Pencil className="h-4 w-4" />
+                Edit
+              </Link>
+            </Button>
+          </>
+        }
+      />
 
-      <div className="flex flex-wrap gap-1 border-b border-border pb-2">
+      <UnderlineTabs>
         {TABS.map((item) =>
           item.to ? (
             <Link
@@ -374,10 +395,7 @@ export function PlazaDetailPage() {
               to={`${item.to}?plaza=${encodeURIComponent(plazaIdentifier)}`}
               target="_blank"
               rel="noopener noreferrer"
-              className={cn(
-                'rounded-sm px-3 py-1.5 text-small',
-                'text-muted-foreground hover:bg-muted',
-              )}
+              className={underlineTabClass(false)}
             >
               {item.label}
             </Link>
@@ -386,18 +404,13 @@ export function PlazaDetailPage() {
               key={item.id}
               type="button"
               onClick={() => setTab(item.id)}
-              className={cn(
-                'rounded-sm px-3 py-1.5 text-small',
-                tab === item.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted',
-              )}
+              className={underlineTabClass(tab === item.id)}
             >
               {item.label}
             </button>
           ),
         )}
-      </div>
+      </UnderlineTabs>
 
       {tab === 'numbers' && (
         <div className="space-y-3">
@@ -503,6 +516,15 @@ export function PlazaDetailPage() {
               metricsSource: source || 'manual',
             }))
           }
+          onRefresh={() => {
+            setAuditApplied({
+              year: String(auditDraft.year),
+              month: String(auditDraft.month),
+              wholeYear: Boolean(auditDraft.wholeYear),
+              metricsSource: auditDraft.metricsSource || 'manual',
+            })
+            setAuditRefreshKey((key) => key + 1)
+          }}
           onApply={() =>
             setAuditApplied({
               year: String(auditDraft.year),

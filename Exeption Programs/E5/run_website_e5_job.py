@@ -27,6 +27,11 @@ def main() -> int:
     parser.add_argument("--update-metrics", default="1")
     parser.add_argument("--upload-output", default="1")
     parser.add_argument("--dry-run", default="0")
+    parser.add_argument(
+        "--scrape-mode",
+        default="",
+        help="live = IHMCL scrape; export = write vehicle CSV and stop (exit 42)",
+    )
     args = parser.parse_args()
 
     invalid_table = Path(args.invalid_table).expanduser().resolve()
@@ -86,10 +91,17 @@ def main() -> int:
     else:
         os.environ.pop("E5_IHMCL_INPUT_FILE", None)
 
+    scrape_mode = str(args.scrape_mode or "").strip().lower()
+    if scrape_mode in {"live", "export"}:
+        os.environ["E5_SCRAPE_MODE"] = scrape_mode
+    else:
+        os.environ.pop("E5_SCRAPE_MODE", None)
+
     print(
         f"Starting E5 invalid_table={invalid_table} "
         f"plaza_identifier={plaza_identifier} entity_name={entity_name!r} "
-        f"ihmcl={'yes' if ihmcl else 'scrape'}"
+        f"ihmcl={'yes' if ihmcl else 'scrape'} "
+        f"scrape_mode={os.environ.get('E5_SCRAPE_MODE') or 'default'}"
     )
     import Main_E5 as e5  # noqa: WPS433
 

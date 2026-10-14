@@ -1,6 +1,18 @@
 # Run from Website/:
 #   docker compose up --build
 #
+# Optional Selenium Grid:
+#   Preferred: existing selenium-hub + SCRAPE_AUTO_MANAGE_NODES=1
+#     (jobs spawn SCRAPE_MAX_NODES Chrome containers, then remove them)
+#   Or: docker compose --profile selenium up  (static hub + 3 chrome-node-*)
+#
+# In backend/.env:
+#   SCRAPE_USE_GRID=1
+#   SCRAPE_GRID_URL=http://host.docker.internal:4444/wd/hub   # from Docker backend
+#   SCRAPE_MAX_NODES=3
+#   SCRAPE_MAX_CONCURRENCY=3
+#   SCRAPE_AUTO_MANAGE_NODES=1
+#
 # Requires Website/backend/.env (see backend/.env.example + DOCKER.md).
 
 name: toll-analytics
@@ -18,14 +30,15 @@ services:
       EXCEPTION_PROGRAMS_ROOT: "/app/Exeption Programs"
       PLAZA_DB_UPDATE_ROOT: /app/Plaza_db_update
       FLASK_ENV: production
-      # Local Chrome in this image — not Selenium Grid
-      EXCEPTION_USE_SELENIUM: "0"
-      E6_USE_SELENIUM_GRID: "0"
+      # Hub is published on the host; from the backend container use Docker Desktop DNS.
+      # Override in .env with SCRAPE_GRID_URL=http://selenium-hub:4444/wd/hub if hub is on this network.
+      SCRAPE_GRID_URL: ${SCRAPE_GRID_URL:-http://host.docker.internal:4444/wd/hub}
     volumes:
       # Only scratch dirs — do NOT mount over program source trees
       - e4_jobs:/app/Exeption Programs/E4/jobs
       - e5_jobs:/app/Exeption Programs/E5/jobs
       - e6_jobs:/app/Exeption Programs/E6/jobs
+      - e6_permit_cache:/app/Exeption Programs/E6/permit_cache
       - e7_jobs:/app/Exeption Programs/E7/jobs
       - e9_jobs:/app/Exeption Programs/E9/jobs
       - e10_jobs:/app/Exeption Programs/E10/jobs
@@ -38,6 +51,8 @@ services:
       # Annexure defaults (gitignored xlsx) — mount from host so rates/approved maps resolve
       - "../Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/RatesAfter April:/app/Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/RatesAfter April:ro"
       - "../Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/Approved Exmption:/app/Exeption Programs/Exemptio query E1-2-3-13-14/Scripts/Excempy_Query/Approved Exmption:ro"
+      # Needed for SCRAPE_AUTO_MANAGE_NODES=1 (spawn chrome nodes against existing hub)
+      - /var/run/docker.sock:/var/run/docker.sock
     shm_size: "2gb"
     mem_limit: 16g
     ports:
@@ -54,10 +69,68 @@ services:
       - backend
     restart: unless-stopped
 
+  # --- Optional Selenium Grid (same Docker network as backend) ---
+  selenium-hub:
+    profiles: ["selenium"]
+    image: selenium/hub:4.27.0
+    container_name: selenium-hub
+    ports:
+      - "4444:4444"
+    environment:
+      SE_NODE_MAX_SESSIONS: 3
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+    restart: unless-stopped
+
+  chrome-node-1:
+    profiles: ["selenium"]
+    image: selenium/node-chrome:4.27.0
+    shm_size: "2gb"
+    depends_on:
+      - selenium-hub
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: 4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS: 1
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+      SE_NODE_SESSION_TIMEOUT: 300
+    restart: unless-stopped
+
+  chrome-node-2:
+    profiles: ["selenium"]
+    image: selenium/node-chrome:4.27.0
+    shm_size: "2gb"
+    depends_on:
+      - selenium-hub
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: 4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS: 1
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+      SE_NODE_SESSION_TIMEOUT: 300
+    restart: unless-stopped
+
+  chrome-node-3:
+    profiles: ["selenium"]
+    image: selenium/node-chrome:4.27.0
+    shm_size: "2gb"
+    depends_on:
+      - selenium-hub
+    environment:
+      SE_EVENT_BUS_HOST: selenium-hub
+      SE_EVENT_BUS_PUBLISH_PORT: 4442
+      SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+      SE_NODE_MAX_SESSIONS: 1
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+      SE_NODE_SESSION_TIMEOUT: 300
+    restart: unless-stopped
+
 volumes:
   e4_jobs:
   e5_jobs:
   e6_jobs:
+  e6_permit_cache:
   e7_jobs:
   e9_jobs:
   e10_jobs:

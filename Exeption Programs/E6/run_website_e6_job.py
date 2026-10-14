@@ -29,6 +29,11 @@ def main() -> int:
     parser.add_argument("--update-metrics", default="1")
     parser.add_argument("--upload-output", default="1")
     parser.add_argument("--dry-run", default="0")
+    parser.add_argument(
+        "--scrape-mode",
+        default="",
+        help="live = Parivahan scrape; export = write vehicle CSV and stop (exit 42)",
+    )
     args = parser.parse_args()
 
     etc_folder = Path(args.etc_folder).expanduser().resolve()
@@ -95,14 +100,21 @@ def main() -> int:
         os.environ["E6_PERMIT_FOLDER"] = str(permit_path)
         permit_mode = "upload"
     else:
-        # Empty folder → E6_main scrapes Parivahan.
+        # Empty folder → E6_main scrapes Parivahan (or export VRNs).
         os.environ["E6_PERMIT_FOLDER"] = ""
         permit_mode = "scrape"
+
+    scrape_mode = str(args.scrape_mode or "").strip().lower()
+    if scrape_mode in {"live", "export"}:
+        os.environ["E6_SCRAPE_MODE"] = scrape_mode
+    else:
+        os.environ.pop("E6_SCRAPE_MODE", None)
 
     print(
         f"Starting E6 etc={etc_folder} vrn={vrn_folder} "
         f"plaza_identifier={plaza_identifier} entity_name={entity_name!r} "
-        f"permit={permit_mode} output={output_file}"
+        f"permit={permit_mode} scrape_mode={os.environ.get('E6_SCRAPE_MODE') or 'default'} "
+        f"output={output_file}"
     )
     import E6_main as e6  # noqa: WPS433
 

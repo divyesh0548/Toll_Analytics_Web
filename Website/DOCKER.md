@@ -14,11 +14,41 @@ Why not physically move into `backend/`?
 
 If you later want them under `backend/programs/`, set those env vars — catalogs already honor them.
 
-### 2. Fat image + Selenium Grid?
+### 2. Fat image + Selenium — does scraping run in Docker?
 
-**Skip Selenium Grid** for now. Install **Google Chrome** in the backend image and scrape with **local Chrome** (`EXCEPTION_USE_SELENIUM=0`, `E6_USE_SELENIUM_GRID=0`).
+**Yes.** Two modes, both controlled only from `Website/backend/.env`
+(via `Exeption Programs/common/selenium_scrape_config.py`):
 
-Fat image build is slower once; layer caching helps after the first Chrome/pip install. Prefer one fat backend over many micro-images until deploy pain is real.
+| Mode | When | How |
+|------|------|-----|
+| **Local Chrome** | `SCRAPE_USE_GRID=0` | Chrome runs **inside the backend container** (fat image). No Grid containers needed. |
+| **Selenium Grid** | `SCRAPE_USE_GRID=1` | Backend opens remote sessions on an existing **selenium-hub**; Chrome nodes can be auto-spawned or started via Compose. |
+
+In `backend/.env`:
+
+```bash
+SCRAPE_ENABLED=1
+SCRAPE_USE_GRID=1
+SCRAPE_GRID_URL=http://localhost:4444/wd/hub   # host Python; use host.docker.internal from Docker
+SCRAPE_MAX_NODES=3                              # Chrome node containers to auto-start
+SCRAPE_MAX_CONCURRENCY=3                        # parallel scrape sessions
+SCRAPE_AUTO_MANAGE_NODES=1                      # spawn auto-chrome-node-* against existing hub
+SCRAPE_HEADLESS=1
+```
+
+**Auto nodes (recommended with an existing hub):** start/keep `selenium-hub` running, set
+`SCRAPE_AUTO_MANAGE_NODES=1`. Jobs spawn `SCRAPE_MAX_NODES` Chrome containers on the
+`selenium-grid` Docker network, scrape with `SCRAPE_MAX_CONCURRENCY` workers, then remove
+the nodes. Backend needs Docker socket access for this (Compose mounts it when Grid is used).
+
+**Static Compose nodes (optional):** leave auto-manage off and start the profile:
+
+```bash
+docker compose --profile selenium up --build
+```
+
+If the hub runs on the **host** and jobs run in Docker, set
+`SCRAPE_GRID_URL=http://host.docker.internal:4444/wd/hub` (Docker Desktop).
 
 ### 5. Multithreading for jobs?
 
@@ -178,7 +208,8 @@ Quick check: open DevTools → Network while uploading. Look for a request to
 | Exempt headers | `RDS_*` |
 | Metrics | `Toll_Analytics_DB`, `Exception_Metrics_Table` |
 | S3 | `AWS_*` |
-| Scrape | `EXCEPTION_USE_SELENIUM=0`, `E6_USE_SELENIUM_GRID=0` |
+| Scrape (all programs) | `SCRAPE_ENABLED`, `SCRAPE_USE_GRID`, `SCRAPE_GRID_URL`, `SCRAPE_MAX_NODES`, `SCRAPE_MAX_CONCURRENCY`, `SCRAPE_AUTO_MANAGE_NODES`, `SCRAPE_HEADLESS` |
 | Paths (Compose sets these) | `TOLL_REPO_ROOT`, `EXCEPTION_PROGRAMS_ROOT`, … |
 
 Old `Exeption Programs/.env` and `E4/.env` are no longer read by the Website worker.
+Scrape settings no longer live in `e5_config.json` / `e6_config.json` (infra moved to `.env`).

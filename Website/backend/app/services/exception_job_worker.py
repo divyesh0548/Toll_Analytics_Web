@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,14 +22,16 @@ from app.extensions import db
 from app.models.audit_exception import AuditExceptionOutputFile
 from app.models.exception_job import ExceptionJob, ExceptionJobFile
 from app.models.plaza import Plaza
+from app.services.analytics_program_catalog import (
+    ANALYTICS_VRN_ETC_PROGRAM,
+    plaza_db_update_root,
+)
+from app.services.exception_job_cleanup import cleanup_expired_exception_jobs
 from app.services.exception_job_s3 import (
     delete_keys,
     download_to_path,
     shorten_local_filename,
-)
-from app.services.analytics_program_catalog import (
-    ANALYTICS_VRN_ETC_PROGRAM,
-    plaza_db_update_root,
+    upload_bytes,
 )
 from app.services.exception_program_catalog import (
     E04_PROGRAM,
@@ -57,12 +60,55 @@ from app.services.staging_output_cleanup import cleanup_expired_staging_outputs
 
 logger = logging.getLogger(__name__)
 
+_SCRAPE_MODE_RE = re.compile(r"^\[\[scrape_mode=(live|export)\]\]\s*", re.I)
+_SCRAPE_MODE_PN_RE = re.compile(r"\|sm=(live|export)$", re.I)
+SCRAPE_EXPORT_EXIT_CODE = 42
+SCRAPE_EXPORT_SLOT = "scrape_vehicles"
+SCRAPE_EXPORT_FAIL_MESSAGE = (
+    "Scrape skipped — download the vehicle list from this job, scrape offline, "
+    "upload the scraped file, then Start again."
+)
+
 _worker_started = False
 _active_child_lock = threading.Lock()
 _active_children: set[subprocess.Popen] = set()
+_pending_scrape_modes_lock = threading.Lock()
+# Survives progress_message overwrites within this process (gunicorn 1 worker).
+_pending_scrape_modes: dict[str, str] = {}
 _WORKER_MAX_PARALLEL = 2
 _last_staging_cleanup_at: float = 0.0
 _STAGING_CLEANUP_INTERVAL_SEC = 3600
+_last_job_cleanup_at: float = 0.0
+_JOB_CLEANUP_INTERVAL_SEC = 12 * 3600  # every 12 hours
+
+
+def remember_scrape_mode(job_uuid: str, mode: str) -> None:
+    """Persist scrape mode for the worker (memory + process_name marker)."""
+    cleaned = str(mode or "").strip().lower()
+    if cleaned not in {"live", "export"}:
+        cleaned = "live"
+    with _pending_scrape_modes_lock:
+        _pending_scrape_modes[str(job_uuid)] = cleaned
+
+
+def encode_scrape_mode_on_process_name(job: ExceptionJob, mode: str) -> None:
+    """Encode |sm=live|export on process_name so restart recovery can restore it."""
+    cleaned = str(mode or "").strip().lower()
+    if cleaned not in {"live", "export"}:
+        cleaned = "live"
+    base = str(job.process_name or "").strip()
+    base = _SCRAPE_MODE_PN_RE.sub("", base).rstrip("|").strip()
+    if not base:
+        base = f"web_{str(job.job_uuid).replace('-', '')[:16]}"
+    job.process_name = f"{base}|sm={cleaned}"
+
+
+def _read_scrape_mode_from_process_name(job: ExceptionJob) -> str | None:
+    pn = str(job.process_name or "")
+    match = _SCRAPE_MODE_PN_RE.search(pn)
+    if not match:
+        return None
+    return match.group(1).lower()
 
 
 def _register_active_child(child: subprocess.Popen | None) -> None:
@@ -96,8 +142,62 @@ def kill_active_job_children() -> int:
     return killed
 
 
+def remove_auto_chrome_nodes() -> int:
+    """
+    Force-remove Selenium Grid Chrome nodes started by E5/E6 auto-manage
+    (container names like auto-chrome-node-YYYYMMDDHHMMSS-N).
+    """
+    try:
+        listed = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", "name=auto-chrome-node-"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not list auto-chrome-node containers")
+        return 0
+
+    ids = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+    if not ids:
+        return 0
+
+    removed = 0
+    for container_id in ids:
+        try:
+            result = subprocess.run(
+                ["docker", "rm", "-f", container_id],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                removed += 1
+            else:
+                logger.warning(
+                    "Failed removing chrome node %s: %s",
+                    container_id,
+                    (result.stderr or result.stdout or "").strip(),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed removing chrome node %s", container_id)
+    if removed:
+        logger.info("Removed %s auto-chrome-node container(s)", removed)
+    return removed
+
+
+def stop_job_runtime_resources() -> dict[str, int]:
+    """
+    Kill active exception-job subprocess trees and remove auto Selenium nodes.
+    Used by Mark-as-failed / pipeline stop.
+    """
+    killed = kill_active_job_children()
+    nodes = remove_auto_chrome_nodes()
+    return {"killed_children": killed, "removed_chrome_nodes": nodes}
+
+
 def _job_marked_cancelled(job: ExceptionJob) -> bool:
-    """True if stop API already set this job to cancelled (other DB session)."""
+    """True if stop/mark-failed API already stopped this job (other DB session)."""
     try:
         db.session.expire(job)
         db.session.refresh(job)
@@ -105,8 +205,26 @@ def _job_marked_cancelled(job: ExceptionJob) -> bool:
         fresh = ExceptionJob.query.get(job.id)
         if fresh is None:
             return False
-        return str(fresh.status or "") == "cancelled"
-    return str(job.status or "") == "cancelled"
+        return str(fresh.status or "") in {"cancelled", "failed"}
+    return str(job.status or "") in {"cancelled", "failed"}
+
+
+def _apply_external_stop_status(job: ExceptionJob) -> str:
+    """
+    Keep mark-failed → failed, pipeline stop → cancelled.
+    Returns the status that was applied.
+    """
+    current = str(job.status or "")
+    if current == "failed":
+        # Mark-as-failed already wrote error/progress — don't overwrite.
+        if job.finished_at is None:
+            job.finished_at = _utc_now()
+        return "failed"
+    job.status = "cancelled"
+    job.error_message = job.error_message or "Stopped by user"
+    job.progress_message = "Stopped by user."
+    job.finished_at = _utc_now()
+    return "cancelled"
 
 _SLOT_TO_FOLDER = {
     "lc_etc": "lc_etc",
@@ -256,10 +374,53 @@ def _popen_job(cmd: list[str], *, cwd: str, env: dict[str, str]) -> subprocess.P
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
+        "bufsize": 1,
     }
     if os.name != "nt":
         kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **kwargs)
+
+
+def _stream_child_output(job: ExceptionJob, child: subprocess.Popen) -> str:
+    """
+    Read child stdout line-by-line, keep a combined log, and promote scrape-count
+    banners into job.progress_message so the website shows how many vehicles
+    need scraping while the job is still running.
+    """
+    chunks: list[str] = []
+    if child.stdout is None:
+        child.wait()
+        return ""
+    for line in child.stdout:
+        chunks.append(line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+        promote = (
+            "VEHICLES TO SCRAPE:" in stripped
+            or stripped.startswith("Permit cache hits:")
+            or stripped.startswith("Unique VRNs to scrape")
+        )
+        if promote:
+            job.progress_message = stripped[:500]
+            try:
+                db.session.commit()
+            except Exception:  # noqa: BLE001
+                db.session.rollback()
+    child.wait()
+    return "".join(chunks)
+
+
+def _job_failure_message(combined: str, *, limit: int = 2000) -> str:
+    """Prefer the last RuntimeError/ERROR line over a mid-traceback tail slice."""
+    text = (combined or "").strip()
+    if not text:
+        return "Job failed with no output"
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if ln.startswith("RuntimeError:") or ln.startswith("[ERROR]"):
+            return ln[:limit]
+    return text[-limit:]
 
 
 def recover_orphaned_running_jobs() -> int:
@@ -318,13 +479,19 @@ def recover_orphaned_running_jobs() -> int:
 
         job.status = "queued"
         job.error_message = None
+        # Preserve scrape mode across restart (was previously wiped → always live).
+        saved_mode = _read_scrape_mode_from_process_name(job) or "live"
+        remember_scrape_mode(job.job_uuid, saved_mode)
         job.progress_message = (
+            f"[[scrape_mode={saved_mode}]]"
             "Re-queued after backend restart — worker will pick this up again."
         )
         job.finished_at = None
         recovered += 1
         logger.warning(
-            "Recovered orphaned running job %s → queued", job.job_uuid
+            "Recovered orphaned running job %s → queued (scrape_mode=%s)",
+            job.job_uuid,
+            saved_mode,
         )
     db.session.commit()
     if cancelled:
@@ -346,6 +513,141 @@ def _maybe_cleanup_staging() -> None:
             logger.info("Staging cleanup removed %s file(s)", n)
     except Exception:  # noqa: BLE001
         logger.exception("Staging output cleanup failed")
+
+
+def _maybe_cleanup_expired_jobs() -> None:
+    """Delete exception jobs older than 7 days (outputs kept). Runs every 12h."""
+    global _last_job_cleanup_at
+    now = time.time()
+    if now - _last_job_cleanup_at < _JOB_CLEANUP_INTERVAL_SEC:
+        return
+    _last_job_cleanup_at = now
+    try:
+        n = cleanup_expired_exception_jobs()
+        if n:
+            logger.info("Expired job cleanup removed %s job(s)", n)
+    except Exception:  # noqa: BLE001
+        logger.exception("Expired exception job cleanup failed")
+
+
+def _pop_scrape_mode(job: ExceptionJob) -> str:
+    """
+    Resolve live|export for this run.
+
+    Priority: in-memory (same process) → process_name |sm= → progress_message prefix.
+    Defaults to live only when nothing was recorded.
+    """
+    mode: str | None = None
+    with _pending_scrape_modes_lock:
+        mode = _pending_scrape_modes.pop(str(job.job_uuid), None)
+
+    if mode not in {"live", "export"}:
+        mode = _read_scrape_mode_from_process_name(job)
+
+    msg = job.progress_message or ""
+    match = _SCRAPE_MODE_RE.match(msg)
+    if match:
+        if mode not in {"live", "export"}:
+            mode = match.group(1).lower()
+        rest = msg[match.end() :].strip()
+        job.progress_message = rest or None
+
+    # Strip |sm= from process_name before the runner assigns a fresh folder name.
+    pn = str(job.process_name or "")
+    pn_match = _SCRAPE_MODE_PN_RE.search(pn)
+    if pn_match:
+        job.process_name = pn[: pn_match.start()].rstrip("|").strip() or None
+
+    if mode not in {"live", "export"}:
+        mode = "live"
+    db.session.commit()
+    logger.info("Job %s scrape_mode=%s", job.job_uuid, mode)
+    return mode
+
+
+def _attach_scrape_vehicles_export(job: ExceptionJob, export_path: Path) -> ExceptionJobFile:
+    """Upload exported VRN CSV onto the job as slot=scrape_vehicles for download."""
+    path = Path(export_path)
+    if not path.is_file():
+        raise RuntimeError(f"Scrape export file missing: {path}")
+
+    plaza_name = (
+        job.plaza.plaza_name
+        if job.plaza is not None
+        else (job.pipeline_plaza_key or job.plaza_identifier)
+    )
+    original_name = path.name
+    data = path.read_bytes()
+    uploaded = upload_bytes(
+        body=data,
+        plaza_name=str(plaza_name or "unknown"),
+        job_uuid=job.job_uuid,
+        slot=SCRAPE_EXPORT_SLOT,
+        original_file_name=original_name,
+        content_type="text/csv",
+    )
+
+    # Replace any previous export on this job.
+    for old in ExceptionJobFile.query.filter_by(
+        job_id=job.id, slot=SCRAPE_EXPORT_SLOT
+    ).all():
+        db.session.delete(old)
+
+    row = ExceptionJobFile(
+        job_id=job.id,
+        slot=SCRAPE_EXPORT_SLOT,
+        original_file_name=original_name,
+        s3_key=uploaded["s3_key"],
+        file_url=uploaded.get("file_url"),
+        file_size_bytes=uploaded.get("file_size_bytes") or len(data),
+    )
+    db.session.add(row)
+    db.session.commit()
+    return row
+
+
+def _parse_scrape_export_path(stdout: str) -> Path | None:
+    marker = "SCRAPE_EXPORT_READY:"
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if text.startswith(marker):
+            raw = text[len(marker) :].strip().strip('"')
+            if raw:
+                return Path(raw)
+    return None
+
+
+def _raise_if_scrape_export(
+    job: ExceptionJob,
+    *,
+    returncode: int | None,
+    stdout: str,
+    search_dirs: list[Path] | None = None,
+) -> None:
+    """If the child exited with the export code, attach CSV and fail intentionally."""
+    if int(returncode or 0) != SCRAPE_EXPORT_EXIT_CODE:
+        return
+
+    export_path = _parse_scrape_export_path(stdout or "")
+    if export_path is None or not Path(export_path).is_file():
+        for folder in search_dirs or []:
+            if folder is None or not Path(folder).is_dir():
+                continue
+            matches = sorted(Path(folder).glob("*_vehicles_to_scrape_*.csv"))
+            if matches:
+                export_path = matches[-1]
+                break
+
+    if export_path is not None and Path(export_path).is_file():
+        try:
+            _attach_scrape_vehicles_export(job, Path(export_path))
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to attach scrape export for job %s", job.job_uuid)
+            raise RuntimeError(
+                f"{SCRAPE_EXPORT_FAIL_MESSAGE} (upload of export file failed)"
+            ) from None
+
+    raise RuntimeError(SCRAPE_EXPORT_FAIL_MESSAGE)
 
 
 def start_exception_job_worker(app) -> None:
@@ -382,6 +684,11 @@ def start_exception_job_worker(app) -> None:
             _maybe_cleanup_staging()
         except Exception:  # noqa: BLE001
             logger.exception("Initial staging cleanup failed")
+        try:
+            # Runs once on startup, then every 12h from the worker loop.
+            _maybe_cleanup_expired_jobs()
+        except Exception:  # noqa: BLE001
+            logger.exception("Initial expired job cleanup failed")
 
     def _run_job_in_thread(job_id: int) -> None:
         with app.app_context():
@@ -400,6 +707,7 @@ def start_exception_job_worker(app) -> None:
                 try:
                     with app.app_context():
                         _maybe_cleanup_staging()
+                        _maybe_cleanup_expired_jobs()
                         futures = {f for f in futures if not f.done()}
                         while len(futures) < _WORKER_MAX_PARALLEL:
                             job_id = _claim_next_queued_job_id()
@@ -483,7 +791,11 @@ def _claim_next_queued_job_id() -> int | None:
         return None
     job.status = "running"
     job.started_at = _utc_now()
-    job.progress_message = "Preparing workspace…"
+    # Keep [[scrape_mode=…]] prefix from /start — _pop_scrape_mode reads it later.
+    prior = job.progress_message or ""
+    mode_match = _SCRAPE_MODE_RE.match(prior)
+    mode_prefix = mode_match.group(0) if mode_match else ""
+    job.progress_message = f"{mode_prefix}Preparing workspace…"
     job.error_message = None
     # Keep pipeline step row in sync so File Upload UI shows running, not queued.
     try:
@@ -559,10 +871,7 @@ def _process_claimed_job(job_id: int) -> None:
             raise RuntimeError(f"Program {job.program_code!r} is not wired yet.")
         if _job_marked_cancelled(job):
             failed = True
-            job.status = "cancelled"
-            job.error_message = "Stopped by user"
-            job.progress_message = "Stopped by user."
-            job.finished_at = _utc_now()
+            _apply_external_stop_status(job)
             db.session.commit()
             _print_job_runtime(job, time.perf_counter() - t0, ok=False)
         else:
@@ -570,18 +879,20 @@ def _process_claimed_job(job_id: int) -> None:
             job.progress_message = "Completed successfully."
             job.finished_at = _utc_now()
             db.session.commit()
+            # Save *_final.xlsx to S3 (monthly full_exempt_final) for E15 — pipeline
+            # and separate Exempt Query jobs.
             if (
-                pipeline_mode
-                and job.program_code == FULL_EXEMPT_PROGRAM["code"]
+                job.program_code == FULL_EXEMPT_PROGRAM["code"]
                 and process_dir is not None
             ):
                 try:
                     register_full_exempt_final_local(job, process_dir)
                 except Exception:  # noqa: BLE001
-                    logger.exception("Pipeline full_exempt_final register failed")
+                    logger.exception("full_exempt_final S3 register failed")
             _print_job_runtime(job, time.perf_counter() - t0, ok=True)
             # Delete S3 inputs only after a fully successful run (retry keeps them).
             # Pipeline children / parallel analytics re-use monthly S3 keys — keep them.
+            # full_exempt_final lives under monthly/ keys (not job.files) so it survives.
             if not pipeline_mode and not pipeline_analytics:
                 _cleanup_input_files(job)
             # Analytics has no downloadable outputs — free local scratch.
@@ -593,14 +904,12 @@ def _process_claimed_job(job_id: int) -> None:
         failed = True
         logger.exception("Job %s failed", job.job_uuid)
         if _job_marked_cancelled(job):
-            job.status = "cancelled"
-            job.error_message = "Stopped by user"
-            job.progress_message = "Stopped by user."
+            _apply_external_stop_status(job)
         else:
             job.status = "failed"
             job.error_message = str(exc)
             job.progress_message = "Failed."
-        job.finished_at = _utc_now()
+            job.finished_at = _utc_now()
         db.session.commit()
         _print_job_runtime(job, time.perf_counter() - t0, ok=False)
     finally:
@@ -792,7 +1101,7 @@ def _run_full_exempt_job(
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"Full Exempt Pipeline failed with exit code {child.returncode}"
         )
@@ -888,7 +1197,7 @@ def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E4 failed with exit code {child.returncode}"
         )
@@ -900,16 +1209,29 @@ def _cleanup_input_files(job: ExceptionJob) -> None:
 
     Do not delete staging invalid_table objects (is_final_output=False) — they
     expire via the 7-day staging cleanup.
+
+    Do not delete Full Exempt finals registered as monthly inputs
+    (slot=full_exempt_final) — E15 may re-attach them on later jobs.
     """
+    from app.models.exception_pipeline import PlazaMonthlyExceptionInput
+
     staging_keys = {
         row.s3_key
         for row in AuditExceptionOutputFile.query.filter_by(is_final_output=False).all()
         if row.s3_key
     }
+    monthly_exempt_keys = {
+        row.s3_key
+        for row in PlazaMonthlyExceptionInput.query.filter_by(
+            slot="full_exempt_final"
+        ).all()
+        if row.s3_key
+    }
+    protected = staging_keys | monthly_exempt_keys
     keys = [
         f.s3_key
         for f in job.files
-        if f.s3_key and f.s3_key not in staging_keys
+        if f.s3_key and f.s3_key not in protected
     ]
     if not keys:
         return
@@ -1001,7 +1323,7 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"Valid/Invalid Lookup failed with exit code {child.returncode}"
         )
@@ -1012,9 +1334,9 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     """
     Single E05 pipeline:
       1) lifecycle/ETC → Valid/Invalid Lookup → invalid_table.csv
-      2) invalid_table + uploaded IHMCL scrape → Main_E5 (metrics + S3)
-    Live scrape is not used.
+      2) invalid_table + IHMCL file, or live scrape / export VRNs
     """
+    scrape_mode = _pop_scrape_mode(job)
     entity_name = require_entity_name(job.plaza_identifier)
     previous_process_name = str(job.process_name or "").strip()
     process_name = f"e5_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
@@ -1049,11 +1371,12 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     lifecycle_dest = lifecycle_paths[0]
 
     ihmcl_paths = _download_slot_files(job, "ihmcl", ihmcl_dir)
-    if not ihmcl_paths:
+    ihmcl_dest = ihmcl_paths[0] if ihmcl_paths else None
+    if ihmcl_dest is None and scrape_mode not in {"live", "export"}:
         raise RuntimeError(
-            "No scraped IHMCL vehicle file on this E05 job. Upload is required."
+            "No scraped IHMCL file. Upload one, or Start with live scrape / "
+            "download vehicles."
         )
-    ihmcl_dest = ihmcl_paths[0]
 
     # --- Step 1: Valid / Invalid Lookup ---
     job.progress_message = "Running Valid/Invalid Lookup (checkpostmaster + rates)…"
@@ -1099,7 +1422,7 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if vil_child.returncode != 0:
         raise RuntimeError(
-            vil_combined[-2000:]
+            _job_failure_message(vil_combined)
             if vil_combined
             else f"Valid/Invalid Lookup failed with exit code {vil_child.returncode}"
         )
@@ -1110,8 +1433,18 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
             f"Valid/Invalid did not produce invalid_table.csv at {invalid_dest}"
         )
 
-    # --- Step 2: Incorrect FASTag with uploaded scrape ---
-    job.progress_message = "Running E05 with uploaded IHMCL scrape file…"
+    # --- Step 2: Incorrect FASTag (uploaded scrape, live scrape, or export VRNs) ---
+    if ihmcl_dest is not None:
+        job.progress_message = "Running E05 with uploaded IHMCL scrape file…"
+        effective_scrape_mode = "live"  # unused when ihmcl present
+    elif scrape_mode == "export":
+        job.progress_message = "Running E05 — exporting vehicles to scrape…"
+        effective_scrape_mode = "export"
+    else:
+        job.progress_message = (
+            "Running E05 with live IHMCL scrape (SCRAPE_* in Website/backend/.env)…"
+        )
+        effective_scrape_mode = "live"
     db.session.commit()
 
     e5_runner = e5_root / "run_website_e5_job.py"
@@ -1119,32 +1452,44 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         raise RuntimeError(f"E5 runner script missing: {e5_runner}")
 
     e5_env = _build_e4_subprocess_env()
+    if ihmcl_dest is None:
+        e5_env["E5_SCRAPE_MODE"] = effective_scrape_mode
+    logger.info(
+        "E05 job %s effective_scrape_mode=%s ihmcl_upload=%s",
+        job.job_uuid,
+        effective_scrape_mode,
+        ihmcl_dest is not None,
+    )
+    e5_cmd = [
+        sys.executable,
+        str(e5_runner),
+        "--invalid-table",
+        str(invalid_dest),
+        "--plaza-identifier",
+        job.plaza_identifier,
+        "--entity-name",
+        entity_name,
+        "--output-dir",
+        str(e5_output_dir),
+        "--update-metrics",
+        "1",
+        "--upload-output",
+        "1",
+    ]
+    if ihmcl_dest is not None:
+        e5_cmd.extend(["--ihmcl-file", str(ihmcl_dest)])
+    else:
+        e5_cmd.extend(["--scrape-mode", effective_scrape_mode])
+
     child = _popen_job(
-        [
-            sys.executable,
-            str(e5_runner),
-            "--invalid-table",
-            str(invalid_dest),
-            "--plaza-identifier",
-            job.plaza_identifier,
-            "--entity-name",
-            entity_name,
-            "--output-dir",
-            str(e5_output_dir),
-            "--ihmcl-file",
-            str(ihmcl_dest),
-            "--update-metrics",
-            "1",
-            "--upload-output",
-            "1",
-        ],
+        e5_cmd,
         cwd=str(e5_root),
         env=e5_env,
     )
     _register_active_child(child)
 
     try:
-        stdout, _ = child.communicate()
+        stdout = _stream_child_output(job, child)
     except Exception:
         _kill_process_tree(child)
         raise
@@ -1157,9 +1502,15 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         ]
         job.progress_message = merged
         db.session.commit()
+    _raise_if_scrape_export(
+        job,
+        returncode=child.returncode,
+        stdout=combined,
+        search_dirs=[e5_output_dir, process_dir],
+    )
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E5 failed with exit code {child.returncode}"
         )
@@ -1186,12 +1537,12 @@ def _download_slot_files(job: ExceptionJob, slot: str, dest_dir: Path) -> list[P
             base_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
         used_names.add(base_name.lower())
         dest = dest_dir / base_name
-        download_to_path(row.s3_key, dest)
-        paths.append(dest)
+        paths.append(download_to_path(row.s3_key, dest))
     return paths
 
 
 def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
+    scrape_mode = _pop_scrape_mode(job)
     entity_name = require_entity_name(job.plaza_identifier)
     previous_process_name = str(job.process_name or "").strip()
     process_name = f"e6_{job.job_uuid.replace('-', '')[:8]}_{uuid.uuid4().hex[:6]}"
@@ -1228,10 +1579,15 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
 
     if permit_paths:
         job.progress_message = "Running E06 with uploaded permit files…"
+        effective_scrape_mode = "live"
+    elif scrape_mode == "export":
+        job.progress_message = "Running E06 — exporting vehicles to scrape…"
+        effective_scrape_mode = "export"
     else:
         job.progress_message = (
-            "Running E06 (live permit scrape — see EXCEPTION_USE_SELENIUM in .env)…"
+            "Running E06 (live permit scrape — see SCRAPE_* in Website/backend/.env)…"
         )
+        effective_scrape_mode = "live"
     db.session.commit()
 
     runner = e6_root / "run_website_e6_job.py"
@@ -1239,6 +1595,15 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         raise RuntimeError(f"E6 runner script missing: {runner}")
 
     env = _build_e4_subprocess_env()
+    # Force mode into child env (CLI also sets it; this survives dotenv quirks).
+    if not permit_paths:
+        env["E6_SCRAPE_MODE"] = effective_scrape_mode
+    logger.info(
+        "E06 job %s effective_scrape_mode=%s permit_upload=%s",
+        job.job_uuid,
+        effective_scrape_mode,
+        bool(permit_paths),
+    )
 
     output_file = output_dir / "etc_enriched.xlsx"
     cmd = [
@@ -1261,6 +1626,8 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     ]
     if permit_paths:
         cmd.extend(["--permit-folder", str(permit_dir)])
+    else:
+        cmd.extend(["--scrape-mode", effective_scrape_mode])
 
     child = _popen_job(
         cmd,
@@ -1270,7 +1637,7 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     _register_active_child(child)
 
     try:
-        stdout, _ = child.communicate()
+        stdout = _stream_child_output(job, child)
     except Exception:
         _kill_process_tree(child)
         raise
@@ -1279,9 +1646,15 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
     if combined:
         job.progress_message = combined[-4000:]
         db.session.commit()
+    _raise_if_scrape_export(
+        job,
+        returncode=child.returncode,
+        stdout=combined,
+        search_dirs=[output_dir, process_dir, e6_root / "permit_cache", e6_root / "output"],
+    )
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E6 failed with exit code {child.returncode}"
         )
@@ -1396,7 +1769,7 @@ def _run_e7_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E7 failed with exit code {child.returncode}"
         )
@@ -1475,7 +1848,7 @@ def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E9 failed with exit code {child.returncode}"
         )
@@ -1562,7 +1935,7 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E10 failed with exit code {child.returncode}"
         )
@@ -1657,7 +2030,7 @@ def _run_e11_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E11 failed with exit code {child.returncode}"
         )
@@ -1763,7 +2136,7 @@ def _run_e15_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"E15 failed with exit code {child.returncode}"
         )
@@ -1847,7 +2220,7 @@ def _run_analytics_vrn_etc_job(job: ExceptionJob) -> tuple[Path, subprocess.Pope
         db.session.commit()
     if child.returncode != 0:
         raise RuntimeError(
-            combined[-2000:]
+            _job_failure_message(combined)
             if combined
             else f"Analytics ETL failed with exit code {child.returncode}"
         )

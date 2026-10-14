@@ -20,6 +20,7 @@ Rules:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -29,6 +30,11 @@ import psycopg2
 from dotenv import load_dotenv
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
+
+# ISO year-first must win so 2026-08-01 is Aug, not dayfirst Jan.
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?"
+)
 
 # ---------------------------------------------------------------------------
 # Standalone controls — edit these to run DB update only
@@ -177,6 +183,33 @@ def _to_float_or_none(value) -> float | None:
         return None
 
 
+def parse_tag_read_datetime(value) -> pd.Timestamp | None:
+    """
+    Parse Tag Read / read_datetime for metrics months.
+
+    ISO YYYY-MM-DD is always year-first.
+    Otherwise prefer day-first (DD-MM-YYYY) so 01-08-2026 is 1 Aug, not 8 Jan.
+    Bare format=\"mixed\" without dayfirst was incorrectly writing Jan–Dec for an
+    August-only file (days 01–12 flipped into months).
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value
+    text = str(value).strip().lstrip("\t")
+    if not text or text.casefold() in {"nan", "none", "nat", ""}:
+        return None
+    if _ISO_DATETIME_RE.match(text):
+        ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
+    else:
+        ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
+        if pd.isna(ts):
+            ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return pd.Timestamp(ts)
+
+
 def aggregate_monthly_positive_loss(
     etc_df: pd.DataFrame,
     *,
@@ -207,8 +240,7 @@ def aggregate_monthly_positive_loss(
         )
 
     work = etc_df.copy()
-    # format="mixed" keeps both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS"
-    work["_dt"] = pd.to_datetime(work[date_col], errors="coerce", format="mixed")
+    work["_dt"] = work[date_col].map(parse_tag_read_datetime)
     work["_loss"] = work[loss_col].map(_to_float_or_none)
     work = work.dropna(subset=["_dt", "_loss"])
     work = work.loc[work["_loss"] > 0].copy()

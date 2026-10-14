@@ -1,7 +1,11 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import Chart from 'react-apexcharts'
 import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ChartInset } from '@/components/ui/chart-inset'
+import { SearchableSelect } from '@/components/ui/searchable-select'
+import { SegmentedControl } from '@/components/ui/segmented-control'
+import { DashboardSkeleton } from '@/components/ui/skeleton'
 import { AvailableDatePicker } from '@/components/plaza/available-date-picker'
 import {
   LayoutClassDistribution,
@@ -149,32 +153,39 @@ export function PeriodRangeControls({
     onDraftChange(next)
   }
 
+  const monthOptions = useMemo(
+    () => months.map((m) => ({ value: String(m.value), label: m.label })),
+    [months],
+  )
+  const toMonthSelectOptions = useMemo(
+    () => toMonthOptions.map((m) => ({ value: String(m.value), label: m.label })),
+    [toMonthOptions],
+  )
+  const yearOptions = useMemo(
+    () => years.map((y) => ({ value: String(y), label: String(y) })),
+    [years],
+  )
+  const toYearSelectOptions = useMemo(
+    () => toYearOptions.map((y) => ({ value: String(y), label: String(y) })),
+    [toYearOptions],
+  )
+
   return (
     <div
       className={cn(
-        'flex flex-wrap items-end gap-3 rounded-sm border border-border bg-card p-3',
+        'sticky top-14 z-20 flex flex-wrap items-end gap-3 rounded-sm border border-border bg-muted/40 p-3 backdrop-blur-sm',
         disabled && 'pointer-events-none opacity-70',
       )}
     >
       <div className="space-y-1">
         <p className="text-small text-muted-foreground">Interval</p>
-        <div className="flex flex-wrap gap-1">
-          {PERIOD_TABS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onPeriodChange(item.id)}
-              className={cn(
-                'rounded-sm px-2 py-1 text-small',
-                period === item.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground',
-              )}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          items={PERIOD_TABS}
+          value={period}
+          onChange={onPeriodChange}
+          size="sm"
+          disabled={disabled}
+        />
       </div>
 
       {period === 'day' && (
@@ -201,66 +212,54 @@ export function PeriodRangeControls({
 
       {period === 'mtd' && (
         <>
-          <label className="space-y-1">
+          <label className="min-w-[9rem] space-y-1">
             <span className="block text-small text-muted-foreground">From month</span>
-            <select
-              className="h-10 min-w-[9rem] rounded-sm border border-input bg-background px-2 text-body"
+            <SearchableSelect
+              options={monthOptions}
               value={draft.start || ''}
-              onChange={(e) => handleFromMonth(e.target.value)}
-            >
-              {months.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => handleFromMonth(value)}
+              placeholder="Month"
+              searchPlaceholder="Search month…"
+              disabled={disabled}
+            />
           </label>
-          <label className="space-y-1">
+          <label className="min-w-[9rem] space-y-1">
             <span className="block text-small text-muted-foreground">To month</span>
-            <select
-              className="h-10 min-w-[9rem] rounded-sm border border-input bg-background px-2 text-body"
+            <SearchableSelect
+              options={toMonthSelectOptions}
               value={draft.end || ''}
-              onChange={(e) => onDraftChange({ ...draft, end: e.target.value })}
-            >
-              {toMonthOptions.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => onDraftChange({ ...draft, end: value })}
+              placeholder="Month"
+              searchPlaceholder="Search month…"
+              disabled={disabled}
+            />
           </label>
         </>
       )}
 
       {period === 'ytd' && (
         <>
-          <label className="space-y-1">
+          <label className="min-w-[6.5rem] space-y-1">
             <span className="block text-small text-muted-foreground">From year</span>
-            <select
-              className="h-10 min-w-[6rem] rounded-sm border border-input bg-background px-2 text-body"
+            <SearchableSelect
+              options={yearOptions}
               value={draft.start || ''}
-              onChange={(e) => handleFromYear(e.target.value)}
-            >
-              {years.map((y) => (
-                <option key={y} value={String(y)}>
-                  {y}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => handleFromYear(value)}
+              placeholder="Year"
+              searchPlaceholder="Search year…"
+              disabled={disabled}
+            />
           </label>
-          <label className="space-y-1">
+          <label className="min-w-[6.5rem] space-y-1">
             <span className="block text-small text-muted-foreground">To year</span>
-            <select
-              className="h-10 min-w-[6rem] rounded-sm border border-input bg-background px-2 text-body"
+            <SearchableSelect
+              options={toYearSelectOptions}
               value={draft.end || ''}
-              onChange={(e) => onDraftChange({ ...draft, end: e.target.value })}
-            >
-              {toYearOptions.map((y) => (
-                <option key={y} value={String(y)}>
-                  {y}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => onDraftChange({ ...draft, end: value })}
+              placeholder="Year"
+              searchPlaceholder="Search year…"
+              disabled={disabled}
+            />
           </label>
         </>
       )}
@@ -352,7 +351,7 @@ function RevenueTrafficChart({ revenueDaily, trafficDaily, dark, height = 300 })
       zoom: { enabled: false },
     },
     stroke: { width: [3, 3], curve: 'smooth' },
-    colors: [colors.primary, colors.series[1]],
+    colors: [colors.primary, colors.revenue],
     xaxis: {
       type: 'category',
       categories: xAxis.categories,
@@ -672,16 +671,19 @@ function LayoutOverview({ data, dark }) {
           label="Revenue"
           value={formatRevenueOrNa(kpis.revenue_period)}
           hint={data.range_label || 'Selected interval'}
+          accent="revenue"
         />
         <Kpi
           label="Traffic count"
           value={formatCount(kpis.traffic_period)}
           hint={data.range_label || 'Selected interval'}
+          accent="traffic"
         />
         <Kpi
           label="ARPT ₹/veh"
           value={kpis.arpt == null ? 'N/A' : formatRupees(kpis.arpt)}
           hint="Selected-period revenue ÷ transactions on the revenue table"
+          accent="revenue"
         />
         <Kpi
           label="Avg monthly revenue"
@@ -695,6 +697,7 @@ function LayoutOverview({ data, dark }) {
               ? `Year ${kpis.revenue_avg_year} (months with data)`
               : 'Current year'
           }
+          accent="revenue"
         />
         <Kpi
           label="Avg daily revenue"
@@ -708,36 +711,45 @@ function LayoutOverview({ data, dark }) {
               ? `Year ${kpis.revenue_avg_year} (days with data)`
               : 'Current year'
           }
+          accent="revenue"
         />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Daily revenue &amp; traffic</CardTitle>
+          <CardTitle className="text-subheader text-muted-foreground">
+            Daily revenue &amp; traffic
+          </CardTitle>
           <CardDescription>
             {data.range_label || 'Selected period'} · dual axis · no last-year comparison
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <RevenueTrafficChart
-            revenueDaily={revenueDaily}
-            trafficDaily={revenueTrafficDaily}
-            dark={dark}
-          />
+          <ChartInset>
+            <RevenueTrafficChart
+              revenueDaily={revenueDaily}
+              trafficDaily={revenueTrafficDaily}
+              dark={dark}
+            />
+          </ChartInset>
         </CardContent>
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch">
         <Card>
           <CardHeader>
-            <CardTitle>Mode mix — ETC / cash / exempt</CardTitle>
+            <CardTitle className="text-subheader text-muted-foreground">
+              Mode mix — ETC / cash / exempt
+            </CardTitle>
             <CardDescription>
               {topMop ? `Top: ${topMop.name} (${topMop.pct}%)` : 'MOP share for selected period'}
             </CardDescription>
           </CardHeader>
           <CardContent>
             {mop_mix.length ? (
-              <MopMixChart mopMix={mop_mix} dark={dark} />
+              <ChartInset>
+                <MopMixChart mopMix={mop_mix} dark={dark} />
+              </ChartInset>
             ) : (
               <p className="text-body text-muted-foreground">No MOP data.</p>
             )}
@@ -745,7 +757,7 @@ function LayoutOverview({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Class mix</CardTitle>
+            <CardTitle className="text-subheader text-muted-foreground">Class mix</CardTitle>
             <CardDescription>
               {topClass
                 ? `Top: ${topClass.name} (${topClass.pct}%)`
@@ -754,7 +766,9 @@ function LayoutOverview({ data, dark }) {
           </CardHeader>
           <CardContent>
             {class_mix.length ? (
-              <ClassMixChart classMix={class_mix} dark={dark} />
+              <ChartInset>
+                <ClassMixChart classMix={class_mix} dark={dark} />
+              </ChartInset>
             ) : (
               <p className="text-body text-muted-foreground">No class data.</p>
             )}
@@ -777,38 +791,44 @@ function LayoutRevenue({ data, dark }) {
           label="Period revenue"
           value={formatRevenueOrNa(kpis.revenue_period)}
           hint={data.range_label}
+          accent="revenue"
         />
         <Kpi
           label="Period traffic"
           value={formatCount(kpis.traffic_period)}
           hint={data.range_label}
+          accent="traffic"
         />
         <Kpi
           label="ARPT ₹/veh"
           value={kpis.arpt == null ? 'N/A' : formatRupees(kpis.arpt)}
           hint="Period revenue ÷ transactions on the revenue table"
+          accent="revenue"
         />
         <Kpi
           label="Fastag share"
           value={kpis.etc_share == null ? '—' : `${kpis.etc_share}%`}
           hint="Share of period traffic with Fastag (TAG) MOP"
+          accent="traffic"
         />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Revenue — daily</CardTitle>
+          <CardTitle className="text-subheader text-muted-foreground">Revenue — daily</CardTitle>
           <CardDescription>
             Bar chart for each day in {data.range_label || 'selected period'}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <RevenueBarChart
-            rows={daily}
-            dark={dark}
-            maxLabels={MAX_X_AXIS_LABELS}
-            height={320}
-          />
+          <ChartInset>
+            <RevenueBarChart
+              rows={daily}
+              dark={dark}
+              maxLabels={MAX_X_AXIS_LABELS}
+              height={320}
+            />
+          </ChartInset>
         </CardContent>
       </Card>
     </div>
@@ -841,11 +861,7 @@ export function PlazaNumbersDashboard({
   const dark = theme === 'dark'
 
   if (!data) {
-    return (
-      <div className="relative min-h-[16rem]">
-        <NumbersLoadingOverlay label="Loading numbers…" />
-      </div>
-    )
+    return <DashboardSkeleton kpis={5} />
   }
 
   if (data.has_data === false) {
@@ -864,24 +880,12 @@ export function PlazaNumbersDashboard({
   return (
     <div className="relative space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-1">
-          {LAYOUTS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onLayoutChange(item.id)}
-              disabled={loading}
-              className={cn(
-                'rounded-sm px-3 py-1.5 text-small',
-                layout === item.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground',
-              )}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          items={LAYOUTS}
+          value={layout}
+          onChange={onLayoutChange}
+          disabled={loading}
+        />
       </div>
 
       <PeriodRangeControls

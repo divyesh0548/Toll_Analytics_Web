@@ -10,6 +10,7 @@ from werkzeug.utils import secure_filename
 from app.extensions import db
 from app.models.audit_exception import AuditExceptionOutputFile
 from app.models.exception_job import ExceptionJob, ExceptionJobFile
+from app.models.exception_pipeline import PlazaMonthlyExceptionInput
 from app.models.plaza import Plaza
 from app.services.auth_tokens import deny_viewer_writes, get_current_user
 from app.services.db_session import commit_with_retry
@@ -94,6 +95,84 @@ def list_staging_invalid_files():
         f"staging invalid files plaza={plaza_identifier} count={len(rows)}"
     )
     return jsonify({"files": [r.to_dict() for r in rows]})
+
+
+@exception_jobs_bp.get("/exempt-final-files")
+def list_exempt_final_files():
+    """
+    Full Exempt *_final.xlsx files registered for a plaza (latest first).
+
+    Source: plaza_monthly_exception_inputs.slot=full_exempt_final
+    (written when Exempt Query — Full Process succeeds).
+    Used by the E15 From-plaza picker on separate jobs.
+    """
+    import calendar
+
+    plaza_identifier = (request.args.get("plaza_identifier") or "").strip()
+    if not plaza_identifier:
+        return jsonify({"error": "plaza_identifier is required"}), 400
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 20), 50))
+    except (TypeError, ValueError):
+        limit = 20
+
+    plaza = Plaza.query.filter_by(plaza_identifier=plaza_identifier).first()
+    plaza_name = (plaza.plaza_name if plaza else None) or plaza_identifier
+
+    rows = (
+        PlazaMonthlyExceptionInput.query.filter_by(
+            plaza_identifier=plaza_identifier,
+            slot="full_exempt_final",
+        )
+        .order_by(PlazaMonthlyExceptionInput.created_at.desc())
+        .limit(limit * 3)
+        .all()
+    )
+    # Same S3 object may be registered for multiple months — keep newest per key.
+    from app.services.exception_pipeline_service import (
+        build_full_exempt_final_display_name,
+    )
+
+    seen_keys: set[str] = set()
+    files: list[dict] = []
+    for row in rows:
+        key = str(row.s3_key or "").strip()
+        if key and key in seen_keys:
+            continue
+        if key:
+            seen_keys.add(key)
+        payload = row.to_dict()
+        month_abbr = (
+            calendar.month_abbr[int(row.month)]
+            if 1 <= int(row.month) <= 12
+            else str(row.month)
+        )
+        payload["period_label"] = f"{month_abbr} {int(row.year)}"
+        payload["plaza_name"] = plaza_name
+        # Prefer a plaza + period + timestamp name (also rewrites legacy cryptic names).
+        stored = str(row.original_file_name or "").strip()
+        already_friendly = (
+            "_Exempt_Final_" in stored and plaza_name.replace(" ", "_") in stored.replace(" ", "_")
+        )
+        if already_friendly:
+            display_name = stored
+        else:
+            display_name = build_full_exempt_final_display_name(
+                plaza_name=plaza_name,
+                year=int(row.year),
+                month=int(row.month),
+                created_at=row.created_at,
+                suffix=".xlsx",
+            )
+        payload["display_name"] = display_name
+        files.append(payload)
+        if len(files) >= limit:
+            break
+
+    log_ok(
+        f"exempt final files plaza={plaza_identifier} count={len(files)}"
+    )
+    return jsonify({"files": files})
 
 
 @exception_jobs_bp.get("")
@@ -224,6 +303,46 @@ def get_job(job_uuid: str):
     if job is None:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"job": job.to_dict()})
+
+
+@exception_jobs_bp.delete("/<job_uuid>")
+def delete_job(job_uuid: str):
+    """
+    Delete a job and its input files.
+
+    Keeps audit/pipeline outputs and shared scrape caches. Stops the job first
+    if it is still queued/running.
+    """
+    job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+
+    cleanup = {"killed_children": 0, "removed_chrome_nodes": 0}
+    if job.status in {"queued", "running"}:
+        from datetime import datetime, timezone
+
+        from app.services.exception_job_worker import stop_job_runtime_resources
+
+        job.status = "failed"
+        job.error_message = "Stopped — job deleted."
+        job.progress_message = "Stopped for delete."
+        job.finished_at = datetime.now(timezone.utc)
+        db.session.commit()
+        try:
+            cleanup = stop_job_runtime_resources()
+        except Exception as exc:  # noqa: BLE001
+            log_fail(f"delete-job stop error for {job.job_uuid}: {exc}")
+
+    from app.services.exception_job_cleanup import delete_exception_job
+
+    result = delete_exception_job(job)
+    log_ok(
+        f"deleted exception job {result.get('job_uuid')} "
+        f"(s3={result.get('deleted_s3_keys')}, "
+        f"local={result.get('local_workspace_purged')}, "
+        f"killed={cleanup.get('killed_children', 0)})"
+    )
+    return jsonify({"ok": True, "deleted": result, "cleanup": cleanup})
 
 
 def _editable_job_or_error(job_uuid: str):
@@ -415,6 +534,7 @@ def delete_job_file(job_uuid: str, file_id: int):
 
     s3_key = str(row.s3_key or "").strip()
     staging_rows = []
+    monthly_exempt_rows = []
     if s3_key:
         staging_rows = (
             AuditExceptionOutputFile.query.filter_by(
@@ -422,11 +542,21 @@ def delete_job_file(job_uuid: str, file_id: int):
                 is_final_output=False,
             ).all()
         )
+        monthly_exempt_rows = (
+            PlazaMonthlyExceptionInput.query.filter_by(
+                s3_key=s3_key,
+                slot="full_exempt_final",
+            ).all()
+        )
 
     # Failed jobs: hard-delete S3 + any staging output-file DB row.
-    # Draft + staging attach: only detach from the job (keep staging for reuse).
+    # Draft + staging / exempt-final attach: only detach from the job (keep S3).
     # Draft + normal upload: delete the uploaded S3 object.
-    hard_delete_s3 = job.status == "failed" or not staging_rows
+    shared_reuse = bool(staging_rows or monthly_exempt_rows)
+    hard_delete_s3 = job.status == "failed" or not shared_reuse
+    # Never delete monthly Full Exempt finals — they feed E15 reuse.
+    if monthly_exempt_rows:
+        hard_delete_s3 = False
     if s3_key and hard_delete_s3:
         try:
             delete_object(s3_key)
@@ -442,7 +572,8 @@ def delete_job_file(job_uuid: str, file_id: int):
     log_ok(
         f"deleted file {file_id} from job {job.job_uuid} "
         f"(status={job.status}, hard_s3={hard_delete_s3}, "
-        f"staging_rows={len(staging_rows)})"
+        f"staging_rows={len(staging_rows)}, "
+        f"monthly_exempt={len(monthly_exempt_rows)})"
     )
     return jsonify({"ok": True, "job": job.to_dict()})
 
@@ -519,9 +650,107 @@ def attach_staging_invalid(job_uuid: str):
     return jsonify({"file": attached.to_dict(), "job": job.to_dict()}), 201
 
 
+@exception_jobs_bp.post("/<job_uuid>/attach-exempt-final")
+def attach_exempt_final(job_uuid: str):
+    """
+    Attach a registered Full Exempt final (monthly input) as the E15 from_plaza slot.
+    Does not delete the monthly S3 object — only links it onto the job.
+    """
+    job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status not in EDITABLE_STATUSES:
+        return (
+            jsonify({"error": f"Cannot attach while job status is {job.status}."}),
+            409,
+        )
+    program = get_program(job.program_code)
+    if program is None or not program.get("allows_exempt_final_pick"):
+        return jsonify({"error": "This program does not support exempt-final picks."}), 400
+
+    data = request.get_json(silent=True) or {}
+    try:
+        monthly_input_id = int(data.get("monthly_input_id") or 0)
+    except (TypeError, ValueError):
+        monthly_input_id = 0
+    if not monthly_input_id:
+        return jsonify({"error": "monthly_input_id is required"}), 400
+
+    monthly = PlazaMonthlyExceptionInput.query.filter_by(
+        id=monthly_input_id,
+        plaza_identifier=job.plaza_identifier,
+        slot="full_exempt_final",
+    ).first()
+    if monthly is None:
+        return jsonify({"error": "Exempt final file not found for this plaza."}), 404
+
+    # Keys that must never be deleted when replacing from_plaza attachments.
+    protected_keys = {
+        r.s3_key
+        for r in PlazaMonthlyExceptionInput.query.filter_by(
+            slot="full_exempt_final"
+        ).all()
+        if r.s3_key
+    }
+
+    existing = ExceptionJobFile.query.filter_by(
+        job_id=job.id, slot="from_plaza"
+    ).all()
+    for row in existing:
+        if row.s3_key and row.s3_key not in protected_keys:
+            try:
+                delete_object(row.s3_key)
+            except Exception:  # noqa: BLE001
+                pass
+        db.session.delete(row)
+
+    from app.services.exception_pipeline_service import (
+        build_full_exempt_final_display_name,
+    )
+
+    plaza_name = (
+        job.plaza.plaza_name
+        if job.plaza is not None
+        else (job.pipeline_plaza_key or job.plaza_identifier)
+    )
+    stored_name = str(monthly.original_file_name or "").strip()
+    if "_Exempt_Final_" in stored_name:
+        attach_name = stored_name
+    else:
+        attach_name = build_full_exempt_final_display_name(
+            plaza_name=str(plaza_name or "Plaza"),
+            year=int(monthly.year),
+            month=int(monthly.month),
+            created_at=monthly.created_at,
+            suffix=".xlsx",
+        )
+
+    attached = ExceptionJobFile(
+        job_id=job.id,
+        slot="from_plaza",
+        original_file_name=attach_name,
+        s3_key=monthly.s3_key,
+        file_url=monthly.file_url,
+        file_size_bytes=monthly.file_size_bytes,
+    )
+    db.session.add(attached)
+    if job.status == "failed":
+        job.status = "draft"
+        job.error_message = None
+        job.progress_message = "Draft — Full Exempt final attached as From-plaza."
+    else:
+        job.progress_message = "Draft — Full Exempt final attached as From-plaza."
+    db.session.commit()
+    log_ok(
+        f"attached monthly_input_id={monthly.id} "
+        f"({monthly.original_file_name}) to job {job.job_uuid} as from_plaza"
+    )
+    return jsonify({"file": attached.to_dict(), "job": job.to_dict()}), 201
+
+
 @exception_jobs_bp.post("/<job_uuid>/mark-failed")
 def mark_job_failed(job_uuid: str):
-    """Unstick a job left as queued/running after a crash or forced stop."""
+    """Stop a queued/running job: kill subprocesses, remove Selenium nodes, mark failed."""
     job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
     if job is None:
         return jsonify({"error": "Job not found"}), 404
@@ -532,19 +761,32 @@ def mark_job_failed(job_uuid: str):
         )
     from datetime import datetime, timezone
 
-    job.status = "failed"
+    from app.services.exception_job_worker import stop_job_runtime_resources
+
     payload = request.get_json(silent=True)
     reason = payload.get("reason") if isinstance(payload, dict) else None
+    job.status = "failed"
     job.error_message = (
         str(reason).strip()
         if reason
-        else "Marked failed manually (process was not actually running)."
+        else "Marked failed — related processes were stopped."
     )
-    job.progress_message = "Marked failed — you can Retry."
+    job.progress_message = "Marked failed — processes stopped; you can Retry."
     job.finished_at = datetime.now(timezone.utc)
     db.session.commit()
-    log_ok(f"marked exception job {job.job_uuid} failed")
-    return jsonify({"job": job.to_dict()})
+
+    cleanup = {"killed_children": 0, "removed_chrome_nodes": 0}
+    try:
+        cleanup = stop_job_runtime_resources()
+    except Exception as exc:  # noqa: BLE001
+        log_fail(f"mark-failed cleanup error for {job.job_uuid}: {exc}")
+
+    log_ok(
+        f"marked exception job {job.job_uuid} failed "
+        f"(killed={cleanup.get('killed_children', 0)}, "
+        f"chrome_nodes={cleanup.get('removed_chrome_nodes', 0)})"
+    )
+    return jsonify({"job": job.to_dict(), "cleanup": cleanup})
 
 
 @exception_jobs_bp.post("/<job_uuid>/start")
@@ -561,6 +803,11 @@ def start_job(job_uuid: str):
     program = get_program(job.program_code)
     if program is None or not program.get("enabled"):
         return jsonify({"error": "Program is not enabled"}), 400
+
+    body = request.get_json(silent=True) or {}
+    scrape_mode = str(body.get("scrape_mode") or "live").strip().lower()
+    if scrape_mode not in {"live", "export"}:
+        scrape_mode = "live"
 
     files_by_slot: dict[str, list] = {}
     for row in job.files:
@@ -599,11 +846,69 @@ def start_job(job_uuid: str):
             400,
         )
 
+    # When a scrape-capable program has no scraped input, honor scrape_mode
+    # (live|export). Default to live so Start still works if the UI omitted it.
+    scrape_slot = str(program.get("scrape_slot") or "").strip()
+    needs_scrape_choice = bool(
+        program.get("may_live_scrape")
+        and scrape_slot
+        and not files_by_slot.get(scrape_slot)
+    )
+    mode_for_worker = scrape_mode if needs_scrape_choice else "live"
+    if needs_scrape_choice and "scrape_mode" not in body:
+        mode_for_worker = "live"
+
     job.status = "queued"
     job.error_message = None
-    job.progress_message = "Queued — waiting for worker…"
+    # Worker reads scrape mode from memory, process_name |sm=, and this prefix.
+    from app.services.exception_job_worker import (
+        encode_scrape_mode_on_process_name,
+        remember_scrape_mode,
+    )
+
+    remember_scrape_mode(job.job_uuid, mode_for_worker)
+    encode_scrape_mode_on_process_name(job, mode_for_worker)
+    job.progress_message = (
+        f"[[scrape_mode={mode_for_worker}]]Queued — waiting for worker…"
+    )
     job.started_at = None
     job.finished_at = None
     db.session.commit()
-    log_ok(f"queued exception job {job.job_uuid}")
+    log_ok(f"queued exception job {job.job_uuid} scrape_mode={mode_for_worker}")
     return jsonify({"job": job.to_dict()})
+
+
+@exception_jobs_bp.get("/<job_uuid>/files/<int:file_id>/download")
+def download_job_file(job_uuid: str, file_id: int):
+    """Presigned GET URL for a job file (including scrape_vehicles export)."""
+    job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    row = ExceptionJobFile.query.filter_by(id=file_id, job_id=job.id).first()
+    if row is None:
+        return jsonify({"error": "File not found"}), 404
+    try:
+        from app.services.exception_job_s3 import s3_client, bucket_name as _bucket
+
+        client = s3_client()
+        url = client.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": _bucket(),
+                "Key": row.s3_key,
+                "ResponseContentDisposition": (
+                    f'attachment; filename="{secure_filename(row.original_file_name)}"'
+                ),
+            },
+            ExpiresIn=3600,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_fail(f"exception job download presign failed: {exc}")
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(
+        {
+            "download_url": url,
+            "file_name": row.original_file_name,
+            "slot": row.slot,
+        }
+    )

@@ -1,9 +1,18 @@
 import { cn } from '@/lib/utils'
 
+/**
+ * Surface hierarchy (pass via className):
+ * - Filter / toolbar: border + bg-muted/40, no shadow
+ * - KPI: shadow-sm (set on Kpi)
+ * - Chart / table: default border-only card
+ */
 export function Card({ className, ...props }) {
   return (
     <div
-      className={cn('rounded-sm border border-border bg-card text-card-foreground shadow-none', className)}
+      className={cn(
+        'rounded-sm border border-border bg-card text-card-foreground shadow-none',
+        className,
+      )}
       {...props}
     />
   )
