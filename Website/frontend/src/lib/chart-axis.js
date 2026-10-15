@@ -26,6 +26,8 @@ const MONTH_SHORT = [
   'Dec',
 ]
 
+const WEEKDAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
 /**
  * Step size for showing every Nth label so count stays ≤ maxLabels.
  * Doubles (1 → 2 → 4 → …) until ceil(pointCount / step) ≤ maxLabels.
@@ -115,17 +117,89 @@ export function uniqueMonthCount(isoDates) {
   return keys.size
 }
 
-/** Day tick like "12 Jan" (used when the range spans more than 3 months). */
-export function dayMonthLabel(iso) {
+/**
+ * Day tick with weekday — e.g. "2 Mon".
+ * Month belongs on the under-axis group band, not on this label.
+ */
+export function dayWeekdayLabel(iso) {
   const text = normalizeIsoDate(iso)
   if (!text) return String(iso || '')
-  const [, m, d] = text.split('-').map(Number)
-  return `${d} ${MONTH_SHORT[m - 1]}`
+  const d = new Date(`${text}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return text
+  // JS getDay(): Sun=0 … Sat=6 → Mon-first index
+  const weekday = WEEKDAY_SHORT[(d.getDay() + 6) % 7]
+  return `${d.getDate()} ${weekday}`
+}
+
+/** @deprecated Prefer dayWeekdayLabel — kept for any leftover imports. */
+export function dayMonthLabel(iso) {
+  return dayWeekdayLabel(iso)
+}
+
+const WEEKDAY_ALT = WEEKDAY_SHORT.join('|')
+const LEGACY_DAY_LABEL_RE = new RegExp(
+  `^(${WEEKDAY_ALT})\\s+(\\d{1,2})(?:\\s+(.+))?$`,
+  'i',
+)
+
+/**
+ * Normalize a trend tick to "2 Mon" / "2 Mon 14:00".
+ * Prefers ISO date when provided; also rewrites legacy "Mon 2" labels.
+ */
+export function formatTrendAxisLabel(label, iso = null) {
+  const raw = String(label || '').trim()
+  const isoText = normalizeIsoDate(iso)
+  let hourSuffix = ''
+
+  if (isoText) {
+    const fromIso = dayWeekdayLabel(isoText)
+    if (raw) {
+      const legacy = raw.match(LEGACY_DAY_LABEL_RE)
+      if (legacy?.[3]) hourSuffix = ` ${legacy[3].trim()}`
+      else {
+        // "2 Mon 14:00" or bare trailing hour token
+        const already = raw.match(
+          new RegExp(`^\\d{1,2}\\s+(${WEEKDAY_ALT})(?:\\s+(.+))?$`, 'i'),
+        )
+        if (already?.[2]) hourSuffix = ` ${already[2].trim()}`
+        else if (/^\d{1,2}(?::\d{2})?$/.test(raw)) hourSuffix = ` ${raw}`
+      }
+    }
+    return `${fromIso}${hourSuffix}`
+  }
+
+  const legacy = raw.match(LEGACY_DAY_LABEL_RE)
+  if (legacy) {
+    const rest = legacy[3] ? ` ${legacy[3].trim()}` : ''
+    return `${legacy[2]} ${legacy[1]}${rest}`
+  }
+  return raw
 }
 
 /**
- * Apex `xaxis.group` bands when the series spans more than 3 calendar months.
- * `isoDates` must align 1:1 with chart categories (YYYY-MM-DD).
+ * Build day-axis categories aligned 1:1 with points.
+ * Uses ISO dates when present; otherwise rewrites legacy weekday-first labels.
+ */
+export function trendAxisCategories(isoDates, fallbackLabels = []) {
+  const dates = Array.isArray(isoDates) ? isoDates : []
+  const labels = Array.isArray(fallbackLabels) ? fallbackLabels : []
+  const n = Math.max(dates.length, labels.length)
+  const out = []
+  for (let i = 0; i < n; i += 1) {
+    out.push(formatTrendAxisLabel(labels[i], dates[i]))
+  }
+  return out
+}
+
+/** True when ISO dates cover more than one calendar month. */
+export function spansMultipleMonths(isoDates) {
+  return uniqueMonthCount(isoDates) > 1
+}
+
+/**
+ * Apex `xaxis.group` bands when the series spans more than one calendar month.
+ * Draws a second row under the axis with month names spanning that month's dates.
+ * Hidden for single-month ranges. `isoDates` must align 1:1 with categories (YYYY-MM-DD).
  */
 export function monthAxisGroups(isoDates, labelStyle = {}) {
   const dates = (isoDates || []).map(normalizeIsoDate).filter(Boolean)
@@ -143,7 +217,8 @@ export function monthAxisGroups(isoDates, labelStyle = {}) {
     }
   }
 
-  if (groups.length <= 3) return undefined
+  // Single calendar month — no under-axis month band.
+  if (groups.length <= 1) return undefined
 
   return {
     style: {

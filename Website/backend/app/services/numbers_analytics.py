@@ -378,7 +378,7 @@ def _build_revenue_series(
             {
                 "date": d.isoformat(),
                 "weekday": WEEKDAYS[d.weekday()],
-                "label": f"{WEEKDAYS[d.weekday()]} {d.day}",
+                "label": f"{d.day} {WEEKDAYS[d.weekday()]}",
                 "revenue": round(float(r["revenue"] or 0), 2),
                 "txn_count": int(r["txn_count"] or 0),
             }
@@ -797,8 +797,8 @@ def _trend_label(d: date, hour: str | None, *, span_days: int, use_hourly: bool)
         hour_text = str(hour or "")
         if span_days == 1:
             return hour_text
-        return f"{WEEKDAYS[d.weekday()]} {d.day} {hour_text}"
-    return f"{WEEKDAYS[d.weekday()]} {d.day}"
+        return f"{d.day} {WEEKDAYS[d.weekday()]} {hour_text}"
+    return f"{d.day} {WEEKDAYS[d.weekday()]}"
 
 
 def _stacked_series(
@@ -1489,7 +1489,7 @@ def _build_plaza_numbers_with_conn(
             if span_days == 1:
                 label = hour
             else:
-                label = f"{WEEKDAYS[d.weekday()]} {d.day} {hour}"
+                label = f"{d.day} {WEEKDAYS[d.weekday()]} {hour}"
             daily_trend.append(
                 {
                     "date": d.isoformat(),
@@ -1539,7 +1539,7 @@ def _build_plaza_numbers_with_conn(
                 {
                     "date": d.isoformat(),
                     "weekday": WEEKDAYS[d.weekday()],
-                    "label": f"{WEEKDAYS[d.weekday()]} {d.day}",
+                    "label": f"{d.day} {WEEKDAYS[d.weekday()]}",
                     "traffic": int(r["traffic"]),
                     "traffic_ly": ly_by_doy.get((d.month, d.day)),
                 }
@@ -1547,7 +1547,7 @@ def _build_plaza_numbers_with_conn(
 
     if win_start == win_end:
         range_label = (
-            f"{WEEKDAYS[win_start.weekday()]} {win_start.day} "
+            f"{win_start.day} {WEEKDAYS[win_start.weekday()]} "
             f"{win_start.strftime('%b %Y')}"
         )
     else:

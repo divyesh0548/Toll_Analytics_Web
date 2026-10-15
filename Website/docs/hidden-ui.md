@@ -3,13 +3,13 @@
 User-facing navigation and labels that were **hidden or renamed** without removing
 routes, pages, or APIs. Direct URLs still work unless noted.
 
-Last updated: 2026-10-13
+Last updated: 2026-10-15
 
 ## Feature flags (backend `.env`)
 
 | Flag | Default | Effect |
 |---|---|---|
-| `SHOW_EXCEPTION_UPLOADS` | `0` / false | When `1` / `true` / `yes` / `on`, show **Exceptions** / **Exception uploads** links for `/exceptions/uploads` (navbar, portfolio, File Upload page). Exposed to the browser via `/api/auth/me` → `features.show_exception_uploads`. |
+| `Development_Exceptions` | `0` / false | When `1` / `true` / `yes` / `on`: show **Exceptions** nav (`/exceptions/uploads`) and the Audit **Metrics source** dropdown (manual vs File Upload pipeline tables). When off: Audit always reads the original `audit_exception_*` tables from separate exception job runs. Legacy alias: `SHOW_EXCEPTION_UPLOADS`. API: `features.development_exceptions`. |
 
 ## Renamed UI (route/path unchanged)
 

@@ -14,8 +14,8 @@ import {
   formatMoney,
 } from '@/lib/chart-axis'
 import { cn, formatLocalDateTime } from '@/lib/utils'
-import { useTheme } from '@/components/theme-provider'
 import { useAuth } from '@/components/auth-provider'
+import { useTheme } from '@/components/theme-provider'
 
 function formatCount(value) {
   if (value == null) return '—'
@@ -245,7 +245,7 @@ function SpvRows({ spv, spvOpen, onToggleSpv }) {
 
 export function PortfolioPage() {
   const { theme } = useTheme()
-  const { showExceptionUploads } = useAuth()
+  const { developmentExceptions } = useAuth()
   const [companies, setCompanies] = useState([])
   const [volumeByCompany, setVolumeByCompany] = useState({})
   const [rollup, setRollup] = useState(null)
@@ -357,7 +357,7 @@ export function PortfolioPage() {
         description="Top companies by volume, with full expandable hierarchy below."
         actions={
           <>
-            {showExceptionUploads ? (
+            {developmentExceptions ? (
               <Button asChild variant="outline">
                 <a href="/exceptions/uploads" target="_blank" rel="noopener noreferrer">
                   Exception uploads

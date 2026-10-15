@@ -11,8 +11,12 @@ import {
 } from '@/components/plaza/numbers-tabs'
 import {
   LAC,
-  formatMoneyCompact,
   categoryXAxis,
+  dayWeekdayLabel,
+  formatMoneyCompact,
+  monthAxisGroups,
+  spansMultipleMonths,
+  trendAxisCategories,
 } from '@/lib/chart-axis'
 
 function revenueInLakhs(value) {
@@ -137,16 +141,10 @@ function dailyTrendRows(data) {
   const rows = revenueDaily
     .map((row) => {
       const date = String(row.date || '').slice(0, 10)
-      let label = row.label || date
-      if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        const d = new Date(`${date}T00:00:00`)
-        if (!Number.isNaN(d.getTime())) {
-          label = d.toLocaleDateString('en-GB', {
-            day: '2-digit',
-            month: 'short',
-          })
-        }
-      }
+      const label =
+        date && /^\d{4}-\d{2}-\d{2}$/.test(date)
+          ? dayWeekdayLabel(date)
+          : row.label || date
       return {
         key: date || label,
         label,
@@ -274,8 +272,24 @@ function CategorySharePie({ rows, valueKey, dark, valueFormatter }) {
 
 function MonthlyTrendChart({ rows, dark }) {
   const theme = chartTheme(dark)
-  const categories = rows.map((r) => r.label)
-  const xAxis = categoryXAxis(categories, { colors: theme.foreColor, fontSize: '10px' }, 6)
+  const isoDates = rows.map((r) => String(r.key || '').slice(0, 10))
+  const hasDailyIso =
+    isoDates.length === rows.length &&
+    isoDates.every((iso) => /^\d{4}-\d{2}-\d{2}$/.test(iso))
+  const multiMonth = hasDailyIso && spansMultipleMonths(isoDates)
+  const categories = trendAxisCategories(
+    hasDailyIso ? isoDates : [],
+    rows.map((r) => r.label),
+  )
+  // Show a label on every bar (day / month / year) — do not thin the axis.
+  const xAxis = categoryXAxis(
+    categories,
+    { colors: theme.foreColor, fontSize: '10px' },
+    Math.max(categories.length, 1),
+  )
+  const monthGroups = multiMonth
+    ? monthAxisGroups(isoDates, { colors: theme.foreColor })
+    : undefined
   // Distinct hues: cool blue bars (traffic) vs warm amber line (revenue)
   const barColor = dark ? '#60a5fa' : '#1d4ed8'
   const lineColor = dark ? '#fbbf24' : '#c2410c'
@@ -297,7 +311,12 @@ function MonthlyTrendChart({ rows, dark }) {
     },
     xaxis: {
       categories: xAxis.categories,
-      labels: xAxis.labels,
+      labels: {
+        ...xAxis.labels,
+        hideOverlappingLabels: false,
+        showDuplicates: true,
+      },
+      ...(monthGroups ? { group: monthGroups } : {}),
     },
     yaxis: [
       {

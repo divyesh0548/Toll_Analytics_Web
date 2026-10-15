@@ -6,9 +6,9 @@ import { ChartInset } from '@/components/ui/chart-inset'
 import {
   categoryTooltipXFormatter,
   categoryXAxis,
-  dayMonthLabel,
   monthAxisGroups,
-  uniqueMonthCount,
+  spansMultipleMonths,
+  trendAxisCategories,
 } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 
@@ -152,18 +152,17 @@ function StackedCategoryChart({
 }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
+  const cats = categories || []
   const alignedDates =
-    !horizontal && Array.isArray(isoDates) && isoDates.length === (categories || []).length
+    !horizontal && Array.isArray(isoDates) && isoDates.length === cats.length
       ? isoDates
       : null
-  const fullCategories =
-    alignedDates && uniqueMonthCount(alignedDates) > 3
-      ? alignedDates.map((iso) => dayMonthLabel(iso))
-      : categories || []
+  const fullCategories = trendAxisCategories(alignedDates || [], cats)
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
-  const monthGroups = alignedDates
-    ? monthAxisGroups(alignedDates, theme.labelStyle)
-    : undefined
+  const monthGroups =
+    alignedDates && spansMultipleMonths(alignedDates)
+      ? monthAxisGroups(alignedDates, theme.labelStyle)
+      : undefined
   const displaySeries = (series || [])
     .filter((row) => row && Array.isArray(row.data))
     .map((row) => ({
@@ -368,16 +367,20 @@ function SimpleBarChart({
 function GapTrendChart({ trend, dark, height = 260 }) {
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
-  const isoDates = (trend || []).map((row) => row.date)
-  const hasAlignedDates = isoDates.every(Boolean) && isoDates.length === (trend || []).length
-  const fullCategories =
-    hasAlignedDates && uniqueMonthCount(isoDates) > 3
-      ? isoDates.map((iso) => dayMonthLabel(iso))
-      : (trend || []).map((row) => row.label)
+  const rows = trend || []
+  const isoDates = rows.map((row) => row.date)
+  const fallbackLabels = rows.map((row) => row.label)
+  const hasAlignedDates =
+    isoDates.length === rows.length && isoDates.every(Boolean)
+  const fullCategories = trendAxisCategories(
+    hasAlignedDates ? isoDates : [],
+    fallbackLabels,
+  )
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
-  const monthGroups = hasAlignedDates
-    ? monthAxisGroups(isoDates, theme.labelStyle)
-    : undefined
+  const monthGroups =
+    hasAlignedDates && spansMultipleMonths(isoDates)
+      ? monthAxisGroups(isoDates, theme.labelStyle)
+      : undefined
   const options = {
     ...baseChartOptions(dark),
     chart: {
@@ -637,10 +640,10 @@ export function LayoutGap({ data, dark }) {
                 <thead>
                   <tr>
                     <th>Lane</th>
-                    <th>Avg</th>
-                    <th>Min</th>
-                    <th>Max</th>
-                    <th>Gaps &lt; 2s</th>
+                    <th className="num">Avg</th>
+                    <th className="num">Min</th>
+                    <th className="num">Max</th>
+                    <th className="num">Gaps &lt; 2s</th>
                   </tr>
                 </thead>
                 <tbody>

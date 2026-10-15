@@ -26,11 +26,56 @@ from app.services.pipeline_dependency_catalog import (
 ANALYTICS_PROGRAM_CODE = ANALYTICS_VRN_ETC_PROGRAM["code"]
 ANALYTICS_SLOT_MAP = {"vrn": "vrn", "etc": "etc"}
 
+# Match exception_job_worker max_parallel: keep this many exception steps in flight.
+# (Plaza analytics is a separate parallel track and shares the same workers.)
+PIPELINE_EXCEPTION_MAX_PARALLEL = 2
+
 logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def prune_missing_monthly_inputs(
+    plaza_identifier: str, year: int, month: int
+) -> int:
+    """
+    Drop DB rows for monthly inputs whose S3 objects are confirmed gone (404).
+
+    Only deletes on definitive NotFound — never on timeouts/auth blips, so a
+    bad HeadObject does not wipe real uploads and leave ghost UI state.
+    """
+    from app.services.exception_job_s3 import s3_key_confirmed_missing
+
+    rows = (
+        PlazaMonthlyExceptionInput.query.filter_by(
+            plaza_identifier=plaza_identifier,
+            year=int(year),
+            month=int(month),
+        )
+        .order_by(PlazaMonthlyExceptionInput.id.asc())
+        .all()
+    )
+    removed = 0
+    for row in rows:
+        missing = s3_key_confirmed_missing(row.s3_key)
+        if missing is not True:
+            continue
+        logger.warning(
+            "Pruning missing monthly input id=%s plaza=%s %s-%02d slot=%s key=%s",
+            row.id,
+            plaza_identifier,
+            year,
+            month,
+            row.slot,
+            row.s3_key,
+        )
+        db.session.delete(row)
+        removed += 1
+    if removed:
+        db.session.commit()
+    return removed
 
 
 def present_slots_for_period(plaza_identifier: str, year: int, month: int) -> set[str]:
@@ -48,6 +93,8 @@ def present_slots_for_period(plaza_identifier: str, year: int, month: int) -> se
 
 
 def period_status(plaza_identifier: str, year: int, month: int) -> dict:
+    # Only remove rows when S3 returns a hard 404 (not on transient errors).
+    pruned = prune_missing_monthly_inputs(plaza_identifier, year, month)
     present = present_slots_for_period(plaza_identifier, year, month)
     files = (
         PlazaMonthlyExceptionInput.query.filter_by(
@@ -69,6 +116,7 @@ def period_status(plaza_identifier: str, year: int, month: int) -> dict:
         "analytics_ready": analytics_ready,
         "analytics_label": ANALYTICS_VRN_ETC_PROGRAM.get("label")
         or "Plaza analytics (VRN / ETC)",
+        "pruned_missing_files": int(pruned),
     }
 
 
@@ -92,6 +140,7 @@ def create_batch(
         resolved_key = resolve_pipeline_plaza_key(plaza_identifier)
     pipeline_plaza_key = resolved_key
 
+    prune_missing_monthly_inputs(plaza_identifier, year, month)
     present = present_slots_for_period(plaza_identifier, year, month)
     availability = {
         p["code"]: p for p in evaluate_program_availability(present)
@@ -245,51 +294,103 @@ def is_pipeline_analytics_job(job_uuid: str) -> bool:
     )
 
 
-def enqueue_next_pipeline_step(batch: ExceptionPipelineBatch) -> ExceptionJob | None:
-    """Queue the next pending step as a normal ExceptionJob (pipeline env later)."""
-    if str(batch.status or "") == "cancelled":
-        return None
-    step = (
-        ExceptionPipelineBatchStep.query.filter_by(batch_id=batch.id, status="pending")
-        .order_by(ExceptionPipelineBatchStep.sort_order.asc())
-        .first()
+def _active_exception_step_count(batch: ExceptionPipelineBatch) -> int:
+    return (
+        ExceptionPipelineBatchStep.query.filter(
+            ExceptionPipelineBatchStep.batch_id == batch.id,
+            ExceptionPipelineBatchStep.status.in_(("queued", "running")),
+        ).count()
     )
-    if step is None:
-        if str(batch.status or "") == "cancelled":
-            return None
-        batch.status = "succeeded"
-        batch.progress_message = "All selected exception programs finished."
-        batch.finished_at = _utc_now()
-        db.session.commit()
-        return None
 
+
+def _producer_codes_for_slot(slot: str) -> list[str]:
+    from app.services.pipeline_dependency_catalog import list_pipeline_programs
+
+    key = str(slot or "").strip()
+    return [
+        p["code"]
+        for p in list_pipeline_programs()
+        if key in (p.get("produces_slots") or [])
+    ]
+
+
+def _pipeline_step_readiness(
+    batch: ExceptionPipelineBatch,
+    step: ExceptionPipelineBatchStep,
+    present: set[str],
+) -> tuple[str, list[str]]:
+    """
+    Returns (state, missing_slots) where state is:
+      ready   — required monthly slots are present; can queue now
+      waiting — missing slots may still be produced by an in-batch step
+      blocked — missing slots cannot be produced (or producer already failed)
+    """
     program = get_pipeline_program(step.program_code)
     if program is None:
-        step.status = "failed"
-        step.error_message = f"Unknown program {step.program_code}"
-        step.finished_at = _utc_now()
-        db.session.commit()
-        return enqueue_next_pipeline_step(batch)
+        return "blocked", [f"unknown:{step.program_code}"]
 
-    # Re-check deps (Full Exempt may have just produced full_exempt_final).
-    present = present_slots_for_period(batch.plaza_identifier, batch.year, batch.month)
-    if not set(program.get("required_slots") or []).issubset(present):
-        missing = [
-            s for s in (program.get("required_slots") or []) if s not in present
+    required = list(program.get("required_slots") or [])
+    missing = [s for s in required if s not in present]
+    if not missing:
+        return "ready", []
+
+    steps_by_code = {s.program_code: s for s in (batch.steps or [])}
+    for slot in missing:
+        producers = _producer_codes_for_slot(slot)
+        if not producers:
+            return "blocked", missing
+        producer_steps = [
+            steps_by_code[code] for code in producers if code in steps_by_code
         ]
-        step.status = "failed"
-        step.error_message = f"Missing required slots: {', '.join(missing)}"
-        step.finished_at = _utc_now()
-        if not batch.continue_on_failure:
-            batch.status = "failed"
-            batch.error_message = step.error_message
-            batch.finished_at = _utc_now()
-            db.session.commit()
-            return None
-        db.session.commit()
-        return enqueue_next_pipeline_step(batch)
+        if not producer_steps:
+            # Needed output is not in this run and not on disk yet.
+            return "blocked", missing
+        if any(
+            str(ps.status or "") in {"pending", "queued", "running"}
+            for ps in producer_steps
+        ):
+            return "waiting", missing
+        if not any(str(ps.status or "") == "succeeded" for ps in producer_steps):
+            return "blocked", missing
+        # Producer succeeded but slot still absent (registration failed).
+        return "blocked", missing
+    return "blocked", missing
 
-    pipeline_key = batch.pipeline_plaza_key or batch.plaza.plaza_name or "PLAZA"
+
+def _fail_pipeline_step(
+    batch: ExceptionPipelineBatch,
+    step: ExceptionPipelineBatchStep,
+    message: str,
+) -> bool:
+    """
+    Mark step failed. Returns False when the whole batch was failed/stopped
+    (caller should not enqueue more).
+    """
+    now = _utc_now()
+    step.status = "failed"
+    step.error_message = message
+    step.finished_at = now
+    if batch.continue_on_failure:
+        return True
+    batch.status = "failed"
+    batch.error_message = message
+    batch.finished_at = now
+    for other in batch.steps:
+        if other.status == "pending":
+            other.status = "cancelled"
+            other.finished_at = now
+            other.error_message = other.error_message or "Stopped after earlier failure"
+    return False
+
+
+def _queue_pipeline_step_job(
+    batch: ExceptionPipelineBatch,
+    step: ExceptionPipelineBatchStep,
+    program: dict,
+) -> ExceptionJob:
+    pipeline_key = batch.pipeline_plaza_key or (
+        batch.plaza.plaza_name if batch.plaza else None
+    ) or "PLAZA"
     job = ExceptionJob(
         job_uuid=str(uuid.uuid4()),
         program_code=step.program_code,
@@ -311,12 +412,134 @@ def enqueue_next_pipeline_step(batch: ExceptionPipelineBatch) -> ExceptionJob | 
     step.status = "queued"
     step.child_job_uuid = job.job_uuid
     step.started_at = _utc_now()
-    batch.status = "running"
-    batch.progress_message = f"Queued {program.get('label') or step.program_code}"
-    if batch.started_at is None:
-        batch.started_at = _utc_now()
-    db.session.commit()
     return job
+
+
+def enqueue_ready_pipeline_steps(
+    batch: ExceptionPipelineBatch,
+    *,
+    max_parallel: int = PIPELINE_EXCEPTION_MAX_PARALLEL,
+) -> list[ExceptionJob]:
+    """
+    Queue up to max_parallel ready exception steps for this batch.
+
+    Independent programs (E04/E05/…) can run together. Dependents such as E15
+    stay pending until required produced slots (e.g. full_exempt_final) exist.
+    """
+    if str(batch.status or "") == "cancelled":
+        return []
+
+    limit = max(1, int(max_parallel or PIPELINE_EXCEPTION_MAX_PARALLEL))
+    queued: list[ExceptionJob] = []
+
+    while True:
+        active = _active_exception_step_count(batch)
+        if active >= limit:
+            break
+
+        pending = (
+            ExceptionPipelineBatchStep.query.filter_by(
+                batch_id=batch.id, status="pending"
+            )
+            .order_by(ExceptionPipelineBatchStep.sort_order.asc())
+            .all()
+        )
+        if not pending:
+            if active == 0 and str(batch.status or "") != "cancelled":
+                batch.status = "succeeded"
+                batch.progress_message = "All selected exception programs finished."
+                batch.finished_at = _utc_now()
+                db.session.commit()
+            break
+
+        present = present_slots_for_period(
+            batch.plaza_identifier, batch.year, batch.month
+        )
+        chosen: ExceptionPipelineBatchStep | None = None
+        chosen_program: dict | None = None
+        saw_waiting = False
+
+        for step in pending:
+            program = get_pipeline_program(step.program_code)
+            if program is None:
+                keep_going = _fail_pipeline_step(
+                    batch,
+                    step,
+                    f"Unknown program {step.program_code}",
+                )
+                db.session.commit()
+                if not keep_going:
+                    return queued
+                continue
+
+            state, missing = _pipeline_step_readiness(batch, step, present)
+            if state == "ready":
+                chosen = step
+                chosen_program = program
+                break
+            if state == "waiting":
+                saw_waiting = True
+                continue
+            keep_going = _fail_pipeline_step(
+                batch,
+                step,
+                f"Missing required slots: {', '.join(missing) or 'unknown'}",
+            )
+            db.session.commit()
+            if not keep_going:
+                return queued
+
+        if chosen is None or chosen_program is None:
+            # Nothing ready: either waiting on in-flight/pending producers, or
+            # only blocked steps (already failed above).
+            if (
+                active == 0
+                and not saw_waiting
+                and str(batch.status or "") not in {"failed", "cancelled"}
+            ):
+                # No pending left that can ever run.
+                still_pending = (
+                    ExceptionPipelineBatchStep.query.filter_by(
+                        batch_id=batch.id, status="pending"
+                    ).count()
+                )
+                if still_pending == 0:
+                    batch.status = "succeeded"
+                    batch.progress_message = (
+                        "All selected exception programs finished."
+                    )
+                    batch.finished_at = _utc_now()
+                    db.session.commit()
+            break
+
+        job = _queue_pipeline_step_job(batch, chosen, chosen_program)
+        queued.append(job)
+        batch.status = "running"
+        if batch.started_at is None:
+            batch.started_at = _utc_now()
+
+        active_labels = []
+        for s in batch.steps:
+            if s.status in {"queued", "running"}:
+                prog = get_pipeline_program(s.program_code)
+                active_labels.append(
+                    (prog or {}).get("label") or s.program_code
+                )
+        batch.progress_message = (
+            f"Running {len(active_labels)} in parallel: "
+            + ", ".join(active_labels)
+            if len(active_labels) > 1
+            else f"Queued {active_labels[0] if active_labels else chosen.program_code}"
+        )
+        db.session.commit()
+
+    return queued
+
+
+def enqueue_next_pipeline_step(batch: ExceptionPipelineBatch) -> ExceptionJob | None:
+    """Queue ready exception steps (up to worker parallelism). Returns last queued job."""
+    jobs = enqueue_ready_pipeline_steps(batch)
+    return jobs[-1] if jobs else None
 
 
 def start_batch(

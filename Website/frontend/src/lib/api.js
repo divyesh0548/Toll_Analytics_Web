@@ -293,6 +293,13 @@ export function getExceptionPipelineBatch(batchUuid) {
   return request(`/api/exception-pipeline/batches/${batchUuid}`)
 }
 
+export function listExceptionPipelineBatches({ plazaIdentifier } = {}) {
+  const params = new URLSearchParams()
+  if (plazaIdentifier) params.set('plaza_identifier', plazaIdentifier)
+  const q = params.toString()
+  return request(`/api/exception-pipeline/batches${q ? `?${q}` : ''}`)
+}
+
 export function getPlazaCalendarEvents(plazaIdentifier, { start, end, eventType } = {}) {
   const params = new URLSearchParams()
   if (start) params.set('start', start)

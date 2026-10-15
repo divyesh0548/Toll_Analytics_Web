@@ -29,17 +29,18 @@ _SCRAPE_MODE_PN_RE = re.compile(r"\|sm=(live|export)$", re.I)
 
 
 def _protected_output_s3_keys() -> set[str]:
-    """S3 keys that must never be deleted (audit / monthly / pipeline outputs)."""
+    """S3 keys that must never be deleted (audit / monthly inputs / pipeline outputs)."""
     staging_keys = {
         row.s3_key
         for row in AuditExceptionOutputFile.query.filter_by(is_final_output=False).all()
         if row.s3_key
     }
-    monthly_exempt_keys = {
+    # All monthly File Upload inputs (vrn/etc/pass/… + full_exempt_final).
+    # Pipeline jobs copy these same keys onto ExceptionJobFile; deleting a job
+    # must not wipe the shared monthly objects the period UI still references.
+    monthly_input_keys = {
         row.s3_key
-        for row in PlazaMonthlyExceptionInput.query.filter_by(
-            slot="full_exempt_final"
-        ).all()
+        for row in PlazaMonthlyExceptionInput.query.all()
         if row.s3_key
     }
     final_output_keys = {
@@ -52,7 +53,7 @@ def _protected_output_s3_keys() -> set[str]:
         for row in PipelineAuditExceptionOutputFile.query.all()
         if row.s3_key
     }
-    return staging_keys | monthly_exempt_keys | final_output_keys | pipeline_output_keys
+    return staging_keys | monthly_input_keys | final_output_keys | pipeline_output_keys
 
 
 def _local_job_workspace(job: ExceptionJob) -> Path | None:
@@ -226,33 +227,8 @@ def cleanup_expired_exception_jobs(*, retention_days: int = JOB_RETENTION_DAYS) 
     job_ids = [j.id for j in jobs]
     job_uuids = {j.job_uuid for j in jobs if j.job_uuid}
 
-    # Inputs only — never touch registered exception outputs.
-    staging_keys = {
-        row.s3_key
-        for row in AuditExceptionOutputFile.query.filter_by(is_final_output=False).all()
-        if row.s3_key
-    }
-    monthly_exempt_keys = {
-        row.s3_key
-        for row in PlazaMonthlyExceptionInput.query.filter_by(
-            slot="full_exempt_final"
-        ).all()
-        if row.s3_key
-    }
-    # Final monthly outputs must stay downloadable from the audit panel.
-    final_output_keys = {
-        row.s3_key
-        for row in AuditExceptionOutputFile.query.filter_by(is_final_output=True).all()
-        if row.s3_key
-    }
-    pipeline_output_keys = {
-        row.s3_key
-        for row in PipelineAuditExceptionOutputFile.query.all()
-        if row.s3_key
-    }
-    protected = (
-        staging_keys | monthly_exempt_keys | final_output_keys | pipeline_output_keys
-    )
+    # Inputs only — never touch registered monthly inputs / exception outputs.
+    protected = _protected_output_s3_keys()
 
     file_rows = (
         ExceptionJobFile.query.filter(ExceptionJobFile.job_id.in_(job_ids)).all()

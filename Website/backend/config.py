@@ -39,8 +39,11 @@ class Config:
     JSON_SORT_KEYS = False
     # Large exception job inputs (ETC/VRN); unset = no Flask limit.
     MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024**3)))
-    # Show classic per-exception uploads UI (/exceptions/uploads) in nav.
-    SHOW_EXCEPTION_UPLOADS = _env_flag("SHOW_EXCEPTION_UPLOADS", False)
+    # Development: classic per-exception uploads UI + Audit metrics-source toggle.
+    # Prefer Development_Exceptions; SHOW_EXCEPTION_UPLOADS kept as legacy alias.
+    DEVELOPMENT_EXCEPTIONS = _env_flag("Development_Exceptions", False) or _env_flag(
+        "SHOW_EXCEPTION_UPLOADS", False
+    )
 
 
 class DevelopmentConfig(Config):

@@ -509,12 +509,17 @@ function MonthYearApplyControls({
   }, [availableYears, availableMonths, monthValue])
 
   const monthsForYear = useMemo(() => {
+    // Month name only — year is chosen in the separate Year dropdown.
     const list = (availableMonths || [])
       .filter((m) => String(m.value || m).startsWith(`${draftYear}-`))
-      .map((m) => ({
-        value: String(m.value || m).slice(5, 7),
-        label: m.label || MONTH_NAMES[Number(String(m.value || m).slice(5, 7)) - 1],
-      }))
+      .map((m) => {
+        const mm = String(m.value || m).slice(5, 7)
+        const idx = Number(mm) - 1
+        return {
+          value: mm,
+          label: MONTH_NAMES[idx] || mm,
+        }
+      })
       .sort((a, b) => a.value.localeCompare(b.value))
     if (list.length) return list
     return MONTH_NAMES.map((name, idx) => ({

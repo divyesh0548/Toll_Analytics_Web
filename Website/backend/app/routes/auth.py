@@ -26,10 +26,12 @@ def _generate_temp_password(length: int = 14) -> str:
 
 
 def _ui_features() -> dict:
+    enabled = bool(current_app.config.get("DEVELOPMENT_EXCEPTIONS", False))
     return {
-        "show_exception_uploads": bool(
-            current_app.config.get("SHOW_EXCEPTION_UPLOADS", False)
-        ),
+        # Prefer this name in the UI.
+        "development_exceptions": enabled,
+        # Legacy alias — keep until older frontends are retired.
+        "show_exception_uploads": enabled,
     }
 
 

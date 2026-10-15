@@ -23,13 +23,13 @@ import {
   MAX_X_AXIS_LABELS,
   categoryTooltipXFormatter,
   categoryXAxis,
-  dayMonthLabel,
   formatMoneyCompact,
   formatScaledRevenue,
   monthAxisGroups,
   resolveRevenueScale,
   scaleRevenueValues,
-  uniqueMonthCount,
+  spansMultipleMonths,
+  trendAxisCategories,
 } from '@/lib/chart-axis'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/components/theme-provider'
@@ -40,9 +40,46 @@ const PERIOD_TABS = [
   { id: 'ytd', label: 'Year' },
 ]
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+]
+
 const LANE_COLLAPSE_COUNT = 6
 /** Inclusive calendar days required for the Day interval. */
 const MIN_DAY_RANGE_DAYS = 5
+
+function splitYearMonth(value) {
+  const text = String(value || '')
+  const year = text.slice(0, 4)
+  const month = text.slice(5, 7)
+  return {
+    year: /^\d{4}$/.test(year) ? year : '',
+    month: /^\d{2}$/.test(month) ? month : '',
+  }
+}
+
+function joinYearMonth(year, month) {
+  if (!year || !month) return ''
+  return `${year}-${month}`
+}
+
+function monthNameOnly(ymOrMonth) {
+  const text = String(ymOrMonth || '')
+  const mm = text.includes('-') ? text.slice(5, 7) : text.slice(0, 2)
+  const idx = Number(mm) - 1
+  return MONTH_NAMES[idx] || mm
+}
 
 function parseIsoDate(iso) {
   if (!iso) return null
@@ -96,9 +133,6 @@ export function PeriodRangeControls({
     return iso >= addDaysIso(draft.start, MIN_DAY_RANGE_DAYS - 1)
   })
 
-  const toMonthOptions = months.filter(
-    (m) => !draft.start || String(m.value) >= String(draft.start),
-  )
   const toYearOptions = years.filter(
     (y) => !draft.start || String(y) >= String(draft.start),
   )
@@ -135,15 +169,6 @@ export function PeriodRangeControls({
     onDraftChange({ ...draft, end: iso })
   }
 
-  function handleFromMonth(value) {
-    const next = { ...draft, start: value }
-    if (!next.end || next.end < value) {
-      const fallback = months.find((m) => String(m.value) >= value)
-      next.end = fallback ? String(fallback.value) : value
-    }
-    onDraftChange(next)
-  }
-
   function handleFromYear(value) {
     const next = { ...draft, start: value }
     if (!next.end || String(next.end) < String(value)) {
@@ -153,22 +178,97 @@ export function PeriodRangeControls({
     onDraftChange(next)
   }
 
-  const monthOptions = useMemo(
-    () => months.map((m) => ({ value: String(m.value), label: m.label })),
-    [months],
-  )
-  const toMonthSelectOptions = useMemo(
-    () => toMonthOptions.map((m) => ({ value: String(m.value), label: m.label })),
-    [toMonthOptions],
-  )
+  const fromYm = splitYearMonth(draft.start)
+  const toYm = splitYearMonth(draft.end)
+
+  const monthYearOptions = useMemo(() => {
+    const fromAvail = [
+      ...new Set((months || []).map((m) => String(m.value).slice(0, 4)).filter(Boolean)),
+    ].sort()
+    if (years?.length) {
+      return years.map((y) => ({ value: String(y), label: String(y) }))
+    }
+    return fromAvail.map((y) => ({ value: y, label: y }))
+  }, [years, months])
+
+  const toYearSelectOptions = useMemo(() => {
+    if (period === 'ytd') {
+      return toYearOptions.map((y) => ({ value: String(y), label: String(y) }))
+    }
+    // Month interval: To year cannot be before From year
+    return monthYearOptions.filter(
+      (y) => !fromYm.year || String(y.value) >= String(fromYm.year),
+    )
+  }, [period, toYearOptions, monthYearOptions, fromYm.year])
+
   const yearOptions = useMemo(
     () => years.map((y) => ({ value: String(y), label: String(y) })),
     [years],
   )
-  const toYearSelectOptions = useMemo(
-    () => toYearOptions.map((y) => ({ value: String(y), label: String(y) })),
-    [toYearOptions],
+
+  function monthsInYear(year) {
+    const list = (months || [])
+      .filter((m) => String(m.value).startsWith(`${year}-`))
+      .map((m) => {
+        const mm = String(m.value).slice(5, 7)
+        return { value: mm, label: monthNameOnly(mm) }
+      })
+      .sort((a, b) => a.value.localeCompare(b.value))
+    if (list.length) return list
+    return MONTH_NAMES.map((label, idx) => ({
+      value: String(idx + 1).padStart(2, '0'),
+      label,
+    }))
+  }
+
+  const fromMonthOptions = useMemo(
+    () => (fromYm.year ? monthsInYear(fromYm.year) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- monthsInYear closes over months
+    [fromYm.year, months],
   )
+
+  const toMonthOptionsSplit = useMemo(() => {
+    if (!toYm.year) return []
+    let list = monthsInYear(toYm.year)
+    if (fromYm.year && toYm.year === fromYm.year && fromYm.month) {
+      list = list.filter((m) => m.value >= fromYm.month)
+    }
+    return list
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toYm.year, fromYm.year, fromYm.month, months])
+
+  function ensureEndNotBeforeStart(startYm, endYm) {
+    if (!startYm) return endYm || startYm
+    if (!endYm || endYm < startYm) {
+      const fallback = months.find((m) => String(m.value) >= startYm)
+      return fallback ? String(fallback.value) : startYm
+    }
+    return endYm
+  }
+
+  function handleFromYearMonth(year, month) {
+    const start = joinYearMonth(year, month)
+    if (!start) {
+      onDraftChange({ ...draft, start: '' })
+      return
+    }
+    const end = ensureEndNotBeforeStart(start, draft.end)
+    onDraftChange({ ...draft, start, end })
+  }
+
+  function handleToYearMonth(year, month) {
+    const end = joinYearMonth(year, month)
+    onDraftChange({ ...draft, end })
+  }
+
+  function pickMonthInYear(year, preferredMonth) {
+    const opts = monthsInYear(year)
+    if (!opts.length) return preferredMonth || ''
+    if (preferredMonth && opts.some((m) => m.value === preferredMonth)) {
+      return preferredMonth
+    }
+    return opts[opts.length - 1].value
+  }
 
   return (
     <div
@@ -212,26 +312,57 @@ export function PeriodRangeControls({
 
       {period === 'mtd' && (
         <>
+          <label className="min-w-[6.5rem] space-y-1">
+            <span className="block text-small text-muted-foreground">From year</span>
+            <SearchableSelect
+              options={monthYearOptions}
+              value={fromYm.year}
+              onChange={(year) => {
+                const month = pickMonthInYear(year, fromYm.month)
+                handleFromYearMonth(year, month)
+              }}
+              placeholder="Year"
+              searchPlaceholder="Search year…"
+              disabled={disabled}
+            />
+          </label>
           <label className="min-w-[9rem] space-y-1">
             <span className="block text-small text-muted-foreground">From month</span>
             <SearchableSelect
-              options={monthOptions}
-              value={draft.start || ''}
-              onChange={(value) => handleFromMonth(value)}
+              options={fromMonthOptions}
+              value={fromYm.month}
+              onChange={(month) => handleFromYearMonth(fromYm.year, month)}
               placeholder="Month"
               searchPlaceholder="Search month…"
+              disabled={disabled || !fromYm.year}
+            />
+          </label>
+          <label className="min-w-[6.5rem] space-y-1">
+            <span className="block text-small text-muted-foreground">To year</span>
+            <SearchableSelect
+              options={toYearSelectOptions}
+              value={toYm.year}
+              onChange={(year) => {
+                let month = pickMonthInYear(year, toYm.month)
+                if (fromYm.year && year === fromYm.year && fromYm.month && month < fromYm.month) {
+                  month = pickMonthInYear(year, fromYm.month)
+                }
+                handleToYearMonth(year, month)
+              }}
+              placeholder="Year"
+              searchPlaceholder="Search year…"
               disabled={disabled}
             />
           </label>
           <label className="min-w-[9rem] space-y-1">
             <span className="block text-small text-muted-foreground">To month</span>
             <SearchableSelect
-              options={toMonthSelectOptions}
-              value={draft.end || ''}
-              onChange={(value) => onDraftChange({ ...draft, end: value })}
+              options={toMonthOptionsSplit}
+              value={toYm.month}
+              onChange={(month) => handleToYearMonth(toYm.year, month)}
               placeholder="Month"
               searchPlaceholder="Search month…"
-              disabled={disabled}
+              disabled={disabled || !toYm.year}
             />
           </label>
         </>
@@ -333,12 +464,14 @@ function RevenueTrafficChart({ revenueDaily, trafficDaily, dark, height = 300 })
   }
 
   const isoDates = points.map((p) => p.date)
-  const fullCategories =
-    uniqueMonthCount(isoDates) > 3
-      ? isoDates.map((iso) => dayMonthLabel(iso))
-      : points.map((p) => p.label)
+  const fullCategories = trendAxisCategories(
+    isoDates.every(Boolean) ? isoDates : [],
+    points.map((p) => p.label),
+  )
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle)
-  const monthGroups = monthAxisGroups(isoDates, theme.labelStyle)
+  const monthGroups = spansMultipleMonths(isoDates)
+    ? monthAxisGroups(isoDates, theme.labelStyle)
+    : undefined
   const rawRevenue = points.map((p) => p.revenue)
   const revenueScale = resolveRevenueScale(rawRevenue)
   const scaledRevenue = scaleRevenueValues(rawRevenue, revenueScale)
@@ -424,18 +557,21 @@ function RevenueBarChart({
   }
   const colors = chartColors(dark)
   const theme = chartTheme(dark)
-  const isoDates = rows.map((r) => r.date).filter(Boolean)
-  const hasAlignedDates = isoDates.length === rows.length
-  const fullCategories = hasAlignedDates && uniqueMonthCount(isoDates) > 3
-    ? isoDates.map((iso) => dayMonthLabel(iso))
-    : rows.map((r) => r.label)
+  const isoDates = rows.map((r) => r.date)
+  const hasAlignedDates =
+    isoDates.length === rows.length && isoDates.every(Boolean)
+  const fullCategories = trendAxisCategories(
+    hasAlignedDates ? isoDates : [],
+    rows.map((r) => r.label),
+  )
   const xAxis = categoryXAxis(fullCategories, theme.labelStyle, maxLabels)
   const rawValues = rows.map((r) => Number(r.revenue) || 0)
   const revenueScale = resolveRevenueScale(rawValues)
   const values = scaleRevenueValues(rawValues, revenueScale)
-  const monthGroups = hasAlignedDates
-    ? monthAxisGroups(isoDates, theme.labelStyle)
-    : undefined
+  const monthGroups =
+    hasAlignedDates && spansMultipleMonths(isoDates)
+      ? monthAxisGroups(isoDates, theme.labelStyle)
+      : undefined
 
   const options = {
     ...baseChartOptions(dark),

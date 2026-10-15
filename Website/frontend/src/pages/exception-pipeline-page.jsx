@@ -1,23 +1,41 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/ui/page-header'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { useToast } from '@/components/toast-provider'
 import {
   createExceptionPipelineBatch,
   deleteExceptionPipelineInput,
   getExceptionPipelineBatch,
   getExceptionPipelineCatalog,
   getExceptionPipelinePeriod,
+  listExceptionPipelineBatches,
   listPlazas,
   startExceptionPipelineBatch,
   stopExceptionPipelineBatch,
   uploadExceptionPipelineInput,
 } from '@/lib/api'
-import { useAuth } from '@/components/auth-provider'
+
+function batchIsActive(batch) {
+  if (!batch) return false
+  if (['queued', 'running'].includes(String(batch.status || ''))) return true
+  return ['queued', 'running'].includes(String(batch.analytics?.status || ''))
+}
+
+function pickActiveBatchForPeriod(batches, year, month) {
+  const y = Number(year)
+  const m = Number(month)
+  const matches = (Array.isArray(batches) ? batches : []).filter(
+    (b) => Number(b.year) === y && Number(b.month) === m && batchIsActive(b),
+  )
+  if (!matches.length) return null
+  // API returns newest first; keep that order.
+  return matches[0]
+}
 
 const MONTHS = [
   { value: 1, label: 'Jan' },
@@ -35,7 +53,7 @@ const MONTHS = [
 ]
 
 export function ExceptionPipelinePage() {
-  const { showExceptionUploads } = useAuth()
+  const { showToast } = useToast()
   const now = new Date()
   const [plazas, setPlazas] = useState([])
   const [catalog, setCatalog] = useState(null)
@@ -46,11 +64,12 @@ export function ExceptionPipelinePage() {
   const [selectedCodes, setSelectedCodes] = useState([])
   const [runAnalytics, setRunAnalytics] = useState(true)
   const [pendingBySlot, setPendingBySlot] = useState({})
+  const [pendingRemoveIds, setPendingRemoveIds] = useState(() => new Set())
   const [batch, setBatch] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [periodLoading, setPeriodLoading] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
 
   const uploadSlots = useMemo(
     () => (catalog?.input_slots || []).filter((s) => s.user_upload),
@@ -68,7 +87,8 @@ export function ExceptionPipelinePage() {
     (sum, [, files]) => sum + files.length,
     0,
   )
-  const hasPending = pendingCount > 0
+  const removeCount = pendingRemoveIds.size
+  const hasUnsavedChanges = pendingCount > 0 || removeCount > 0
 
   useEffect(() => {
     let active = true
@@ -92,49 +112,79 @@ export function ExceptionPipelinePage() {
 
   useEffect(() => {
     setPendingBySlot({})
+    setPendingRemoveIds(new Set())
     setBatch(null)
-    setNotice('')
   }, [plazaIdentifier, year, month])
 
   useEffect(() => {
     if (!plazaIdentifier) {
       setPeriod(null)
+      setBatch(null)
+      setPeriodLoading(false)
       return undefined
     }
     let active = true
+    setPeriodLoading(true)
+    setPeriod(null)
     ;(async () => {
       try {
-        const data = await getExceptionPipelinePeriod({
-          plazaIdentifier,
-          year,
-          month,
-        })
+        const [data, batchesRes] = await Promise.all([
+          getExceptionPipelinePeriod({
+            plazaIdentifier,
+            year,
+            month,
+          }),
+          listExceptionPipelineBatches({ plazaIdentifier }),
+        ])
         if (!active) return
         setPeriod(data)
-        setSelectedCodes((prev) => {
-          const enabled = new Set(
-            (data.programs || []).filter((p) => p.enabled).map((p) => p.code),
-          )
-          const kept = prev.filter((c) => enabled.has(c))
-          return kept.length ? kept : Array.from(enabled)
-        })
+        const restored = pickActiveBatchForPeriod(
+          batchesRes?.batches,
+          year,
+          month,
+        )
+        setBatch(restored)
+        if (restored) {
+          const stepCodes = (restored.steps || [])
+            .map((s) => s.program_code)
+            .filter(Boolean)
+          setSelectedCodes(stepCodes)
+          setRunAnalytics(Boolean(restored.analytics_job_uuid || restored.analytics))
+        } else {
+          setSelectedCodes((prev) => {
+            const enabled = new Set(
+              (data.programs || []).filter((p) => p.enabled).map((p) => p.code),
+            )
+            const kept = prev.filter((c) => enabled.has(c))
+            return kept.length ? kept : Array.from(enabled)
+          })
+        }
         setError('')
+        if (Number(data.pruned_missing_files || 0) > 0) {
+          showToast(
+            `${data.pruned_missing_files} stored file${
+              data.pruned_missing_files === 1 ? ' was' : 's were'
+            } removed because the object is no longer in storage. Re-upload those slots.`,
+            'error',
+          )
+        }
       } catch (err) {
-        if (active) setError(err.message || 'Failed to load period')
+        if (active) {
+          setPeriod(null)
+          setError(err.message || 'Failed to load period')
+        }
+      } finally {
+        if (active) setPeriodLoading(false)
       }
     })()
     return () => {
       active = false
     }
-  }, [plazaIdentifier, year, month])
+  }, [plazaIdentifier, year, month, showToast])
 
   useEffect(() => {
     if (!batch?.batch_uuid) return undefined
-    const analyticsBusy = ['queued', 'running'].includes(
-      String(batch.analytics?.status || ''),
-    )
-    const batchBusy = ['queued', 'running'].includes(batch.status)
-    if (!batchBusy && !analyticsBusy) return undefined
+    if (!batchIsActive(batch)) return undefined
     const timer = setInterval(async () => {
       try {
         const data = await getExceptionPipelineBatch(batch.batch_uuid)
@@ -188,7 +238,6 @@ export function ExceptionPipelinePage() {
       return { ...prev, [slotKey]: merged }
     })
     setError('')
-    setNotice('')
   }
 
   function removePendingFile(slotKey, file) {
@@ -202,13 +251,34 @@ export function ExceptionPipelinePage() {
     })
   }
 
-  async function handleUploadAll() {
-    if (!plazaIdentifier || !hasPending) return
+  function stageRemoveUploaded(fileId) {
+    setPendingRemoveIds((prev) => {
+      const next = new Set(prev)
+      next.add(fileId)
+      return next
+    })
+    setError('')
+  }
+
+  function undoRemoveUploaded(fileId) {
+    setPendingRemoveIds((prev) => {
+      const next = new Set(prev)
+      next.delete(fileId)
+      return next
+    })
+  }
+
+  async function handleSaveChanges() {
+    if (!plazaIdentifier || !hasUnsavedChanges) return
     setBusy(true)
     setError('')
-    setNotice('')
     try {
+      let removed = 0
       let uploaded = 0
+      for (const fileId of pendingRemoveIds) {
+        await deleteExceptionPipelineInput(fileId)
+        removed += 1
+      }
       for (const [slotKey, files] of pendingEntries) {
         for (const file of files) {
           await uploadExceptionPipelineInput({
@@ -222,26 +292,26 @@ export function ExceptionPipelinePage() {
         }
       }
       setPendingBySlot({})
+      setPendingRemoveIds(new Set())
       await refreshPeriod()
-      setNotice(
-        uploaded === 1
-          ? 'Uploaded 1 file. Choose checks below, then start the process.'
-          : `Uploaded ${uploaded} files. Choose checks below, then start the process.`,
+      const bits = []
+      if (uploaded) {
+        bits.push(
+          uploaded === 1 ? 'uploaded 1 file' : `uploaded ${uploaded} files`,
+        )
+      }
+      if (removed) {
+        bits.push(
+          removed === 1 ? 'removed 1 file' : `removed ${removed} files`,
+        )
+      }
+      showToast(
+        bits.length
+          ? `Saved: ${bits.join(', ')}. Choose checks below, then start the process.`
+          : 'Saved.',
       )
     } catch (err) {
-      setError(err.message || 'Upload failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleDelete(fileId) {
-    setBusy(true)
-    try {
-      await deleteExceptionPipelineInput(fileId)
-      await refreshPeriod()
-    } catch (err) {
-      setError(err.message || 'Delete failed')
+      setError(err.message || 'Save failed')
     } finally {
       setBusy(false)
     }
@@ -257,21 +327,17 @@ export function ExceptionPipelinePage() {
   const analyticsReady = Boolean(period?.analytics_ready)
   const canStart =
     Boolean(plazaIdentifier) &&
-    !hasPending &&
+    !periodLoading &&
+    !hasUnsavedChanges &&
     (selectedCodes.length > 0 || (runAnalytics && analyticsReady))
   const mappedPipelineKey =
     catalog?.plaza_identifier_to_pipeline_key?.[plazaIdentifier] || ''
-  const batchActive = Boolean(
-    batch &&
-      (['queued', 'running'].includes(String(batch.status || '')) ||
-        ['queued', 'running'].includes(String(batch.analytics?.status || ''))),
-  )
+  const batchActive = batchIsActive(batch)
 
   async function handleStart() {
     if (!canStart) return
     setBusy(true)
     setError('')
-    setNotice('')
     try {
       const created = await createExceptionPipelineBatch({
         plaza_identifier: plazaIdentifier,
@@ -288,7 +354,7 @@ export function ExceptionPipelinePage() {
       const bits = []
       if (selectedCodes.length) bits.push('exception checks')
       if (started.batch?.analytics) bits.push('plaza analytics')
-      setNotice(
+      showToast(
         bits.length
           ? `Started: ${bits.join(' + ')}.`
           : 'Processing started.',
@@ -304,13 +370,13 @@ export function ExceptionPipelinePage() {
     if (!batch?.batch_uuid) return
     setBusy(true)
     setError('')
-    setNotice('')
     setStopConfirmOpen(false)
     try {
       const data = await stopExceptionPipelineBatch(batch.batch_uuid)
       setBatch(data.batch)
-      setNotice(
+      showToast(
         'Process stopped. Run progress was discarded; uploaded input files are unchanged.',
+        'warning',
       )
       await refreshPeriod()
     } catch (err) {
@@ -342,42 +408,23 @@ export function ExceptionPipelinePage() {
           </div>
         }
         title="File Upload"
-        description="Select plaza files for a month, upload them together, then start the process. Exception checks run in order from the shared files; when VRN and/or ETC are present, plaza analytics also runs."
-      >
-        <p className="mt-2 max-w-3xl rounded-sm border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
-          Recommendation: upload and process one calendar month at a time. Mixing
-          multiple months in a single run can confuse period matching and make
-          results harder to review.
-        </p>
-        {showExceptionUploads ? (
-          <p className="mt-2 max-w-3xl text-body text-muted-foreground">
-            Prefer the classic flow?{' '}
-            <Link
-              to="/exceptions/uploads"
-              className="text-primary underline-offset-2 hover:underline"
-            >
-              Single exception uploads
-            </Link>
-          </p>
-        ) : null}
-      </PageHeader>
+        description="Select plaza files for a month, stage adds or removals, click Save, then start the process. Independent exception checks can run two at a time; dependents (e.g. E15) wait for required outputs. Plaza analytics runs in parallel when VRN/ETC are present."
+      />
+
+      <p className="w-full rounded-sm border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
+        Recommendation: upload and process one calendar month at a time. Mixing
+        multiple months in a single run can confuse period matching and make
+        results harder to review.
+      </p>
 
       {error ? (
         <p className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-body">
           {error}
         </p>
       ) : null}
-      {notice ? (
-        <p className="rounded-sm border border-border bg-accent/40 px-3 py-2 text-body">{notice}</p>
-      ) : null}
-
       <Card>
-        <CardHeader>
-          <CardTitle>Period</CardTitle>
-          <CardDescription>Plaza + calendar month for shared inputs.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-3 rounded-b-sm bg-muted/20">
-          <label className="min-w-[14rem] flex-1 space-y-1">
+        <CardContent className="flex flex-wrap items-end gap-3 pt-6">
+          <label className="w-[16rem] max-w-full space-y-1">
             <span className="block text-small text-muted-foreground">Plaza</span>
             <SearchableSelect
               options={(Array.isArray(plazas) ? plazas : []).map((p) => ({
@@ -390,7 +437,7 @@ export function ExceptionPipelinePage() {
               searchPlaceholder="Search plaza…"
             />
           </label>
-          <label className="min-w-[7rem] space-y-1">
+          <label className="w-[7rem] space-y-1">
             <span className="block text-small text-muted-foreground">Year</span>
             <SearchableSelect
               options={years.map((y) => ({ value: String(y), label: String(y) }))}
@@ -400,7 +447,7 @@ export function ExceptionPipelinePage() {
               searchPlaceholder="Search year…"
             />
           </label>
-          <label className="min-w-[7rem] space-y-1">
+          <label className="w-[7.5rem] space-y-1">
             <span className="block text-small text-muted-foreground">Month</span>
             <SearchableSelect
               options={MONTHS.map((m) => ({
@@ -413,7 +460,13 @@ export function ExceptionPipelinePage() {
               searchPlaceholder="Search month…"
             />
           </label>
-          {plazaIdentifier ? (
+          {plazaIdentifier && periodLoading ? (
+            <p className="flex items-center gap-2 text-small text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading files for this plaza and month…
+            </p>
+          ) : null}
+          {plazaIdentifier && !periodLoading ? (
             <p className="w-full text-small text-muted-foreground">
               {mappedPipelineKey
                 ? `Full Exempt key: ${mappedPipelineKey} (from plaza)`
@@ -427,13 +480,25 @@ export function ExceptionPipelinePage() {
         <CardHeader>
           <CardTitle>Shared input files</CardTitle>
           <CardDescription>
-            Each input accepts multiple files. Select all files for a slot (you
-            can add more later), then click Upload files. Scraped vehicle/permit
-            is optional. To-plaza VRN is separate from this plaza&apos;s VRN.
+            Each input accepts multiple files. Stage adds and removals, then
+            click Save. Scraped vehicle/permit is optional. To-plaza VRN is
+            separate from this plaza&apos;s VRN.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {uploadSlots.map((slot) => {
+          {!plazaIdentifier ? (
+            <p className="text-small text-muted-foreground">
+              Select a plaza and month to load existing files.
+            </p>
+          ) : null}
+          {plazaIdentifier && periodLoading ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-10 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              <p className="text-body">Fetching saved files for this month…</p>
+            </div>
+          ) : null}
+          {plazaIdentifier && !periodLoading
+            ? uploadSlots.map((slot) => {
             const uploaded = (period?.files || []).filter((f) => f.slot === slot.key)
             const pending = pendingBySlot[slot.key] || []
             return (
@@ -453,7 +518,7 @@ export function ExceptionPipelinePage() {
                       className="hidden"
                       multiple
                       accept={slot.accept}
-                      disabled={busy || !plazaIdentifier}
+                      disabled={busy || !plazaIdentifier || periodLoading}
                       onChange={(e) => {
                         stageFiles(slot.key, e.target.files)
                         e.target.value = ''
@@ -470,7 +535,7 @@ export function ExceptionPipelinePage() {
                       >
                         <span>
                           {file.name}{' '}
-                          <span className="text-muted-foreground">(selected, not uploaded)</span>
+                          <span className="text-muted-foreground">(will upload on Save)</span>
                         </span>
                         <Button
                           type="button"
@@ -487,51 +552,80 @@ export function ExceptionPipelinePage() {
                 ) : null}
                 {uploaded.length ? (
                   <ul className="mt-2 space-y-1">
-                    {uploaded.map((f) => (
-                      <li
-                        key={f.id}
-                        className="flex flex-wrap items-center justify-between gap-2 text-small"
-                      >
-                        <span>
-                          {f.original_file_name}
-                          {f.source === 'pipeline_output' ? ' (auto)' : ' (uploaded)'}
-                        </span>
-                        {f.source !== 'pipeline_output' ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            disabled={busy}
-                            onClick={() => handleDelete(f.id)}
-                          >
-                            Remove
-                          </Button>
-                        ) : null}
-                      </li>
-                    ))}
+                    {uploaded.map((f) => {
+                      const markedRemove = pendingRemoveIds.has(f.id)
+                      return (
+                        <li
+                          key={f.id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-small"
+                        >
+                          <span className={markedRemove ? 'text-muted-foreground line-through' : ''}>
+                            {f.original_file_name}
+                            {f.source === 'pipeline_output'
+                              ? ' (auto)'
+                              : markedRemove
+                                ? ' (will remove on Save)'
+                                : ' (uploaded)'}
+                          </span>
+                          {f.source !== 'pipeline_output' ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() =>
+                                markedRemove
+                                  ? undoRemoveUploaded(f.id)
+                                  : stageRemoveUploaded(f.id)
+                              }
+                            >
+                              {markedRemove ? 'Undo' : 'Remove'}
+                            </Button>
+                          ) : null}
+                        </li>
+                      )
+                    })}
                   </ul>
                 ) : !pending.length ? (
                   <p className="mt-2 text-small text-muted-foreground">No files yet.</p>
                 ) : null}
               </div>
             )
-          })}
-          {(period?.files || []).some((f) => f.slot === 'full_exempt_final') ? (
-            <p className="text-small text-muted-foreground">
-              Full Exempt final is registered for this month — E15 can run.
-            </p>
+          })
+            : null}
+          {plazaIdentifier && !periodLoading ? (
+            <>
+              {(period?.files || []).some((f) => f.slot === 'full_exempt_final') ? (
+                <p className="text-small text-muted-foreground">
+                  Full Exempt final is registered for this month — E15 can run.
+                </p>
+              ) : null}
+              <Button
+                type="button"
+                disabled={busy || !plazaIdentifier || !hasUnsavedChanges}
+                onClick={handleSaveChanges}
+              >
+                {busy && hasUnsavedChanges
+                  ? 'Saving…'
+                  : hasUnsavedChanges
+                    ? `Save${
+                        pendingCount || removeCount
+                          ? ` (${[
+                              pendingCount
+                                ? `+${pendingCount}`
+                                : null,
+                              removeCount
+                                ? `−${removeCount}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(', ')})`
+                          : ''
+                      }`
+                    : 'Save'}
+              </Button>
+            </>
           ) : null}
-          <Button
-            type="button"
-            disabled={busy || !plazaIdentifier || !hasPending}
-            onClick={handleUploadAll}
-          >
-            {busy && hasPending
-              ? 'Uploading…'
-              : hasPending
-                ? `Upload ${pendingCount} file${pendingCount === 1 ? '' : 's'}`
-                : 'Upload files'}
-          </Button>
         </CardContent>
       </Card>
 
@@ -539,81 +633,95 @@ export function ExceptionPipelinePage() {
         <CardHeader>
           <CardTitle>Checks to run</CardTitle>
           <CardDescription>
-            Upload files first. Each check unlocks when its required files for
+            Save files first. Each check unlocks when its required files for
             this month are present. Plaza analytics is optional and selected by
             default when VRN/ETC are available.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <label
-            className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
-              analyticsReady ? '' : 'opacity-55'
-            }`}
-          >
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={runAnalytics && analyticsReady}
-              disabled={!analyticsReady || busy || hasPending}
-              onChange={(e) => setRunAnalytics(Boolean(e.target.checked))}
-            />
-            <span>
-              <span className="block text-body font-medium">
-                {period?.analytics_label || 'Plaza analytics (VRN / ETC)'}
-              </span>
-              <span className="text-small text-muted-foreground">
-                {analyticsReady
-                  ? runAnalytics
-                    ? 'Will run in parallel when you start (same VRN/ETC files).'
-                    : 'Skipped for this run.'
-                  : 'Upload VRN and/or ETC above to enable plaza analytics.'}
-              </span>
-            </span>
-          </label>
-          {programs.map((p) => (
-            <label
-              key={p.code}
-              className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
-                p.enabled ? '' : 'opacity-55'
-              }`}
-            >
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={selectedCodes.includes(p.code)}
-                disabled={!p.enabled || busy || hasPending}
-                onChange={() => toggleProgram(p.code, p.enabled)}
-              />
-              <span>
-                <span className="block text-body font-medium">{p.label}</span>
-                {!p.enabled ? (
-                  <span className="text-small text-muted-foreground">
-                    Missing: {(p.missing_slots || []).join(', ') || 'inputs'}
+          {periodLoading ? (
+            <div className="flex items-center gap-2 py-6 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              <span className="text-small">Loading available checks…</span>
+            </div>
+          ) : (
+            <>
+              <label
+                className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
+                  analyticsReady ? '' : 'opacity-55'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={runAnalytics && analyticsReady}
+                  disabled={!analyticsReady || busy || !plazaIdentifier}
+                  onChange={(e) => setRunAnalytics(Boolean(e.target.checked))}
+                />
+                <span>
+                  <span className="block text-body font-medium">
+                    {period?.analytics_label || 'Plaza analytics (VRN / ETC)'}
                   </span>
-                ) : (
-                  <span className="text-small text-muted-foreground">Ready</span>
-                )}
-              </span>
-            </label>
-          ))}
-          {hasPending ? (
-            <p className="text-small text-muted-foreground">
-              Upload selected files before starting the process.
-            </p>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" disabled={busy || !canStart || batchActive} onClick={handleStart}>
-              Start process
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy || !batchActive}
-              onClick={() => setStopConfirmOpen(true)}
-            >
-              Stop
-            </Button>
-          </div>
+                  <span className="text-small text-muted-foreground">
+                    {analyticsReady
+                      ? runAnalytics
+                        ? 'Will run in parallel when you start (same VRN/ETC files).'
+                        : 'Skipped for this run.'
+                      : 'Upload VRN and/or ETC above to enable plaza analytics.'}
+                  </span>
+                </span>
+              </label>
+              {programs.map((p) => (
+                <label
+                  key={p.code}
+                  className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
+                    p.enabled ? '' : 'opacity-55'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={selectedCodes.includes(p.code)}
+                    disabled={!p.enabled || busy}
+                    onChange={() => toggleProgram(p.code, p.enabled)}
+                  />
+                  <span>
+                    <span className="block text-body font-medium">{p.label}</span>
+                    {!p.enabled ? (
+                      <span className="text-small text-muted-foreground">
+                        Missing: {(p.missing_slots || []).join(', ') || 'inputs'}
+                      </span>
+                    ) : (
+                      <span className="text-small text-muted-foreground">Ready</span>
+                    )}
+                  </span>
+                </label>
+              ))}
+              {hasUnsavedChanges ? (
+                <p className="text-small text-muted-foreground">
+                  Click Save above before starting the process. Unsaved adds and
+                  removals do not change which checks are unlocked.
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  disabled={busy || !canStart || batchActive || periodLoading}
+                  onClick={handleStart}
+                >
+                  Start process
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || !batchActive}
+                  onClick={() => setStopConfirmOpen(true)}
+                >
+                  Stop
+                </Button>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

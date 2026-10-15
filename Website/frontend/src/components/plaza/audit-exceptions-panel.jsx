@@ -228,6 +228,7 @@ export function AuditExceptionsPanel({
   monthValue,
   wholeYear = false,
   metricsSource = 'manual',
+  showMetricsSource = false,
   canApply = false,
   onYearChange,
   onMonthChange,
@@ -261,19 +262,21 @@ export function AuditExceptionsPanel({
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-3 rounded-sm border border-border bg-muted/40 p-3">
-          <label className="min-w-[10rem] space-y-1">
-            <span className="block text-small text-muted-foreground">Metrics source</span>
-            <SearchableSelect
-              options={[
-                { value: 'manual', label: 'Manual upload' },
-                { value: 'pipeline', label: 'File Upload' },
-              ]}
-              value={metricsSource || data?.metrics_source || 'manual'}
-              onChange={(value) => onMetricsSourceChange?.(value)}
-              disabled={loading}
-              placeholder="Source"
-            />
-          </label>
+          {showMetricsSource ? (
+            <label className="min-w-[10rem] space-y-1">
+              <span className="block text-small text-muted-foreground">Metrics source</span>
+              <SearchableSelect
+                options={[
+                  { value: 'manual', label: 'Manual upload' },
+                  { value: 'pipeline', label: 'File Upload' },
+                ]}
+                value={metricsSource || data?.metrics_source || 'manual'}
+                onChange={(value) => onMetricsSourceChange?.(value)}
+                disabled={loading}
+                placeholder="Source"
+              />
+            </label>
+          ) : null}
           <label className="flex h-10 items-center gap-2">
             <Switch
               checked={Boolean(wholeYear)}

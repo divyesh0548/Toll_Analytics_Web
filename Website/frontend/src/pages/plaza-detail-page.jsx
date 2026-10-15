@@ -19,6 +19,7 @@ import {
   monthBounds,
   resolveTrafficMonth,
 } from '@/components/plaza/traffic-study-panel'
+import { useAuth } from '@/components/auth-provider'
 import {
   getCompany,
   getPlaza,
@@ -47,6 +48,7 @@ function defaultRangeForPeriod(period, availability) {
 export function PlazaDetailPage() {
   const { plazaIdentifier } = useParams()
   const [searchParams] = useSearchParams()
+  const { developmentExceptions } = useAuth()
   const initialTab = TABS.some((t) => t.id === searchParams.get('tab') && t.id !== 'overall')
     ? searchParams.get('tab')
     : 'numbers'
@@ -183,17 +185,31 @@ export function PlazaDetailPage() {
     setAuditError('')
   }, [plazaIdentifier])
 
+  // Without Development_Exceptions, always use manual (separate-job) metrics tables.
+  useEffect(() => {
+    if (developmentExceptions) return
+    setAuditDraft((prev) =>
+      prev.metricsSource === 'manual' ? prev : { ...prev, metricsSource: 'manual' },
+    )
+    setAuditApplied((prev) =>
+      prev.metricsSource === 'manual' ? prev : { ...prev, metricsSource: 'manual' },
+    )
+  }, [developmentExceptions])
+
   useEffect(() => {
     if (!plazaIdentifier || tab !== 'audit') return undefined
     let active = true
     setAuditLoading(true)
     setAuditError('')
+    const metricsSource = developmentExceptions
+      ? auditApplied.metricsSource || 'manual'
+      : 'manual'
     ;(async () => {
       try {
         const data = await getPlazaAuditExceptions(plazaIdentifier, {
           year: auditApplied.year,
           month: auditApplied.wholeYear ? undefined : auditApplied.month,
-          metricsSource: auditApplied.metricsSource || 'manual',
+          metricsSource,
         })
         if (!active) return
         setAuditData(data)
@@ -217,6 +233,7 @@ export function PlazaDetailPage() {
     auditApplied.wholeYear,
     auditApplied.metricsSource,
     auditRefreshKey,
+    developmentExceptions,
   ])
 
   useEffect(() => {
@@ -392,9 +409,7 @@ export function PlazaDetailPage() {
           item.to ? (
             <Link
               key={item.id}
-              to={`${item.to}?plaza=${encodeURIComponent(plazaIdentifier)}`}
-              target="_blank"
-              rel="noopener noreferrer"
+              to={`${item.to}?plaza=${encodeURIComponent(plazaIdentifier)}&from=plaza`}
               className={underlineTabClass(false)}
             >
               {item.label}
@@ -481,13 +496,17 @@ export function PlazaDetailPage() {
           yearValue={auditDraft.year}
           monthValue={auditDraft.month}
           wholeYear={auditDraft.wholeYear}
-          metricsSource={auditDraft.metricsSource}
+          metricsSource={
+            developmentExceptions ? auditDraft.metricsSource || 'manual' : 'manual'
+          }
+          showMetricsSource={Boolean(developmentExceptions)}
           canApply={
             auditDraft.year !== auditApplied.year ||
             auditDraft.month !== auditApplied.month ||
             Boolean(auditDraft.wholeYear) !== Boolean(auditApplied.wholeYear) ||
-            (auditDraft.metricsSource || 'manual') !==
-              (auditApplied.metricsSource || 'manual')
+            (Boolean(developmentExceptions) &&
+              (auditDraft.metricsSource || 'manual') !==
+                (auditApplied.metricsSource || 'manual'))
           }
           onYearChange={(year) =>
             setAuditDraft((prev) => ({ ...prev, year: String(year) }))

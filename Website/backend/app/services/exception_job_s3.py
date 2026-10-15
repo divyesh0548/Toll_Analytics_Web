@@ -230,7 +230,7 @@ def presign_put_upload(
 
 
 def head_object_size(s3_key: str) -> int | None:
-    """Return object size in bytes, or None if missing."""
+    """Return object size in bytes, or None if missing / unreachable."""
     client = s3_client()
     try:
         meta = client.head_object(Bucket=bucket_name(), Key=s3_key)
@@ -238,6 +238,35 @@ def head_object_size(s3_key: str) -> int | None:
         return None
     size = meta.get("ContentLength")
     return int(size) if size is not None else None
+
+
+def s3_key_confirmed_missing(s3_key: str) -> bool | None:
+    """
+    True = object definitely not in S3 (404 / NoSuchKey).
+    False = object exists.
+    None = could not tell (network / auth / other) — do not treat as missing.
+    """
+    from botocore.exceptions import ClientError
+
+    key = str(s3_key or "").strip()
+    if not key:
+        return True
+    client = s3_client()
+    try:
+        client.head_object(Bucket=bucket_name(), Key=key)
+        return False
+    except ClientError as exc:
+        code = str((exc.response or {}).get("Error", {}).get("Code", "") or "")
+        http = (exc.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code in {"404", "NoSuchKey", "NotFound"} or http == 404:
+            return True
+        logger.warning(
+            "S3 head inconclusive for %s (code=%s http=%s)", key, code, http
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("S3 head failed for %s: %s", key, exc)
+        return None
 
 
 class _CountingReader:
@@ -379,23 +408,35 @@ def download_to_path(s3_key: str, local_path: Path) -> Path:
     Writes directly to the destination (no boto3 download_file rename).
     On Windows, if the target is locked, fall back to a unique sibling name.
     """
+    from botocore.exceptions import ClientError
+
     local_path = Path(local_path)
     # Enforce short final name as well (deep job paths / Windows MAX_PATH).
     local_path = local_path.with_name(shorten_local_filename(local_path.name))
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        return _download_bytes_to_file(s3_key, local_path)
-    except PermissionError:
-        # Destination locked (Windows) — write beside it under a unique name.
-        alt = _unique_sibling(local_path)
-        return _download_bytes_to_file(s3_key, alt)
-    except OSError as exc:
-        # Rare: parent vanished mid-write — recreate and retry once beside original.
-        logger.warning("download_to_path retry after %s: %s", type(exc).__name__, exc)
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        alt = _unique_sibling(local_path)
-        return _download_bytes_to_file(s3_key, alt)
+        try:
+            return _download_bytes_to_file(s3_key, local_path)
+        except PermissionError:
+            # Destination locked (Windows) — write beside it under a unique name.
+            alt = _unique_sibling(local_path)
+            return _download_bytes_to_file(s3_key, alt)
+        except OSError as exc:
+            # Rare: parent vanished mid-write — recreate and retry once beside original.
+            logger.warning(
+                "download_to_path retry after %s: %s", type(exc).__name__, exc
+            )
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            alt = _unique_sibling(local_path)
+            return _download_bytes_to_file(s3_key, alt)
+    except ClientError as exc:
+        code = (exc.response or {}).get("Error", {}).get("Code", "")
+        if str(code) in {"404", "NoSuchKey", "NotFound"}:
+            raise FileNotFoundError(
+                f"S3 object not found: {s3_key!r}"
+            ) from exc
+        raise
 
 
 def delete_object(s3_key: str) -> None:

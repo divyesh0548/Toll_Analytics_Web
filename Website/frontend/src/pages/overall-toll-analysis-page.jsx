@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { ArrowLeft, Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { PageHeader } from '@/components/ui/page-header'
 import { SearchableSelect } from '@/components/ui/searchable-select'
@@ -31,7 +32,9 @@ function defaultRangeForPeriod(period, availability) {
 export function OverallTollAnalysisPage() {
   const { theme } = useTheme()
   const dark = theme === 'dark'
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const cameFromPlaza = searchParams.get('from') === 'plaza'
 
   const [companies, setCompanies] = useState([])
   const [spvs, setSpvs] = useState([])
@@ -84,14 +87,27 @@ export function OverallTollAnalysisPage() {
   const selectedPlaza = plazas.find((p) => p.plaza_identifier === plazaId) || null
   const showYoy = canShowYoy(periodApplied, appliedRange, numbers?.availability)
 
-  // Sync filters → URL
+  // Sync filters → URL (keep from=plaza so Back still returns to the plaza page)
   useEffect(() => {
     const next = new URLSearchParams()
     if (companyId) next.set('company', companyId)
     if (spvId) next.set('spv', spvId)
     if (plazaId) next.set('plaza', plazaId)
+    if (cameFromPlaza) next.set('from', 'plaza')
     setSearchParams(next, { replace: true })
-  }, [companyId, spvId, plazaId, setSearchParams])
+  }, [companyId, spvId, plazaId, cameFromPlaza, setSearchParams])
+
+  function handleBack() {
+    if (plazaId && cameFromPlaza) {
+      navigate(`/companies/spvs/plazas/${plazaId}`)
+      return
+    }
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      navigate(-1)
+      return
+    }
+    navigate('/portfolio')
+  }
 
   // Load companies; optionally resolve plaza → spv → company from query
   useEffect(() => {
@@ -303,6 +319,12 @@ export function OverallTollAnalysisPage() {
             Plaza-level transactions, revenue, and category mix
             {selectedPlaza ? ` · ${selectedPlaza.plaza_name}` : ''}
           </>
+        }
+        actions={
+          <Button type="button" variant="outline" onClick={handleBack}>
+            <ArrowLeft className="h-4 w-4" />
+            {plazaId && cameFromPlaza ? 'Back to plaza' : 'Back'}
+          </Button>
         }
       />
 

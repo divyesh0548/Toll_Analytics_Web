@@ -17,15 +17,22 @@ function shouldPromptPasswordChange(user) {
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [features, setFeatures] = useState({ show_exception_uploads: false })
+  const [features, setFeatures] = useState({ development_exceptions: false })
   const [loading, setLoading] = useState(true)
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
+
+  function featuresFromApi(dataFeatures) {
+    const enabled = Boolean(
+      dataFeatures?.development_exceptions ?? dataFeatures?.show_exception_uploads,
+    )
+    return { development_exceptions: enabled }
+  }
 
   const refreshUser = useCallback(async () => {
     const token = getToken()
     if (!token) {
       setUser(null)
-      setFeatures({ show_exception_uploads: false })
+      setFeatures({ development_exceptions: false })
       setUserRole(null)
       setPasswordChangeOpen(false)
       setLoading(false)
@@ -34,15 +41,13 @@ export function AuthProvider({ children }) {
     try {
       const data = await fetchMe()
       setUser(data.user)
-      setFeatures({
-        show_exception_uploads: Boolean(data.features?.show_exception_uploads),
-      })
+      setFeatures(featuresFromApi(data.features))
       setUserRole(data.user?.role)
       return data.user
     } catch {
       clearToken()
       setUser(null)
-      setFeatures({ show_exception_uploads: false })
+      setFeatures({ development_exceptions: false })
       setPasswordChangeOpen(false)
       return null
     } finally {
@@ -58,9 +63,7 @@ export function AuthProvider({ children }) {
     const data = await apiLogin(email, password)
     setToken(data.token)
     setUser(data.user)
-    setFeatures({
-      show_exception_uploads: Boolean(data.features?.show_exception_uploads),
-    })
+    setFeatures(featuresFromApi(data.features))
     setUserRole(data.user?.role)
     setPasswordChangeOpen(shouldPromptPasswordChange(data.user))
     return data.user
@@ -69,7 +72,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     clearToken()
     setUser(null)
-    setFeatures({ show_exception_uploads: false })
+    setFeatures({ development_exceptions: false })
     setPasswordChangeOpen(false)
   }, [])
 
@@ -91,7 +94,9 @@ export function AuthProvider({ children }) {
     () => ({
       user,
       features,
-      showExceptionUploads: Boolean(features?.show_exception_uploads),
+      developmentExceptions: Boolean(features?.development_exceptions),
+      // Legacy alias used by older call sites.
+      showExceptionUploads: Boolean(features?.development_exceptions),
       loading,
       isAuthenticated: Boolean(user),
       isSiteAdmin: user?.role === 'siteadmin',

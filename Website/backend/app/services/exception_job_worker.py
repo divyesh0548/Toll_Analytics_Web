@@ -1053,7 +1053,15 @@ def _run_full_exempt_job(
             base_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
         used_names.add(base_name.lower())
         dest = input_root / slot_folder / base_name
-        download_to_path(row.s3_key, dest)
+        try:
+            download_to_path(row.s3_key, dest)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"Input file missing in S3 for slot={row.slot} "
+                f"file={row.original_file_name!r} key={row.s3_key!r}. "
+                f"Re-upload that monthly file on File Upload, then retry. "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
 
     # Stage plaza default rates / approved-exemption when not uploaded on the job.
     plaza_key = str(job.pipeline_plaza_key or "").strip().upper()
