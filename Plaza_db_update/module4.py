@@ -48,8 +48,8 @@ from config.excel_config import (  # noqa: E402
     ETC_SETTLEMENT_COLUMN_ALIASES,
     EXCEL_EXTENSIONS,
     HEADER_KEYWORDS,
-    normalize_key,
 )
+from common.header_match import normalize_header_match  # noqa: E402
 from config.settings import (  # noqa: E402
     ETC_INPUT_FOLDER,
     PLAZA_IDENTIFIER,
@@ -482,8 +482,8 @@ class SkipEtcFile(Exception):
 
 
 def _alias_saved(aliases: list[str], keyword: str) -> bool:
-    key = normalize_key(keyword)
-    return any(normalize_key(alias) == key for alias in aliases)
+    key = normalize_header_match(keyword)
+    return bool(key) and any(normalize_header_match(alias) == key for alias in aliases)
 
 
 def persist_column_alias(list_name: str, keyword: str) -> None:
@@ -593,7 +593,7 @@ def resolve_etc_columns(df: pd.DataFrame, path: Path) -> dict[str, str] | None:
                     (
                         column
                         for column in columns
-                        if normalize_key(column) == normalize_key(keyword)
+                        if normalize_header_match(column) == normalize_header_match(keyword)
                     ),
                     None,
                 )

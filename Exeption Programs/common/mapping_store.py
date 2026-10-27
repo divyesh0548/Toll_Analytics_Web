@@ -54,11 +54,17 @@ def _load_dotenv_files() -> None:
 def _connect():
     _load_dotenv_files()
     host = os.getenv("DB_HOST", "").strip()
-    name = os.getenv("DB_NAME", "").strip()
+    # Exception jobs overwrite DB_NAME with the submissions database.
+    # Mapping tables live on the website analytics database.
+    name = (
+        os.getenv("Toll_Analytics_DB", "").strip()
+        or os.getenv("DB_NAME", "").strip()
+    )
     user = os.getenv("DB_USER", "").strip()
     if not host or not name or not user:
         raise RuntimeError(
-            "DB_HOST, DB_USER, and DB_NAME are required to load mapping config."
+            "DB_HOST, DB_USER, and Toll_Analytics_DB (or DB_NAME) are required "
+            "to load mapping config."
         )
     import psycopg2
 
@@ -255,7 +261,17 @@ def overlay_shared_config(
     if header_source and "header_keywords" in config:
         keywords = alias_list("header_keyword", header_source)
         if keywords:
-            config["header_keywords"] = keywords
+            from common.header_match import normalize_header_match
+
+            merged = [str(item) for item in (config.get("header_keywords") or [])]
+            seen = {normalize_header_match(item) for item in merged}
+            seen.discard("")
+            for item in keywords:
+                token = normalize_header_match(item)
+                if token and token not in seen:
+                    merged.append(str(item))
+                    seen.add(token)
+            config["header_keywords"] = merged
 
     if "header_scan_rows" in config and settings.get("header_scan_rows") is not None:
         try:

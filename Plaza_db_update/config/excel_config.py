@@ -38,6 +38,7 @@ LANE_COLUMN_ALIASES = [
 # Vehicle-class Excel header aliases.
 VEHICLE_CLASS_COLUMN_ALIASES = [
     "MVC",
+    "AVC",
     "TC Class",
     "MVC_TLC_CLASS",
     "Operator Class",
@@ -210,7 +211,7 @@ HEADER_KEYWORDS.extend(COLUMN_MAPPING.values())
 
 
 def _apply_mapping_tables() -> None:
-    """Replace plaza header and column alias lists with mapping-table values."""
+    """Add mapping-table aliases without dropping built-in names such as DATE."""
     programs = Path(__file__).resolve().parents[2] / "Exeption Programs"
     if str(programs) not in sys.path:
         sys.path.insert(0, str(programs))
@@ -219,20 +220,25 @@ def _apply_mapping_tables() -> None:
     snap = load_snapshot()
     columns = snap["alias_lists"].get("column_alias") or {}
 
-    def _replace(target: list, key: str) -> None:
+    def _merge(target: list, key: str) -> None:
         values = columns.get(key) or []
-        if values:
-            target.clear()
-            target.extend(values)
+        if not values:
+            return
+        seen = {re.sub(r"\s+", " ", str(item).strip()).upper() for item in target}
+        for value in values:
+            token = re.sub(r"\s+", " ", str(value).strip()).upper()
+            if token and token not in seen:
+                target.append(value)
+                seen.add(token)
 
-    _replace(DATE_COLUMN_ALIASES, "date_part")
-    _replace(TIME_COLUMN_ALIASES, "time_part")
-    _replace(MOP_COLUMN_ALIASES, "mop")
-    _replace(LANE_COLUMN_ALIASES, "lane_no")
-    _replace(VEHICLE_CLASS_COLUMN_ALIASES, "tc_class")
-    _replace(ETC_DATETIME_COLUMN_ALIASES, "read_datetime")
-    _replace(ETC_NPCI_CLASS_COLUMN_ALIASES, "npci_class")
-    _replace(ETC_SETTLEMENT_COLUMN_ALIASES, "net_settlement_amt")
+    _merge(DATE_COLUMN_ALIASES, "date_part")
+    _merge(TIME_COLUMN_ALIASES, "time_part")
+    _merge(MOP_COLUMN_ALIASES, "mop")
+    _merge(LANE_COLUMN_ALIASES, "lane_no")
+    _merge(VEHICLE_CLASS_COLUMN_ALIASES, "tc_class")
+    _merge(ETC_DATETIME_COLUMN_ALIASES, "read_datetime")
+    _merge(ETC_NPCI_CLASS_COLUMN_ALIASES, "npci_class")
+    _merge(ETC_SETTLEMENT_COLUMN_ALIASES, "net_settlement_amt")
 
     if DATE_COLUMN_ALIASES:
         COLUMN_MAPPING["datetime"] = DATE_COLUMN_ALIASES[0]

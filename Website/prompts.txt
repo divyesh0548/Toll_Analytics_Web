@@ -1,9 +1,4 @@
-Some UI fixes require in the website.
+e04: failed — RuntimeError: Pass Type value(s) not defined in config.json: 'Local Tariff Pass Comm'. Add each one to mp_pass_type_values or lt_pass_type_values. Stopping.
+e10: failed — RuntimeError: TC Class column not found on merged VRN. Available: ['vehicle_reg_no', 'tc_class', 'SWB Wt/Std. Weight', 'Lane Weight', 'Lane/Chg Standard Weight', 'LANE OVERLOAD AMT', 'SWB AMT', 'date_part', 'time_part', 'read_datetime']
 
-the config pop-up has a dark overlay on the webpage, which is good, but it not leaving some space in the bottom side, please fix that. 
-In that the buttons have dark green bg with black text, that makes it unclear. Fix that too.
-
-File upload shows Recommendation line, which stays there forever. Instaed display it with notification style and vanish it after 1 min. Also provide close button so user can also dismiss it.
-
-There are many design descipencies in the website. In the overview tab the text "Lane throughput
-" is in bold style white other graph labels are in normal text. This same issues is present in many pages. Detect them and fix it with consistent text styling.
+Got this new errors. Please explain.

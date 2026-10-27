@@ -53,8 +53,16 @@ def parse_output_datetimes(values) -> pd.Series:
         )
     other = (~iso_mask) & text.ne("")
     if other.any():
+        programs = Path(__file__).resolve().parents[1]
+        if str(programs) not in sys.path:
+            sys.path.insert(0, str(programs))
+        from common.date_order import series_dayfirst
+
         parsed.loc[other] = pd.to_datetime(
-            text[other], errors="coerce", format="mixed", dayfirst=True
+            text[other],
+            errors="coerce",
+            format="mixed",
+            dayfirst=series_dayfirst(text[other].tolist(), default=True),
         )
     return parsed
 
@@ -157,16 +165,19 @@ def connection_kwargs() -> dict:
 
 
 def _normalize_header_key(value) -> str:
-    text = "" if value is None else str(value)
-    text = text.replace("\u00a0", " ").strip().lower()
-    return " ".join(text.split())
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     by_key = {_normalize_header_key(h): h for h in headers if str(h).strip()}
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 
@@ -192,8 +203,8 @@ def aggregate_monthly_applicable_rate(
 ) -> list[dict]:
     """
     Group by year/month of Date & Time.
-    Only rows with Applicable Rate > 0.
-    total_amount = sum(Applicable Rate); total_count = row count.
+    total_amount = sum of Applicable Rate where the rate is above 0.
+    total_count includes those rows and non-tollable classes (rate left blank).
 
     When force_period=(year, month) is set (pipeline batch), roll the whole
     run into that single month instead of splitting by Date & Time.
@@ -216,17 +227,31 @@ def aggregate_monthly_applicable_rate(
             f"Available: {list(df.columns)}"
         )
 
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.non_tollable import is_non_tollable_class
+
+    class_col = resolve_column(
+        headers,
+        ["TC Class_TO", "TC Class", "AVC", "MVC"],
+    )
     work = df.copy()
     work["_rate"] = work[rate_col].map(_to_float_or_none)
-    work = work.dropna(subset=["_rate"])
-    work = work.loc[work["_rate"] > 0].copy()
+    positive = work["_rate"].notna() & (work["_rate"] > 0)
+    if class_col:
+        nontoll = work[class_col].map(is_non_tollable_class)
+    else:
+        nontoll = False
+    work["_amount"] = work["_rate"].where(positive, 0).fillna(0)
+    work = work.loc[positive | nontoll].copy()
     if work.empty:
-        print("No rows with Applicable Rate > 0 for monthly aggregation.")
+        print("No rated or non-tollable rows for monthly aggregation.")
         return []
 
     if force_period is not None:
         year, month = int(force_period[0]), int(force_period[1])
-        total_amount = Decimal(str(round(float(work["_rate"].sum()), 2)))
+        total_amount = Decimal(str(round(float(work["_amount"].sum()), 2)))
         total_count = int(len(work))
         print(
             f"Pipeline period {year}-{month:02d}: "
@@ -253,8 +278,8 @@ def aggregate_monthly_applicable_rate(
     grouped = (
         work.groupby(["year", "month"], as_index=False)
         .agg(
-            total_amount=("_rate", "sum"),
-            total_count=("_rate", "size"),
+            total_amount=("_amount", "sum"),
+            total_count=("_amount", "size"),
         )
         .sort_values(["year", "month"])
     )

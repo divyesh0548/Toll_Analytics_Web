@@ -213,7 +213,9 @@ def _normalize_header_cell(value) -> str:
 
 
 def _normalize_header_key(value) -> str:
-    return _normalize_header_cell(value).casefold()
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def normalize_vehicle_number(value) -> str:
@@ -236,10 +238,14 @@ def normalize_tc_class_key(value) -> str:
 
 
 def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
-    by_key = {_normalize_header_key(h): h for h in headers if _normalize_header_cell(h)}
+    by_key = {
+        key: h
+        for h in headers
+        if (key := _normalize_header_key(h))
+    }
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 
@@ -464,8 +470,17 @@ _ISO_DATETIME_RE = re.compile(
 )
 
 
-def _parse_join_datetime(value) -> pd.Timestamp | None:
-    """Parse ETC (ISO) or VRN (DD/MM/YYYY) timestamps for join keys."""
+def _column_day_first(values, *, default: bool = True) -> bool:
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    return series_dayfirst(values, default=default)
+
+
+def _parse_join_datetime(value, *, day_first: bool = True) -> pd.Timestamp | None:
+    """Parse ETC (ISO) or VRN timestamps for join keys."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     text = str(value).strip()
@@ -474,19 +489,19 @@ def _parse_join_datetime(value) -> pd.Timestamp | None:
     if _ISO_DATETIME_RE.match(text):
         ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
     else:
-        ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
+        ts = pd.to_datetime(text, dayfirst=day_first, errors="coerce")
     if pd.isna(ts):
         return None
     return pd.Timestamp(ts)
 
 
-def to_date_hour_key(value) -> str:
+def to_date_hour_key(value, day_first: bool = True) -> str:
     """
     "25-11-2025 08:00:17" → "25/11/2025|8 AM"
     "2026-08-01 00:11:27" → "01/08/2026|12 AM"
     ISO ETC stamps use year-first; VRN DD/MM uses day-first.
     """
-    ts = _parse_join_datetime(value)
+    ts = _parse_join_datetime(value, day_first=day_first)
     if ts is None:
         return ""
     date_part = f"{int(ts.day):02d}/{int(ts.month):02d}/{int(ts.year)}"
@@ -498,9 +513,9 @@ def to_date_hour_key(value) -> str:
     return f"{date_part}|{hour12} {ampm}"
 
 
-def to_date_key(value) -> str:
+def to_date_key(value, day_first: bool = True) -> str:
     """Normalize to DD/MM/YYYY. Empty if unparseable."""
-    ts = _parse_join_datetime(value)
+    ts = _parse_join_datetime(value, day_first=day_first)
     if ts is None:
         return ""
     return f"{int(ts.day):02d}/{int(ts.month):02d}/{int(ts.year)}"
@@ -667,7 +682,11 @@ def date_range_from_vrn_df(vrn_df: pd.DataFrame, config: dict) -> tuple[str, str
             f"Available: {list(vrn_df.columns)}"
         )
 
-    parsed = pd.to_datetime(vrn_df[date_col], dayfirst=True, errors="coerce")
+    parsed = pd.to_datetime(
+        vrn_df[date_col],
+        dayfirst=_column_day_first(vrn_df[date_col].tolist()),
+        errors="coerce",
+    )
     valid = parsed.dropna()
     if valid.empty:
         raise RuntimeError(
@@ -800,8 +819,14 @@ def merge_vrn_with_etc(
     right["_join_veh"] = right[etc_veh_col].map(normalize_vehicle_number)
 
     if date_only:
-        left["date_key"] = left[vrn_dt_col].map(to_date_key)
-        right["_join_date"] = right[etc_dt_col].map(to_date_key)
+        vrn_day_first = _column_day_first(left[vrn_dt_col].tolist())
+        etc_day_first = _column_day_first(right[etc_dt_col].tolist())
+        left["date_key"] = left[vrn_dt_col].map(
+            lambda value: to_date_key(value, day_first=vrn_day_first)
+        )
+        right["_join_date"] = right[etc_dt_col].map(
+            lambda value: to_date_key(value, day_first=etc_day_first)
+        )
         bring = (
             right.loc[
                 right["_join_veh"].ne("") & right["_join_date"].ne(""),
@@ -823,8 +848,14 @@ def merge_vrn_with_etc(
         ).drop(columns=["_join_veh"])
         join_desc = f"vehicle + date ({vrn_dt_col!r} date-only)"
     else:
-        left["date_hour_key"] = left[vrn_dt_col].map(to_date_hour_key)
-        right["_join_dh"] = right[etc_dt_col].map(to_date_hour_key)
+        vrn_day_first = _column_day_first(left[vrn_dt_col].tolist())
+        etc_day_first = _column_day_first(right[etc_dt_col].tolist())
+        left["date_hour_key"] = left[vrn_dt_col].map(
+            lambda value: to_date_hour_key(value, day_first=vrn_day_first)
+        )
+        right["_join_dh"] = right[etc_dt_col].map(
+            lambda value: to_date_hour_key(value, day_first=etc_day_first)
+        )
         bring = (
             right.loc[
                 right["_join_veh"].ne("") & right["_join_dh"].ne(""),
@@ -1426,7 +1457,11 @@ def apply_applicable_rates_from_custom(
 
     custom_to_index = build_custom_to_class_index(config)
     cutover = parse_rate_cutover_date(config)
-    parsed_dt = pd.to_datetime(df[dt_col], errors="coerce", dayfirst=True)
+    parsed_dt = pd.to_datetime(
+        df[dt_col],
+        errors="coerce",
+        dayfirst=_column_day_first(df[dt_col].tolist()),
+    )
 
     class_indexes: list[str] = []
     rates: list[str] = []
@@ -1724,8 +1759,9 @@ def month_periods_from_read_datetime(
         )
     periods: set[tuple[int, int]] = set()
     skipped = 0
+    day_first = _column_day_first(frame[column].tolist())
     for raw in frame[column].tolist():
-        ts = _parse_join_datetime(raw)
+        ts = _parse_join_datetime(raw, day_first=day_first)
         if ts is None:
             skipped += 1
             continue

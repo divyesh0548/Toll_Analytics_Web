@@ -159,11 +159,10 @@ def _header_cell(value) -> str:
 
 
 def _header_key(value) -> str:
-    """Normalize so 'Issuance Fees (Rs.)' and 'Issuance Fees(Rs.)' match."""
-    text = _header_cell(value).casefold()
-    text = re.sub(r"\s*([()\[\]{}/_-])\s*", r"\1", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    """Letters and digits only, so 'Issuance Fees (Rs.)' matches 'IssuanceFeesRs'."""
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -192,9 +191,14 @@ def column_name(config: dict, key: str) -> str:
 
 
 def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
-    by_key = {_header_key(header): header for header in headers if _header_cell(header)}
+    by_key = {
+        key: header
+        for header in headers
+        if (key := _header_key(header))
+    }
     for alias in aliases:
-        match = by_key.get(_header_key(alias))
+        key = _header_key(alias)
+        match = by_key.get(key) if key else None
         if match:
             return match
     return None

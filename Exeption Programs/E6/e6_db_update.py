@@ -152,16 +152,19 @@ def connection_kwargs() -> dict:
 
 
 def _normalize_header_key(value) -> str:
-    text = "" if value is None else str(value)
-    text = text.replace("\u00a0", " ").strip().lower()
-    return " ".join(text.split())
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     by_key = {_normalize_header_key(h): h for h in headers if str(h).strip()}
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 
@@ -178,7 +181,7 @@ def _to_float_or_none(value) -> float | None:
         return None
 
 
-def parse_tag_read_datetime(value) -> pd.Timestamp | None:
+def parse_tag_read_datetime(value, *, day_first: bool = True) -> pd.Timestamp | None:
     """
     Parse Tag Read / read_datetime for metrics months.
 
@@ -197,9 +200,9 @@ def parse_tag_read_datetime(value) -> pd.Timestamp | None:
     if _ISO_DATETIME_RE.match(text):
         ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
     else:
-        ts = pd.to_datetime(text, dayfirst=True, errors="coerce")
+        ts = pd.to_datetime(text, dayfirst=day_first, errors="coerce")
         if pd.isna(ts):
-            ts = pd.to_datetime(text, dayfirst=False, errors="coerce")
+            ts = pd.to_datetime(text, dayfirst=not day_first, errors="coerce")
     if pd.isna(ts):
         return None
     return pd.Timestamp(ts)

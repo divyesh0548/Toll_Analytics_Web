@@ -232,13 +232,20 @@ def _header_cell(value) -> str:
 
 
 def _header_key(value) -> str:
-    return _header_cell(value).casefold()
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
-    by_key = {_header_key(header): header for header in headers if _header_cell(header)}
+    by_key = {
+        key: header
+        for header in headers
+        if (key := _header_key(header))
+    }
     for alias in aliases:
-        match = by_key.get(_header_key(alias))
+        key = _header_key(alias)
+        match = by_key.get(key) if key else None
         if match:
             return match
     return None
@@ -463,12 +470,24 @@ def month_frames(paths: list[Path], config: dict, date_order: str):
                 print(f"SKIP corrupt file {path.name}: {exc}")
                 continue
             raise
+        programs = Path(__file__).resolve().parents[1]
+        if str(programs) not in sys.path:
+            sys.path.insert(0, str(programs))
+        from common.date_order import infer_day_first
+
+        file_order = date_order
+        if "date" in frame.columns:
+            detected = infer_day_first(frame["date"].tolist())
+            if detected is True:
+                file_order = "dd/mm/yyyy"
+            elif detected is False:
+                file_order = "mm/dd/yyyy"
         for record in frame.itertuples(index=False):
             vehicle = vehicle_key(record.vehicle)
             if not vehicle:
                 skipped_vehicle += 1
                 continue
-            when = parse_date(record.date, date_order)
+            when = parse_date(record.date, file_order)
             if when is None:
                 skipped_date += 1
                 continue

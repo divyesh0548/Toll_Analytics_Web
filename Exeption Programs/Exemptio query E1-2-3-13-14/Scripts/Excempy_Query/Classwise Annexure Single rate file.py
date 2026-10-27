@@ -117,12 +117,35 @@ def load_data():
         return None
     return pd.concat(all_data, ignore_index=True)
 
+def _without_excluded_tc_classes(df):
+    """Drop EXCLUDE_TC_PATTERN rows, except the non-tollable class list."""
+    from pathlib import Path
+
+    programs = Path(__file__).resolve().parents[3]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.non_tollable import is_non_tollable_class
+
+    matched = df["TC Class"].astype(str).str.contains(
+        CONFIG["EXCLUDE_TC_PATTERN"], case=False, na=False
+    )
+    protected = df["TC Class"].map(is_non_tollable_class)
+    kept = int((matched & protected).sum())
+    removed = int((matched & ~protected).sum())
+    if kept or removed:
+        print(
+            f"  TC class filter: kept {kept} non-tollable row(s), "
+            f"removed {removed} other excluded row(s)."
+        )
+    return df[~(matched & ~protected)].copy()
+
+
 def clean_base_data(df):
     """Applies common cleaning steps across all processing flows."""
     print("Applying base cleaning...")
     
-    # 1. TC Class Exclusion
-    df = df[~df['TC Class'].str.contains(CONFIG["EXCLUDE_TC_PATTERN"], case=False, na=False)].copy()
+    # 1. TC Class Exclusion. Classes on non_tollable_vehicle_classes stay in the output.
+    df = _without_excluded_tc_classes(df)
     
     # 2. TC Class Standardization
     df['TC Class'] = df['TC Class'].astype(str).str.strip().str.upper()

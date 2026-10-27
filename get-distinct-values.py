@@ -21,8 +21,8 @@ from config.excel_config import (
     LANE_COLUMN_ALIASES,
     MOP_COLUMN_ALIASES,
     VEHICLE_CLASS_COLUMN_ALIASES,
-    normalize_key,
 )
+from common.header_match import normalize_header_match  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Inputs — update these before running
@@ -66,7 +66,11 @@ def read_raw_table(file_path: Path) -> pd.DataFrame:
 def all_column_aliases() -> set[str]:
     aliases: set[str] = set()
     for field_aliases in FIELD_COLUMN_ALIASES.values():
-        aliases.update(normalize_key(alias) for alias in field_aliases)
+        aliases.update(
+            key
+            for alias in field_aliases
+            if (key := normalize_header_match(alias))
+        )
     return aliases
 
 
@@ -79,10 +83,11 @@ def find_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int |
 
     for row_index in range(rows_to_scan):
         row_cells = {
-            normalize_key(value)
+            normalize_header_match(value)
             for value in df.iloc[row_index]
             if not pd.isna(value) and str(value).strip()
         }
+        row_cells.discard("")
         score = sum(1 for target in targets if target in row_cells)
         if score > best_score:
             best_score = score
@@ -110,14 +115,16 @@ def load_dataframe_with_detected_header(file_path: Path) -> tuple[pd.DataFrame, 
 
 
 def resolve_column_name(df: pd.DataFrame, column_aliases: list[str]) -> str:
-    normalized_aliases = [normalize_key(alias) for alias in column_aliases]
+    normalized_aliases = [
+        key for alias in column_aliases if (key := normalize_header_match(alias))
+    ]
 
     for alias in column_aliases:
         if alias in df.columns:
             return alias
 
     for column in df.columns:
-        if normalize_key(column) in normalized_aliases:
+        if normalize_header_match(column) in normalized_aliases:
             return column
 
     available = ", ".join(str(column) for column in df.columns)

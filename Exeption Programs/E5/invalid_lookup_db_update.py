@@ -30,6 +30,8 @@ import psycopg2
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 
 from e5_db_update import (  # noqa: E402
     connection_kwargs,
@@ -70,9 +72,15 @@ IMPACT_ALIASES = ["Impact", "Exception Value", "potential_exception_value"]
 
 
 def _resolve_col(df: pd.DataFrame, preferred: str, aliases: list[str]) -> str:
-    lookup = {str(c).strip().casefold(): str(c).strip() for c in df.columns}
+    from common.header_match import normalize_header_match
+
+    lookup = {
+        normalize_header_match(c): str(c).strip()
+        for c in df.columns
+        if normalize_header_match(c)
+    }
     for name in [preferred, *aliases]:
-        hit = lookup.get(str(name).strip().casefold())
+        hit = lookup.get(normalize_header_match(name))
         if hit is not None:
             return hit
     raise KeyError(
@@ -116,7 +124,16 @@ def _aggregate_sheet(
     if work.empty:
         return []
 
-    work["_ts"] = pd.to_datetime(work[date_col], errors="coerce")
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    work["_ts"] = pd.to_datetime(
+        work[date_col],
+        errors="coerce",
+        dayfirst=series_dayfirst(work[date_col].tolist(), default=True),
+    )
     work["_impact"] = pd.to_numeric(work[impact_col], errors="coerce").fillna(0)
     work = work.dropna(subset=["_ts"]).copy()
     if work.empty:

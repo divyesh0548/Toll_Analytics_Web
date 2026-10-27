@@ -160,13 +160,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 
 def _norm_header_token(value) -> str:
-    return (
-        str(value)
-        .upper()
-        .replace(" ", "")
-        .replace("_", "")
-        .replace(".", "")
-    )
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def resolve_entity_name() -> str:
@@ -219,8 +215,16 @@ def parse_output_datetimes(values) -> pd.Series:
         )
     other = (~iso_mask) & text.ne("")
     if other.any():
+        programs = Path(__file__).resolve().parents[1]
+        if str(programs) not in sys.path:
+            sys.path.insert(0, str(programs))
+        from common.date_order import series_dayfirst
+
         parsed.loc[other] = pd.to_datetime(
-            text[other], errors="coerce", format="mixed", dayfirst=True
+            text[other],
+            errors="coerce",
+            format="mixed",
+            dayfirst=series_dayfirst(text[other].tolist(), default=True),
         )
     return parsed
 
@@ -269,7 +273,9 @@ def month_periods_from_date_time(
 def read_excel_smart(file_path, config: dict | None = None):
     config = config or load_config()
     header_keywords = {
-        _norm_header_token(k) for k in (config.get("header_keywords") or [])
+        token
+        for k in (config.get("header_keywords") or [])
+        if (token := _norm_header_token(k))
     }
     scan_rows = int(config.get("header_scan_rows") or 25)
     min_matches = int(config.get("min_header_matches") or 2)
@@ -377,7 +383,7 @@ def _normalize_datetime_text(value) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def _parse_one_datetime(text: str, config: dict):
+def _parse_one_datetime(text: str, config: dict, *, day_first: bool | None = None):
     """
     Parse a single datetime string.
 
@@ -395,11 +401,17 @@ def _parse_one_datetime(text: str, config: dict):
     has_hyphen_date = bool(re.match(r"^\d{1,2}-\d{1,2}-\d{2,4}\b", text))
 
     # Prefer style-specific format lists first (avoids US/EU day-month swap).
+    # A value above 12 in the column overrides that guess.
     preferred: list[str] = []
-    if has_ampm and has_slash:
-        preferred.extend(config.get("datetime_formats_us_ampm") or [])
-    if has_hyphen_date and not has_ampm:
+    if day_first is True:
         preferred.extend(config.get("datetime_formats_dayfirst") or [])
+    elif day_first is False:
+        preferred.extend(config.get("datetime_formats_us_ampm") or [])
+    else:
+        if has_ampm and has_slash:
+            preferred.extend(config.get("datetime_formats_us_ampm") or [])
+        if has_hyphen_date and not has_ampm:
+            preferred.extend(config.get("datetime_formats_dayfirst") or [])
     preferred.extend(config.get("datetime_formats") or [])
 
     seen: set[str] = set()
@@ -415,7 +427,10 @@ def _parse_one_datetime(text: str, config: dict):
             continue
 
     # Fallback: dayfirst for hyphen/day-month style; month-first for slash+AM/PM
-    dayfirst = has_hyphen_date or (has_slash and not has_ampm)
+    if day_first is None:
+        dayfirst = has_hyphen_date or (has_slash and not has_ampm)
+    else:
+        dayfirst = day_first
     try:
         parsed = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
         if pd.notna(parsed):
@@ -442,7 +457,13 @@ def robust_parse_datetime(series, config: dict | None = None):
     if pd.api.types.is_datetime64_any_dtype(series):
         return pd.to_datetime(series)
 
-    parsed = series.map(lambda v: _parse_one_datetime(v, config))
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import infer_day_first
+
+    detected = infer_day_first(series.tolist())
+    parsed = series.map(lambda v: _parse_one_datetime(v, config, day_first=detected))
     return pd.to_datetime(parsed, errors="coerce")
 
 
@@ -1138,9 +1159,15 @@ def apply_applicable_rates(
         f"(default={default_journey!r})"
     )
 
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.non_tollable import is_non_tollable_class
+
     rates: list[float | None] = []
     rated = 0
     skipped = 0
+    non_tollable = 0
     used_old = 0
     used_apr26 = 0
     missing_date = 0
@@ -1158,6 +1185,11 @@ def apply_applicable_rates(
         if tc_key and tc_key in skip_set:
             rates.append(None)
             skipped += 1
+            continue
+
+        if is_non_tollable_class(tc_raw):
+            rates.append(None)
+            non_tollable += 1
             continue
 
         if ts is None or pd.isna(ts):
@@ -1204,6 +1236,11 @@ def apply_applicable_rates(
 
     result = df.copy()
     result[out_col] = rates
+    if non_tollable:
+        print(
+            f"Kept {non_tollable:,} non-tollable vehicle class row(s) "
+            "with no Applicable Rate (no TC class index)."
+        )
     total_amount = float(pd.to_numeric(result[out_col], errors="coerce").fillna(0).sum())
     print(
         f"Applicable Rate for entity {entity_name!r}: "
@@ -1211,6 +1248,7 @@ def apply_applicable_rates(
         f"(PLAZA_RATES={used_old}, Apr26_onwards={used_apr26}"
         + (f", missing date={missing_date}" if missing_date else "")
         + (f", skipped TC={skipped}" if skipped else "")
+        + (f", non-tollable={non_tollable}" if non_tollable else "")
         + f"), Total Amount={total_amount:,.2f}"
     )
     return result

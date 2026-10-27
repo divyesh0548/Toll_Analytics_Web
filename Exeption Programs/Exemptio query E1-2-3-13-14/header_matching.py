@@ -6,16 +6,15 @@ strip, casefold (lowercase), remove whitespace, remove symbols.
 Only letters and digits remain.
 """
 
+from __future__ import annotations
 
-def normalize_header_match(value) -> str:
-    if value is None:
-        return ""
-    try:
-        import pandas as pd
+import sys
+from pathlib import Path
 
-        if pd.isna(value):
-            return ""
-    except Exception:
-        pass
-    s = str(value).strip().casefold()
-    return "".join(ch for ch in s if ch.isalnum())
+_PROGRAMS = Path(__file__).resolve().parents[1]
+if str(_PROGRAMS) not in sys.path:
+    sys.path.insert(0, str(_PROGRAMS))
+
+from common.header_match import normalize_header_match
+
+__all__ = ["normalize_header_match"]

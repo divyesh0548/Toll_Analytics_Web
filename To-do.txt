@@ -1,6 +1,13 @@
+Tes Automatic web-scraping.
 
-Test the automatics web-scraping in website based exception queries.
 
-Run E15 for september
+Run full pipeline for Bassi plaza August month and compare the results with extracted ones.
+run E6 seperately as it is not avialable in Bassi.
+run E4 again. Lats time it had this error : 
 
-Run E6 Again for August and Sep.
+e04: failed — RuntimeError: Could not resolve columns for MP+Car/Jeep/Van filter: mapper_vehicle_class_column_names=['Mapper VC', 'NPCIClass', 'NPCI Class', 'NPCI Class Desc', 'NPCI Class Description']. Available: ['Sr No', 'Tag Id', 'Chassis/ Vehicle No', 'NPCI Vehicle Class', 'Vehilce Class Desc', 'Plaza Name', 'Pass Id', 'Pass Scheme', 'Pass Type', 'Pass Name', 'Start Effective Date', 'End Effective Date', 'Trips Allowed', 'Trips Taken', 'Channel', 'Issuance Date', 'Renewal Dt', 'Issuance Fees(Rs.)', 'Payment Mode', 'Payment Status', 'Stlmnt Dt', 'Stlmnt Amount', 'Stlmnt Status', 'Current Status', 'Issued By', 'Deactivated By', 'Deactivated Date', 'Deactivate Reason', 'NPCI Plaza Id', 'Autorenewal', 'AutoRenew Disable By', 'AutoRenew Disable Date', 'Old Pass Id', 'New Pass Id', 'Discount Name', 'Pass Category', 'Is Replacement', 'Old Tag Id', 'Bank Id', 'Bank Name', 'CC Avenue Order Id', 'Payment Reference No', 'CC Avenue Receipt No', 'Bank Payout Date', 'UTR No', 'Payment No', '__source_file']
+
+Also test E5 when IHMCL website starts working.
+
+
+Ask sir how to save IHMCL and permit scrapped data for later use? On what basis we should delete them?

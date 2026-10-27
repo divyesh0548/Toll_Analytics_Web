@@ -117,7 +117,9 @@ def _header_cell(value) -> str:
 
 
 def _header_key(value) -> str:
-    return _header_cell(value).casefold()
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -185,6 +187,8 @@ def missing_column_names(headers: list[str], names: tuple[str, str, str]) -> lis
 
 def resolve_header(headers: list[str], name: str) -> str:
     key = _header_key(name)
+    if not key:
+        raise LookupError(name)
     for header in headers:
         if _header_key(header) == key:
             return header
@@ -231,16 +235,33 @@ def is_unsettled(value, expected: str) -> bool:
     return _header_key(value) == _header_key(expected)
 
 
-def parse_datetime(value) -> datetime | None:
+_MONTH_FIRST_FORMATS = (
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m-%d-%Y %H:%M:%S",
+    "%m-%d-%Y %H:%M",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+)
+
+
+def parse_datetime(value, *, day_first: bool | None = None) -> datetime | None:
     text = _header_cell(value)
     if text.casefold() in _BLANK:
         return None
-    for fmt in _DATE_FORMATS:
+    formats = _DATE_FORMATS
+    if day_first is False:
+        formats = _MONTH_FIRST_FORMATS + _DATE_FORMATS
+    for fmt in formats:
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
-    parsed = pd.to_datetime(text, dayfirst=False, errors="coerce")
+    parsed = pd.to_datetime(
+        text,
+        dayfirst=True if day_first is not False else False,
+        errors="coerce",
+    )
     if pd.isna(parsed):
         return None
     return parsed.to_pydatetime()
@@ -274,8 +295,14 @@ def months_from_reader_time(df: pd.DataFrame, config: dict) -> list[tuple[int, i
     if time_name not in df.columns:
         return []
     pairs: set[tuple[int, int]] = set()
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import infer_day_first
+
+    day_first = infer_day_first(df[time_name].tolist())
     for raw in df[time_name].tolist():
-        when = parse_datetime(raw)
+        when = parse_datetime(raw, day_first=day_first)
         if when is None:
             continue
         pairs.add((int(when.year), int(when.month)))
@@ -324,6 +351,12 @@ def monthly_totals(unsettled: pd.DataFrame, config: dict) -> list[dict]:
     buckets: dict[tuple[int, int], dict] = defaultdict(lambda: {"rows": 0, "amount": 0.0})
     skipped_date = 0
     skipped_amount = 0
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import infer_day_first
+
+    day_first = infer_day_first(unsettled[time_name].tolist())
     for time_raw, amount_raw in zip(
         unsettled[time_name].tolist(),
         unsettled[amount_name].tolist(),
@@ -332,7 +365,7 @@ def monthly_totals(unsettled: pd.DataFrame, config: dict) -> list[dict]:
         if amount is None:
             skipped_amount += 1
             continue
-        when = parse_datetime(time_raw)
+        when = parse_datetime(time_raw, day_first=day_first)
         if when is None:
             skipped_date += 1
             continue

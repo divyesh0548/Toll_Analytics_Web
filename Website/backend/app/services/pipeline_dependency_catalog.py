@@ -123,9 +123,10 @@ PIPELINE_PROGRAMS: list[dict] = [
         "label": "E05 — Incorrect FASTag issuance",
         "sort_order": 30,
         "requires_pipeline_plaza_key": False,
-        # Scraped is required to enable E05 in the batch UI (no live scrape).
-        "required_slots": ["etc", "scraped"],
-        "optional_slots": [],
+        # ETC is required. A scraped IHMCL file is optional; without it the
+        # worker live-scrapes so a scrape run can be tested.
+        "required_slots": ["etc"],
+        "optional_slots": ["scraped"],
         "slot_map": {
             "etc": "lifecycle",
             "scraped": "ihmcl",

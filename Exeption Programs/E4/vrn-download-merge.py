@@ -324,7 +324,12 @@ def _normalize_header_cell(value) -> str:
 
 
 def _normalize_header_key(value) -> str:
-    return _normalize_header_cell(value).casefold()
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def detect_header_row(
@@ -401,7 +406,7 @@ def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     by_key = {_normalize_header_key(h): h for h in headers if _normalize_header_cell(h)}
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 
@@ -410,7 +415,18 @@ def _format_date_values(values: pd.Series, canonical: str, date_order: str) -> l
     texts = values.astype(str).tolist()
     if date_order not in _DATE_ORDERS or "date" not in canonical.casefold():
         return texts
-    parsed = [parse_vrn_date(value, date_order) for value in texts]
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import infer_day_first
+
+    detected = infer_day_first(texts)
+    order = date_order
+    if detected is True:
+        order = "dd/mm/yyyy"
+    elif detected is False:
+        order = "mm/dd/yyyy"
+    parsed = [parse_vrn_date(value, order) for value in texts]
     return [
         stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp is not None else ""
         for stamp in parsed

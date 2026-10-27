@@ -131,12 +131,14 @@ def _normalize_header_cell(value) -> str:
 
 
 def _normalize_header_key(value) -> str:
-    return _normalize_header_cell(value).casefold()
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def _normalize_value_key(value) -> str:
-    """Casefold + collapse whitespace for value comparisons."""
-    return _normalize_header_key(value)
+    """Casefold + collapse whitespace for pass-type and other value comparisons."""
+    return _normalize_header_cell(value).casefold()
 
 
 def normalize_vehicle_number(value) -> str:
@@ -152,7 +154,7 @@ def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     by_key = {_normalize_header_key(h): h for h in headers if _normalize_header_cell(h)}
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 
@@ -167,7 +169,7 @@ def detect_header_row(
     """
     Return 0-based row index of the header inside the first `scan_rows` rows.
     A row matches when at least `min_matches` keyword phrases appear as cells
-    (case-insensitive, whitespace-normalized).
+    (case-insensitive; spaces and symbols removed).
     """
     keyword_keys = {_normalize_header_key(k) for k in keywords if str(k).strip()}
     if not keyword_keys:

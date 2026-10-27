@@ -167,7 +167,17 @@ def parse_pass_date_series(values, label="pass date"):
     ``format='mixed'`` parses each value independently while ``dayfirst=True``
     preserves the convention used in these pass reports.
     """
-    parsed = pd.to_datetime(values, format="mixed", dayfirst=True, errors="coerce")
+    programs = Path(__file__).resolve().parents[4]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    parsed = pd.to_datetime(
+        values,
+        format="mixed",
+        dayfirst=series_dayfirst(values, default=True),
+        errors="coerce",
+    )
     invalid_count = int(values.notna().sum() - parsed.notna().sum())
     if invalid_count:
         print(

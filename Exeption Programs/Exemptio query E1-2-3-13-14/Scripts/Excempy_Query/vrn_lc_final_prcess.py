@@ -80,7 +80,16 @@ def _date_time_to_en_in_text(val) -> str:
         s = val.strip()
         if not s:
             return ""
-        ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
+        programs = Path(__file__).resolve().parents[3]
+        if str(programs) not in sys.path:
+            sys.path.insert(0, str(programs))
+        from common.date_order import series_dayfirst
+
+        ts = pd.to_datetime(
+            s,
+            errors="coerce",
+            dayfirst=series_dayfirst([s], default=True),
+        )
         if pd.isna(ts):
             return s
         return ts.strftime("%d/%m/%Y %H:%M:%S")

@@ -729,6 +729,11 @@ export function ExceptionPipelinePage() {
                       <span className="text-small text-muted-foreground">
                         Missing: {(p.missing_slots || []).join(', ') || 'inputs'}
                       </span>
+                    ) : p.code === 'e05' &&
+                      !(period?.files || []).some((f) => f.slot === 'scraped') ? (
+                      <span className="text-small text-muted-foreground">
+                        Ready. No scraped file — IHMCL will be scraped live when this check runs.
+                      </span>
                     ) : (
                       <span className="text-small text-muted-foreground">Ready</span>
                     )}

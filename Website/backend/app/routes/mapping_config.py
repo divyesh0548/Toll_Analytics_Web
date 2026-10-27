@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from flask import Blueprint, request
+from sqlalchemy.orm import selectinload
 
 from app.extensions import db
 from app.models.mapping_config import (
@@ -89,20 +90,32 @@ def _domain_for_canonical(canonical: MappingCanonical) -> MappingDomain:
 
 
 def _snapshot() -> dict:
-    domains = MappingDomain.query.order_by(MappingDomain.sort_order, MappingDomain.code).all()
+    domains = (
+        MappingDomain.query.options(
+            selectinload(MappingDomain.canonicals).selectinload(MappingCanonical.aliases)
+        )
+        .order_by(MappingDomain.sort_order, MappingDomain.code)
+        .all()
+    )
+    list_rows = (
+        MappingListItem.query.filter_by(is_active=True)
+        .order_by(MappingListItem.list_key, MappingListItem.value)
+        .all()
+    )
+    items_by_domain: dict[int, list] = {}
+    for item in list_rows:
+        items_by_domain.setdefault(item.domain_id, []).append(item)
     payload_domains = []
     for domain in domains:
-        canonicals = (
-            MappingCanonical.query.filter_by(domain_id=domain.id, is_active=True)
-            .order_by(MappingCanonical.sort_order, MappingCanonical.canonical_key)
-            .all()
+        canonicals = sorted(
+            (row for row in domain.canonicals if row.is_active),
+            key=lambda row: (row.sort_order, row.canonical_key),
         )
         groups = []
         for canonical in canonicals:
-            aliases = (
-                MappingAlias.query.filter_by(canonical_id=canonical.id, is_active=True)
-                .order_by(MappingAlias.alias)
-                .all()
+            aliases = sorted(
+                (row for row in canonical.aliases if row.is_active),
+                key=lambda row: row.alias.casefold(),
             )
             groups.append(
                 {
@@ -114,11 +127,7 @@ def _snapshot() -> dict:
                     "aliases": [{"id": alias.id, "alias": alias.alias} for alias in aliases],
                 }
             )
-        items = (
-            MappingListItem.query.filter_by(domain_id=domain.id, is_active=True)
-            .order_by(MappingListItem.list_key, MappingListItem.value)
-            .all()
-        )
+        items = items_by_domain.get(domain.id, [])
         lists: dict[str, list] = {}
         for list_key in ALLOWED_LISTS.get(domain.code, ()):
             lists.setdefault(list_key, [])
@@ -208,8 +217,15 @@ def add_alias(canonical_id: int):
             None,
             {"alias": alias, "group": canonical.canonical_key},
         )
+        existing = row
     db.session.commit()
-    return _snapshot()
+    return {
+        "alias": {
+            "id": existing.id,
+            "alias": existing.alias,
+            "canonical_id": canonical.id,
+        }
+    }
 
 
 @mapping_config_bp.patch("/aliases/<int:alias_id>")
@@ -235,7 +251,7 @@ def update_alias(alias_id: int):
     row.alias_normalized = normalized
     _audit(domain.code, "update_alias", before, {"alias": alias, "group": row.canonical.canonical_key})
     db.session.commit()
-    return _snapshot()
+    return {"alias": {"id": row.id, "alias": row.alias, "canonical_id": row.canonical_id}}
 
 
 @mapping_config_bp.delete("/aliases/<int:alias_id>")
@@ -248,7 +264,7 @@ def delete_alias(alias_id: int):
     row.is_active = False
     _audit(domain.code, "remove_alias", before, {"is_active": False})
     db.session.commit()
-    return _snapshot()
+    return {"removed_alias_id": alias_id}
 
 
 @mapping_config_bp.post("/domains/<string:domain_code>/lists/<string:list_key>")
@@ -288,8 +304,16 @@ def add_list_item(domain_code: str, list_key: str):
         db.session.add(row)
         db.session.flush()
         _audit(domain.code, "add_list_item", None, {"value": value, "list_key": list_key})
+        existing = row
     db.session.commit()
-    return _snapshot()
+    return {
+        "list_item": {
+            "id": existing.id,
+            "value": existing.value,
+            "domain_code": domain.code,
+            "list_key": list_key,
+        }
+    }
 
 
 @mapping_config_bp.patch("/list-items/<int:item_id>")
@@ -316,7 +340,14 @@ def update_list_item(item_id: int):
     row.value_normalized = normalized
     _audit(domain.code if domain else "", "update_list_item", before, {"value": value, "list_key": row.list_key})
     db.session.commit()
-    return _snapshot()
+    return {
+        "list_item": {
+            "id": row.id,
+            "value": row.value,
+            "domain_code": domain.code if domain else "",
+            "list_key": row.list_key,
+        }
+    }
 
 
 @mapping_config_bp.delete("/list-items/<int:item_id>")
@@ -329,7 +360,7 @@ def delete_list_item(item_id: int):
     row.is_active = False
     _audit(domain.code if domain else "", "remove_list_item", before, {"is_active": False})
     db.session.commit()
-    return _snapshot()
+    return {"removed_list_item_id": item_id}
 
 
 @mapping_config_bp.patch("/settings/<string:setting_key>")
@@ -364,4 +395,4 @@ def update_setting(setting_key: str):
     row.updated_by_user_id = user.id if user else None
     _audit("settings", "update_setting", {"key": setting_key, "value": before}, {"key": setting_key, "value": value})
     db.session.commit()
-    return _snapshot()
+    return {"setting": {"key": setting_key, "value": value}}

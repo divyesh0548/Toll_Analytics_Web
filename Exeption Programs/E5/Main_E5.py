@@ -252,7 +252,16 @@ def add_exception_values(
     values: list[float | None] = []
 
     if date_col and date_col in out.columns:
-        dates = pd.to_datetime(out[date_col], errors="coerce")
+        programs = Path(__file__).resolve().parents[1]
+        if str(programs) not in sys.path:
+            sys.path.insert(0, str(programs))
+        from common.date_order import series_dayfirst
+
+        dates = pd.to_datetime(
+            out[date_col],
+            errors="coerce",
+            dayfirst=series_dayfirst(out[date_col].tolist(), default=True),
+        )
     else:
         dates = pd.Series([pd.NaT] * len(out))
 
@@ -324,9 +333,15 @@ def resolve_column(df: pd.DataFrame, preferred: str, aliases: list[str]) -> str:
         text = str(name).strip()
         if text and text not in candidates:
             candidates.append(text)
-    lookup = {str(c).strip().casefold(): c for c in df.columns}
+    from common.header_match import normalize_header_match
+
+    lookup = {
+        normalize_header_match(c): c
+        for c in df.columns
+        if normalize_header_match(c)
+    }
     for name in candidates:
-        hit = lookup.get(name.casefold())
+        hit = lookup.get(normalize_header_match(name))
         if hit is not None:
             return hit
     raise KeyError(

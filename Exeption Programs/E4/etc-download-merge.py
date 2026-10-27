@@ -281,7 +281,12 @@ def _normalize_header_cell(value) -> str:
 
 
 def _normalize_header_key(value) -> str:
-    return _normalize_header_cell(value).casefold()
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def detect_header_row(
@@ -361,7 +366,7 @@ def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     by_key = {_normalize_header_key(h): h for h in headers if _normalize_header_cell(h)}
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 

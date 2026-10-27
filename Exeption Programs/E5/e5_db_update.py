@@ -131,7 +131,16 @@ def aggregate_monthly_totals(matched_df: pd.DataFrame) -> list[dict]:
         )
 
     work = matched_df.copy()
-    work["date"] = pd.to_datetime(work["date"], errors="coerce")
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    work["date"] = pd.to_datetime(
+        work["date"],
+        errors="coerce",
+        dayfirst=series_dayfirst(work["date"].tolist(), default=True),
+    )
     work = work.dropna(subset=["date"])
     work["year"] = work["date"].dt.year.astype(int)
     work["month"] = work["date"].dt.month.astype(int)

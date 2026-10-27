@@ -79,6 +79,14 @@ SEGMENT_LABELS = {
 }
 
 _NUMBER_BLANK = {"", "na", "n/a", "null", "none", "-", "nan"}
+_MONTH_FIRST_FORMATS = (
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+    "%m-%d-%Y %H:%M:%S",
+    "%m-%d-%Y %H:%M",
+)
 _DATETIME_FORMATS = (
     "%d-%m-%Y %H:%M:%S",
     "%d-%m-%Y %H:%M",
@@ -107,7 +115,7 @@ def parse_number(value) -> float | None:
         return None
 
 
-def parse_read_datetime(value) -> datetime | None:
+def parse_read_datetime(value, *, day_first: bool = True) -> datetime | None:
     """
     Parse VRN-style DD/MM timestamps (incl. 12-hour AM/PM) and ISO stamps.
     Examples: 01/08/2026 12:05:56 AM, 01-08-2026 00:05:56, 2026-08-01 00:05:56
@@ -115,13 +123,13 @@ def parse_read_datetime(value) -> datetime | None:
     text = re.sub(r"\s+", " ", str(value if value is not None else "").strip())
     if not text or text.lower() in _NUMBER_BLANK:
         return None
-    for fmt in _DATETIME_FORMATS:
+    formats = _DATETIME_FORMATS if day_first else _MONTH_FIRST_FORMATS + _DATETIME_FORMATS
+    for fmt in formats:
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
-    # Fallback: same dayfirst rule as Main_E10 join parsing
-    dayfirst = not bool(_ISO_DATETIME_RE.match(text))
+    dayfirst = False if _ISO_DATETIME_RE.match(text) else day_first
     ts = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
     if pd.isna(ts):
         return None
@@ -181,6 +189,12 @@ def aggregate_segments(csv_path: Path) -> tuple[list[dict], dict[str, int]]:
         "skipped_datetime": 0,
     }
 
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    day_first = series_dayfirst(frame[DATETIME_COLUMN].tolist(), default=True)
     for record in frame.to_dict(orient="records"):
         segment = classify_segment(
             parse_number(record.get(LANE_STD_COLUMN)),
@@ -190,7 +204,7 @@ def aggregate_segments(csv_path: Path) -> tuple[list[dict], dict[str, int]]:
         if segment is None:
             stats["skipped_weight"] += 1
             continue
-        when = parse_read_datetime(record.get(DATETIME_COLUMN))
+        when = parse_read_datetime(record.get(DATETIME_COLUMN), day_first=day_first)
         if when is None:
             stats["skipped_datetime"] += 1
             continue

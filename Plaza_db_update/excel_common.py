@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 import re
 import shutil
+import sys
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -40,6 +42,7 @@ from config.excel_config import (
     normalize_key,
     required_excel_columns,
 )
+from common.header_match import normalize_header_match
 from config.mappings import (
     load_mop_ignore_aliases,
     load_mop_mappings,
@@ -167,6 +170,25 @@ def parse_datetime_with_format(value, datetime_format: str) -> datetime:
     return datetime.strptime(text, datetime_format)
 
 
+def _formats_for_detected_order(sample: list, formats: list[str]) -> list[str]:
+    """Drop numeric month-first or day-first patterns once a value above 12 decides."""
+    programs = Path(__file__).resolve().parents[1] / "Exeption Programs"
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import infer_day_first
+
+    order = infer_day_first(sample)
+    if order is None:
+        return formats
+    kept: list[str] = []
+    for fmt in formats:
+        day_at = fmt.find("%d")
+        month_at = fmt.find("%m")
+        if day_at < 0 or month_at < 0 or (day_at < month_at) == order:
+            kept.append(fmt)
+    return kept or formats
+
+
 def _best_format(sample: list, formats: list[str]) -> str | None:
     best_format = None
     best_count = -1
@@ -196,7 +218,7 @@ def detect_datetime_format(values) -> str:
     if not sample:
         raise ValueError("No datetime values found to detect format.")
 
-    best_format = _best_format(sample, DATETIME_FORMATS)
+    best_format = _best_format(sample, _formats_for_detected_order(sample, DATETIME_FORMATS))
     if best_format is None:
         raise ValueError("Could not detect datetime format from file values.")
     return best_format
@@ -206,7 +228,7 @@ def detect_date_only_format(values) -> str:
     sample = non_empty_sample(values)
     if not sample:
         raise ValueError("No date values found to detect format.")
-    best_format = _best_format(sample, DATE_ONLY_FORMATS)
+    best_format = _best_format(sample, _formats_for_detected_order(sample, DATE_ONLY_FORMATS))
     if best_format is None:
         raise ValueError("Could not detect date-only format from file values.")
     return best_format
@@ -226,10 +248,11 @@ def find_column(df: pd.DataFrame, mapped_name: str) -> str:
     if mapped_name in df.columns:
         return mapped_name
 
-    normalized_target = normalize_key(mapped_name)
-    for column in df.columns:
-        if normalize_key(column) == normalized_target:
-            return column
+    normalized_target = normalize_header_match(mapped_name)
+    if normalized_target:
+        for column in df.columns:
+            if normalize_header_match(column) == normalized_target:
+                return column
 
     available = ", ".join(str(col) for col in df.columns)
     raise KeyError(
@@ -402,7 +425,7 @@ def parse_datetime(value, datetime_format: str | None = None) -> datetime:
         return parse_datetime_with_format(value, datetime_format)
 
     text = str(value).strip()
-    for fmt in datetime_formats_for_text(text):
+    for fmt in _formats_for_detected_order([text], datetime_formats_for_text(text)):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -584,14 +607,18 @@ def find_header_row(
 
     for row_index in range(len(df)):
         row_cells = {
-            normalize_key(value)
+            normalize_header_match(value)
             for value in df.iloc[row_index]
             if not pd.isna(value) and str(value).strip()
         }
+        row_cells.discard("")
         score = sum(
             1
             for aliases in required_alias_groups
-            if any(normalize_key(alias) in row_cells for alias in aliases)
+            if any(
+                (key := normalize_header_match(alias)) and key in row_cells
+                for alias in aliases
+            )
         )
         if score > best_score:
             best_score = score
@@ -683,15 +710,24 @@ def remove_empty_columns(filename: Path, sheet_name: str, header_row: int) -> Pa
 
 def read_csv_with_header_detection(path: Path) -> pd.DataFrame:
     """Read CSV after detecting and trimming rows above the real header."""
-    keywords = [keyword.upper() for keyword in HEADER_KEYWORDS]
+    keyword_keys = {
+        key
+        for keyword in HEADER_KEYWORDS
+        if (key := normalize_header_match(keyword))
+    }
 
     with open(path, "r", encoding="utf-8", errors="ignore") as file_obj:
         lines = file_obj.readlines()
 
     detected_header_index = None
     for line_index, line in enumerate(lines):
-        upper_line = line.upper()
-        keyword_count = sum(1 for keyword in keywords if keyword in upper_line)
+        try:
+            cells = next(csv.reader([line]))
+        except csv.Error:
+            cells = [line]
+        cell_keys = {normalize_header_match(cell) for cell in cells}
+        cell_keys.discard("")
+        keyword_count = sum(1 for key in keyword_keys if key in cell_keys)
         if keyword_count >= 2:
             detected_header_index = line_index
             break

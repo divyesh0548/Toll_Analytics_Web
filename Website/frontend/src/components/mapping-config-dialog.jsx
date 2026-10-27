@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { useToast } from '@/components/toast-provider'
 import {
   addMappingAlias,
   addMappingListItem,
@@ -42,63 +41,184 @@ function sourceLabel(key) {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : key
 }
 
-function ValueRow({ value, busy, onSave, onRemove, label }) {
-  const [text, setText] = useState(value)
-  useEffect(() => {
-    setText(value)
-  }, [value])
-  const dirty = text.trim() !== value
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <label className="min-w-[12rem] flex-1">
-        <span className="sr-only">{label}</span>
-        <input
-          className="h-8 w-full rounded-sm border border-border bg-background px-2 text-small"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-        />
-      </label>
-      <Button type="button" size="sm" disabled={!dirty || busy} onClick={() => onSave(text.trim())}>
-        Save
-      </Button>
-      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onRemove}>
-        Remove
-      </Button>
-    </div>
+function sortRows(rows, key) {
+  return [...rows].sort((a, b) =>
+    String(a[key]).localeCompare(String(b[key]), undefined, { sensitivity: 'base' }),
   )
 }
 
-function AddRow({ label, placeholder, busy, onAdd }) {
+function withAlias(data, canonicalId, alias) {
+  return {
+    ...data,
+    domains: data.domains.map((domain) => ({
+      ...domain,
+      groups: domain.groups.map((group) => {
+        if (group.id !== canonicalId) return group
+        const aliases = sortRows(
+          [...group.aliases.filter((row) => row.id !== alias.id), { id: alias.id, alias: alias.alias }],
+          'alias',
+        )
+        return { ...group, aliases }
+      }),
+    })),
+  }
+}
+
+function withoutAlias(data, aliasId) {
+  return {
+    ...data,
+    domains: data.domains.map((domain) => ({
+      ...domain,
+      groups: domain.groups.map((group) => ({
+        ...group,
+        aliases: group.aliases.filter((row) => row.id !== aliasId),
+      })),
+    })),
+  }
+}
+
+function withListItem(data, item) {
+  return {
+    ...data,
+    domains: data.domains.map((domain) => {
+      if (domain.code !== item.domain_code) return domain
+      return {
+        ...domain,
+        lists: domain.lists.map((list) => {
+          if (list.list_key !== item.list_key) return list
+          return {
+            ...list,
+            items: sortRows(
+              [...list.items.filter((row) => row.id !== item.id), { id: item.id, value: item.value }],
+              'value',
+            ),
+          }
+        }),
+      }
+    }),
+  }
+}
+
+function withoutListItem(data, itemId) {
+  return {
+    ...data,
+    domains: data.domains.map((domain) => ({
+      ...domain,
+      lists: domain.lists.map((list) => ({
+        ...list,
+        items: list.items.filter((row) => row.id !== itemId),
+      })),
+    })),
+  }
+}
+
+function withSetting(data, setting) {
+  return {
+    ...data,
+    settings: (data.settings || []).map((row) =>
+      row.key === setting.key ? { ...row, value: setting.value } : row,
+    ),
+  }
+}
+
+function ValueChip({ value, busy, onSave, onRemove, label }) {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(value)
+  const inputRef = useRef(null)
+  const cancelRef = useRef(false)
+
+  useEffect(() => {
+    setText(value)
+  }, [value])
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus()
+  }, [editing])
+
+  function commit() {
+    if (cancelRef.current) {
+      cancelRef.current = false
+      return
+    }
+    const next = text.trim()
+    setEditing(false)
+    if (!next || next === value) {
+      setText(value)
+      return
+    }
+    onSave(next)
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        aria-label={label}
+        className="h-7 min-w-[8rem] rounded-sm border border-border bg-background px-2 text-small"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            event.currentTarget.blur()
+          }
+          if (event.key === 'Escape') {
+            cancelRef.current = true
+            setText(value)
+            setEditing(false)
+          }
+        }}
+      />
+    )
+  }
+
+  return (
+    <span className="group inline-flex max-w-full items-center gap-1 rounded-sm border border-border bg-muted/50 py-0.5 pl-2 pr-1 text-small">
+      <button
+        type="button"
+        className="max-w-[16rem] truncate text-left"
+        title="Click to rename"
+        onClick={() => setEditing(true)}
+      >
+        {value}
+      </button>
+      <button
+        type="button"
+        className="rounded-sm p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+        aria-label={`Remove ${value}`}
+        disabled={busy}
+        onClick={onRemove}
+      >
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+      </button>
+    </span>
+  )
+}
+
+function AddChip({ busy, onAdd, placeholder }) {
   const [text, setText] = useState('')
   return (
-    <div className="flex flex-wrap items-end gap-2">
-      <label className="min-w-[12rem] flex-1 space-y-1">
-        <span className="block text-small text-muted-foreground">{label}</span>
-        <input
-          className="h-8 w-full rounded-sm border border-border bg-background px-2 text-small"
-          value={text}
-          placeholder={placeholder}
-          onChange={(event) => setText(event.target.value)}
-        />
-      </label>
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        disabled={busy || !text.trim()}
-        onClick={async () => {
-          const ok = await onAdd(text.trim())
-          if (ok) setText('')
-        }}
-      >
-        Add
-      </Button>
-    </div>
+    <input
+      className="h-7 w-36 rounded-sm border border-dashed border-border bg-transparent px-2 text-small placeholder:text-muted-foreground"
+      value={text}
+      placeholder={placeholder}
+      disabled={busy}
+      aria-label={placeholder}
+      onChange={(event) => setText(event.target.value)}
+      onKeyDown={async (event) => {
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        const next = text.trim()
+        if (!next || busy) return
+        const ok = await onAdd(next)
+        if (ok) setText('')
+      }}
+    />
   )
 }
 
 export function MappingConfigDialog({ open, onClose }) {
-  const { showToast } = useToast()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [section, setSection] = useState('')
@@ -152,13 +272,12 @@ export function MappingConfigDialog({ open, onClose }) {
 
   const activeDomain = (data?.domains || []).find((domain) => domain.code === section) || null
 
-  async function runChange(key, action) {
+  async function commit(key, action, apply) {
     setBusyKey(key)
     setError('')
     try {
-      const payload = await action()
-      setData(payload)
-      showToast('Config saved', 'success')
+      const result = await action()
+      setData((prev) => (prev ? apply(prev, result) : prev))
       return true
     } catch (err) {
       setError(err.message || 'Could not save config')
@@ -175,7 +294,7 @@ export function MappingConfigDialog({ open, onClose }) {
       open={open}
       onClose={onClose}
       title="Config"
-      description="Stored mapping values. Edit names, lists, and detection settings. These edits are saved in the database."
+      description="Click a value to rename it. Press Enter in the dashed box to add one. Hover a value and use × to remove it."
       className="mapping-config-dialog max-w-5xl"
     >
       {loading ? (
@@ -220,32 +339,41 @@ export function MappingConfigDialog({ open, onClose }) {
               <p className="text-small text-muted-foreground">
                 Values in this list are skipped and are not mapped to a group.
               </p>
-              <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {(list.items || []).map((item) => (
-                  <ValueRow
+                  <ValueChip
                     key={item.id}
                     value={item.value}
                     label={list.label}
                     busy={busyKey === `list-${item.id}`}
                     onSave={(value) =>
-                      runChange(`list-${item.id}`, () => updateMappingListItem(item.id, value))
+                      commit(
+                        `list-${item.id}`,
+                        () => updateMappingListItem(item.id, value),
+                        (prev) => withListItem(prev, { id: item.id, value, domain_code: activeDomain.code, list_key: list.list_key }),
+                      )
                     }
                     onRemove={() =>
-                      runChange(`list-${item.id}`, () => deleteMappingListItem(item.id))
+                      commit(
+                        `list-${item.id}`,
+                        () => deleteMappingListItem(item.id),
+                        (prev) => withoutListItem(prev, item.id),
+                      )
                     }
                   />
                 ))}
+                <AddChip
+                  placeholder="Add and press Enter"
+                  busy={busyKey === `add-list-${list.list_key}`}
+                  onAdd={(value) =>
+                    commit(
+                      `add-list-${list.list_key}`,
+                      () => addMappingListItem(activeDomain.code, list.list_key, value),
+                      (prev, result) => withListItem(prev, result.list_item),
+                    )
+                  }
+                />
               </div>
-              <AddRow
-                label={`Add ${list.label.toLowerCase()} value`}
-                placeholder="New value"
-                busy={busyKey === `add-list-${list.list_key}`}
-                onAdd={(value) =>
-                  runChange(`add-list-${list.list_key}`, () =>
-                    addMappingListItem(activeDomain.code, list.list_key, value),
-                  )
-                }
-              />
             </section>
           ))}
 
@@ -268,30 +396,41 @@ export function MappingConfigDialog({ open, onClose }) {
               <p className="text-small font-medium text-foreground">
                 {ALIAS_LABEL[activeDomain.code] || 'Aliases'}
               </p>
-              <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {(group.aliases || []).map((alias) => (
-                  <ValueRow
+                  <ValueChip
                     key={alias.id}
                     value={alias.alias}
                     label={group.label}
                     busy={busyKey === `alias-${alias.id}`}
                     onSave={(value) =>
-                      runChange(`alias-${alias.id}`, () => updateMappingAlias(alias.id, value))
+                      commit(
+                        `alias-${alias.id}`,
+                        () => updateMappingAlias(alias.id, value),
+                        (prev) => withAlias(prev, group.id, { id: alias.id, alias: value }),
+                      )
                     }
                     onRemove={() =>
-                      runChange(`alias-${alias.id}`, () => deleteMappingAlias(alias.id))
+                      commit(
+                        `alias-${alias.id}`,
+                        () => deleteMappingAlias(alias.id),
+                        (prev) => withoutAlias(prev, alias.id),
+                      )
                     }
                   />
                 ))}
+                <AddChip
+                  placeholder="Add and press Enter"
+                  busy={busyKey === `add-alias-${group.id}`}
+                  onAdd={(value) =>
+                    commit(
+                      `add-alias-${group.id}`,
+                      () => addMappingAlias(group.id, value),
+                      (prev, result) => withAlias(prev, group.id, result.alias),
+                    )
+                  }
+                />
               </div>
-              <AddRow
-                label="Add value"
-                placeholder="New value"
-                busy={busyKey === `add-alias-${group.id}`}
-                onAdd={(value) =>
-                  runChange(`add-alias-${group.id}`, () => addMappingAlias(group.id, value))
-                }
-              />
             </section>
           ))}
         </div>
@@ -307,7 +446,11 @@ export function MappingConfigDialog({ open, onClose }) {
                 row={row}
                 busy={busyKey === `setting-${row.key}`}
                 onSave={(value) =>
-                  runChange(`setting-${row.key}`, () => updateMappingSetting(row.key, value))
+                  commit(
+                    `setting-${row.key}`,
+                    () => updateMappingSetting(row.key, value),
+                    (prev, result) => withSetting(prev, result.setting),
+                  )
                 }
               />
             ))}
@@ -317,23 +460,24 @@ export function MappingConfigDialog({ open, onClose }) {
               <p className="text-small text-muted-foreground">
                 {SETTING_HELP.overrides_by_source}
               </p>
-              <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
                 {Object.keys(overrideDraft).map((key) => (
-                  <label key={key} className="flex flex-wrap items-center gap-3">
-                    <span className="w-40 text-small">{sourceLabel(key)}</span>
+                  <label key={key} className="group inline-flex items-center gap-2 rounded-sm border border-border bg-muted/40 py-1 pl-2 pr-1">
+                    <span className="text-small">{sourceLabel(key)}</span>
                     <input
                       type="number"
                       min="0"
-                      className="h-8 w-24 rounded-sm border border-border bg-background px-2 text-small"
+                      aria-label={`${sourceLabel(key)} minimum matches`}
+                      className="h-7 w-16 rounded-sm border border-border bg-background px-2 text-small"
                       value={overrideDraft[key]}
                       onChange={(event) =>
                         setOverrideDraft((prev) => ({ ...prev, [key]: event.target.value }))
                       }
                     />
-                    <Button
+                    <button
                       type="button"
-                      size="sm"
-                      variant="outline"
+                      className="rounded-sm p-0.5 text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+                      aria-label={`Remove ${sourceLabel(key)}`}
                       onClick={() =>
                         setOverrideDraft((prev) => {
                           const next = { ...prev }
@@ -342,8 +486,8 @@ export function MappingConfigDialog({ open, onClose }) {
                         })
                       }
                     >
-                      Remove
-                    </Button>
+                      <X className="h-3 w-3" />
+                    </button>
                   </label>
                 ))}
               </div>
@@ -392,8 +536,10 @@ export function MappingConfigDialog({ open, onClose }) {
                   for (const [key, raw] of Object.entries(overrideDraft)) {
                     payload[key] = Number(raw)
                   }
-                  runChange('setting-overrides_by_source', () =>
-                    updateMappingSetting('overrides_by_source', payload),
+                  commit(
+                    'setting-overrides_by_source',
+                    () => updateMappingSetting('overrides_by_source', payload),
+                    (prev, result) => withSetting(prev, result.setting),
                   )
                 }}
               >
@@ -412,25 +558,31 @@ function NumberSetting({ row, busy, onSave }) {
   useEffect(() => {
     setText(String(row.value ?? ''))
   }, [row.value])
-  const dirty = String(text) !== String(row.value ?? '')
+
+  function commitValue() {
+    if (busy) return
+    if (String(text) === String(row.value ?? '')) return
+    onSave(Number(text))
+  }
+
   return (
     <section className="space-y-2">
       <h3 className="text-header">{row.label}</h3>
       {SETTING_HELP[row.key] ? (
         <p className="text-small text-muted-foreground">{SETTING_HELP[row.key]}</p>
       ) : null}
-      <div className="flex items-center gap-2">
-        <input
-          type="number"
-          min="0"
-          className="h-8 w-28 rounded-sm border border-border bg-background px-2 text-small"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-        />
-        <Button type="button" size="sm" disabled={!dirty || busy} onClick={() => onSave(Number(text))}>
-          Save
-        </Button>
-      </div>
+      <input
+        type="number"
+        min="0"
+        className="h-8 w-28 rounded-sm border border-border bg-background px-2 text-small"
+        value={text}
+        disabled={busy}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commitValue}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur()
+        }}
+      />
     </section>
   )
 }

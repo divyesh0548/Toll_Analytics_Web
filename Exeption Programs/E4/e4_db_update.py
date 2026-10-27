@@ -128,16 +128,19 @@ def connection_kwargs() -> dict:
 
 
 def _normalize_header_key(value) -> str:
-    text = "" if value is None else str(value)
-    text = text.replace("\u00a0", " ").strip().lower()
-    return " ".join(text.split())
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def resolve_column(headers: list[str], aliases: list[str]) -> str | None:
     by_key = {_normalize_header_key(h): h for h in headers if str(h).strip()}
     for alias in aliases or []:
         key = _normalize_header_key(alias)
-        if key in by_key:
+        if key and key in by_key:
             return by_key[key]
     return None
 
@@ -175,7 +178,17 @@ _PASS_ISO = (
 
 def parse_ordered_datetime_series(series: pd.Series, date_order: str) -> pd.Series:
     """Parse pass-file dates. 18-03-2026 00:00:00 is dd/mm/yyyy, not month-first."""
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import infer_day_first
+
     order = str(date_order or "").strip().casefold()
+    detected = infer_day_first(series.tolist())
+    if detected is True:
+        order = "dd/mm/yyyy"
+    elif detected is False:
+        order = "mm/dd/yyyy"
     if order == "mm/dd/yyyy":
         formats = _PASS_MONTH_FIRST + _PASS_ISO + _PASS_NAMED_MONTH
         dayfirst = False

@@ -149,7 +149,9 @@ def _normalize_header_cell(value) -> str:
 
 
 def _normalize_header_key(value) -> str:
-    return _normalize_header_cell(value).casefold()
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def detect_header_row(
@@ -255,9 +257,9 @@ def resolve_vehicle_column(df: pd.DataFrame, columns_cfg: dict) -> str:
         if text and text not in candidates:
             candidates.append(text)
 
-    col_lookup = {str(c).strip().casefold(): c for c in df.columns}
+    col_lookup = {_normalize_header_key(c): c for c in df.columns if _normalize_header_key(c)}
     for name in candidates:
-        hit = col_lookup.get(name.casefold())
+        hit = col_lookup.get(_normalize_header_key(name))
         if hit is not None:
             return hit
 
@@ -1554,7 +1556,15 @@ def apply_rates_and_loss(
     journey_cat = str(RATE_JOURNEY_KEY or "single").strip().lower() or "single"
 
     # Day-first for DD-MM-YYYY (same as metrics) — avoid 01-08 → Jan 8.
-    tag_parsed = etc_df[tag_col].map(parse_tag_read_datetime)
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    tag_day_first = series_dayfirst(etc_df[tag_col].tolist(), default=True)
+    tag_parsed = etc_df[tag_col].map(
+        lambda value: parse_tag_read_datetime(value, day_first=tag_day_first)
+    )
     settlements = [_to_float_or_none(v) for v in etc_df[settle_col].tolist()]
 
     rates: list[float | None] = []
@@ -1648,8 +1658,14 @@ def month_periods_from_read_datetime(
         )
     periods: set[tuple[int, int]] = set()
     skipped = 0
+    programs = Path(__file__).resolve().parents[1]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    day_first = series_dayfirst(frame[column].tolist(), default=True)
     for raw in frame[column].tolist():
-        ts = _parse_output_datetime(raw)
+        ts = parse_tag_read_datetime(raw, day_first=day_first)
         if ts is None:
             skipped += 1
             continue

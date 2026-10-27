@@ -360,6 +360,11 @@
       "osv"
     ]
   },
+  "non_tollable_vehicle_classes": [
+    "3WHEELER",
+    "NC",
+    "TRACTOR"
+  ],
   "tc_class_skip_list": [
     "auto",
     "na",

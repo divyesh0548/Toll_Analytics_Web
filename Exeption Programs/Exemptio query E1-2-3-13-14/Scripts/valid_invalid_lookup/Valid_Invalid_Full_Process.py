@@ -295,9 +295,17 @@ def _detect_lifecycle_as_of_date(lifecycle_path) -> date | None:
         print("Valid/Invalid Lookup: no date column found in lifecycle file. Using base rates.")
         return None
 
-    parsed = pd.to_datetime(sample[date_col], errors="coerce", format="mixed")
+    programs = Path(__file__).resolve().parents[3]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.date_order import series_dayfirst
+
+    day_first = series_dayfirst(sample[date_col].tolist(), default=True)
+    parsed = pd.to_datetime(
+        sample[date_col], errors="coerce", format="mixed", dayfirst=day_first
+    )
     if parsed.isna().all():
-        parsed = pd.to_datetime(sample[date_col], errors="coerce", dayfirst=True)
+        parsed = pd.to_datetime(sample[date_col], errors="coerce", dayfirst=day_first)
     valid = parsed.dropna()
     if valid.empty:
         print(f"Valid/Invalid Lookup: column '{date_col}' has no parseable dates. Using base rates.")
