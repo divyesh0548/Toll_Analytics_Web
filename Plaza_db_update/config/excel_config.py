@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 
 # Date-only Excel header aliases (no time). When values are date-only, ETL
 # looks for a separate TIME column and combines the two.
@@ -205,6 +207,58 @@ HEADER_KEYWORDS.extend(ETC_NPCI_CLASS_COLUMN_ALIASES)
 HEADER_KEYWORDS.extend(ETC_SETTLEMENT_COLUMN_ALIASES)
 # Include mapped Excel column names in header detection.
 HEADER_KEYWORDS.extend(COLUMN_MAPPING.values())
+
+
+def _apply_mapping_tables() -> None:
+    """Replace plaza header and column alias lists with mapping-table values."""
+    programs = Path(__file__).resolve().parents[2] / "Exeption Programs"
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.mapping_store import alias_list, load_snapshot
+
+    snap = load_snapshot()
+    columns = snap["alias_lists"].get("column_alias") or {}
+
+    def _replace(target: list, key: str) -> None:
+        values = columns.get(key) or []
+        if values:
+            target.clear()
+            target.extend(values)
+
+    _replace(DATE_COLUMN_ALIASES, "date_part")
+    _replace(TIME_COLUMN_ALIASES, "time_part")
+    _replace(MOP_COLUMN_ALIASES, "mop")
+    _replace(LANE_COLUMN_ALIASES, "lane_no")
+    _replace(VEHICLE_CLASS_COLUMN_ALIASES, "tc_class")
+    _replace(ETC_DATETIME_COLUMN_ALIASES, "read_datetime")
+    _replace(ETC_NPCI_CLASS_COLUMN_ALIASES, "npci_class")
+    _replace(ETC_SETTLEMENT_COLUMN_ALIASES, "net_settlement_amt")
+
+    if DATE_COLUMN_ALIASES:
+        COLUMN_MAPPING["datetime"] = DATE_COLUMN_ALIASES[0]
+    if VEHICLE_CLASS_COLUMN_ALIASES:
+        COLUMN_MAPPING["vehicle_class"] = VEHICLE_CLASS_COLUMN_ALIASES[0]
+    if LANE_COLUMN_ALIASES:
+        COLUMN_MAPPING["lane_no"] = LANE_COLUMN_ALIASES[0]
+    if MOP_COLUMN_ALIASES:
+        COLUMN_MAPPING["mop"] = MOP_COLUMN_ALIASES[0]
+
+    plaza_keywords = alias_list("header_keyword", "plaza")
+    HEADER_KEYWORDS.clear()
+    if plaza_keywords:
+        HEADER_KEYWORDS.extend(plaza_keywords)
+    HEADER_KEYWORDS.extend(DATE_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(TIME_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(MOP_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(LANE_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(VEHICLE_CLASS_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(ETC_DATETIME_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(ETC_NPCI_CLASS_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(ETC_SETTLEMENT_COLUMN_ALIASES)
+    HEADER_KEYWORDS.extend(COLUMN_MAPPING.values())
+
+
+_apply_mapping_tables()
 
 
 def split_mappings(

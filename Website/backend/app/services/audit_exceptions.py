@@ -5,6 +5,7 @@ from __future__ import annotations
 from calendar import month_abbr, monthrange
 from collections import defaultdict
 from datetime import date
+from io import BytesIO
 
 from sqlalchemy import text
 
@@ -385,6 +386,29 @@ def build_plaza_audit_exceptions(
             "scope": "month",
         }
 
+    return _audit_payload(
+        plaza_identifier,
+        source=source,
+        selection=selection,
+        periods=periods,
+        years=years,
+        exceptions=exceptions,
+        year=year,
+        month=month,
+    )
+
+
+def _audit_payload(
+    plaza_identifier: str,
+    *,
+    source: str,
+    selection: dict,
+    periods,
+    years,
+    exceptions: list,
+    year: int,
+    month: int | None,
+) -> dict:
     return {
         "plaza_identifier": plaza_identifier,
         "metrics_source": source,
@@ -406,3 +430,67 @@ def build_plaza_audit_exceptions(
             "period_revenue": _plaza_period_revenue(plaza_identifier, year, month),
         },
     }
+
+
+def audit_exceptions_workbook(payload: dict, *, plaza_name: str) -> bytes:
+    """Spreadsheet of the on-screen audit figures. Does not include output files."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Audit exceptions"
+    selection = payload.get("selection") or {}
+    summary = payload.get("summary") or {}
+    sheet.append(["Plaza", plaza_name])
+    sheet.append(["Period", selection.get("label") or ""])
+    sheet.append(["Metrics source", payload.get("metrics_source") or "manual"])
+    sheet.append(["Total transactions", summary.get("total_count")])
+    sheet.append(["Total impact (₹)", summary.get("total_amount")])
+    sheet.append([])
+    sheet.append(
+        [
+            "Code",
+            "Exception",
+            "Transactions",
+            "Impact (in Lakh)",
+            "% of Revenue",
+            "Notes",
+        ]
+    )
+
+    revenue = summary.get("period_revenue")
+    lac = 100_000
+
+    def _append(line: dict) -> None:
+        percentage = line.get("percentage")
+        amount = line.get("total_amount")
+        count = line.get("total_count")
+        if percentage is not None:
+            transactions = None
+            impact = f"{float(percentage):.2f}%"
+            share = None
+        else:
+            transactions = count
+            impact = None if amount is None else round(float(amount) / lac, 2)
+            share = None
+            if revenue not in (None, 0) and amount is not None:
+                share = round((float(amount) / float(revenue)) * 100, 2)
+        sheet.append(
+            [
+                line.get("code") or "",
+                line.get("label") or "",
+                transactions,
+                impact,
+                None if share is None else f"{share:.2f}%",
+                line.get("notes") or "",
+            ]
+        )
+
+    for row in payload.get("exceptions") or []:
+        _append(row)
+        for segment in row.get("segments") or []:
+            _append(segment)
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()

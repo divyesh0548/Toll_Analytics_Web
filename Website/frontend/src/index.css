@@ -178,3 +178,24 @@
     @apply text-right tabular-nums;
   }
 }
+
+/* Chart and graph card titles — one weight and color across dashboards.
+   Unlayered so this wins over CardTitle's text-header utility. */
+h3.chart-title {
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: normal;
+  line-height: 1.5rem;
+  color: var(--muted-foreground);
+}
+
+/* Config actions: dark green fill with a light label in both themes. */
+.mapping-config-dialog button.bg-primary,
+.mapping-config-dialog button.bg-primary:hover {
+  background-color: oklch(0.4 0.12 145);
+  color: white;
+}
+
+.mapping-config-dialog button.bg-primary:hover {
+  background-color: oklch(0.36 0.12 145);
+}

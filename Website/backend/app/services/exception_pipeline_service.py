@@ -609,12 +609,9 @@ def find_batch_step_for_job(job_uuid: str) -> ExceptionPipelineBatchStep | None:
 
 
 # Env keys that must point at pipeline_* tables for File Upload child jobs.
-# Include Plaza_analytics_Table_NAME — E4/E6/E15 prefer it over Exception_Metrics_Table.
 _PIPELINE_TABLE_ENV_KEYS = (
     "Exception_Metrics_Table",
     "EXCEPTION_METRICS_TABLE",
-    "Plaza_analytics_Table_NAME",
-    "PLAZA_ANALYTICS_TABLE_NAME",
     "EXCEPTION_OUTPUT_FILES_TABLE",
     "Exception_Output_Files_Table",
     "PIPELINE_BATCH_MODE",
@@ -633,9 +630,6 @@ def apply_pipeline_env_for_job(job: ExceptionJob) -> bool:
         return False
     os.environ["Exception_Metrics_Table"] = PIPELINE_METRICS_TABLE
     os.environ["EXCEPTION_METRICS_TABLE"] = PIPELINE_METRICS_TABLE
-    # E4/E6/E15 resolve metrics table via Plaza_analytics_Table_NAME first.
-    os.environ["Plaza_analytics_Table_NAME"] = PIPELINE_METRICS_TABLE
-    os.environ["PLAZA_ANALYTICS_TABLE_NAME"] = PIPELINE_METRICS_TABLE
     os.environ["EXCEPTION_OUTPUT_FILES_TABLE"] = PIPELINE_OUTPUT_FILES_TABLE
     os.environ["Exception_Output_Files_Table"] = PIPELINE_OUTPUT_FILES_TABLE
     os.environ["PIPELINE_BATCH_MODE"] = "1"

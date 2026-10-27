@@ -446,7 +446,7 @@ function CategoryPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle className="chart-title">{title}</CardTitle>
         {description ? <CardDescription>{description}</CardDescription> : null}
       </CardHeader>
       <CardContent>
@@ -659,7 +659,7 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Category Comparison</CardTitle>
+          <CardTitle className="chart-title">Category Comparison</CardTitle>
           <CardDescription>Side-by-side count and revenue per category</CardDescription>
         </CardHeader>
         <CardContent>
@@ -677,7 +677,7 @@ export function OverallTollDashboard({ data, showYoy, dark, period = 'mtd' }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-subheader text-muted-foreground">
+          <CardTitle className="chart-title">
             {trendMeta.title}
           </CardTitle>
           <CardDescription>{trendMeta.description}</CardDescription>

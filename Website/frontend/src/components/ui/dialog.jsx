@@ -20,31 +20,33 @@ export function Dialog({ open, onClose, title, description, children, className 
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50">
       <button
         type="button"
-        className="absolute inset-0 bg-black/50"
+        className="fixed inset-0 cursor-default"
         aria-label="Close dialog"
         onClick={onClose}
       />
-      <div
-        role="dialog"
-        aria-modal="true"
-        className={cn(
-          'relative z-10 w-full max-w-lg rounded-sm border border-border bg-card p-5 text-card-foreground shadow-none',
-          className,
-        )}
-      >
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            {title ? <h2 className="text-header">{title}</h2> : null}
-            {description ? <p className="text-body text-muted-foreground">{description}</p> : null}
+      <div className="relative z-10 flex min-h-full items-center justify-center px-4 pt-8 pb-16">
+        <div
+          role="dialog"
+          aria-modal="true"
+          className={cn(
+            'flex max-h-[calc(100dvh-7.5rem)] w-full max-w-lg flex-col overflow-hidden rounded-sm border border-border bg-card text-card-foreground shadow-none',
+            className,
+          )}
+        >
+          <div className="flex shrink-0 items-start justify-between gap-3 p-5 pb-4">
+            <div className="space-y-1">
+              {title ? <h2 className="text-header">{title}</h2> : null}
+              {description ? <p className="text-body text-muted-foreground">{description}</p> : null}
+            </div>
+            <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+              <X className="h-4 w-4" />
+            </Button>
           </div>
-          <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close">
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8">{children}</div>
         </div>
-        {children}
       </div>
     </div>
   )

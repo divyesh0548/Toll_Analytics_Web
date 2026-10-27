@@ -48,6 +48,7 @@ def create_app(config_name: str | None = None) -> Flask:
         spvs_bp,
     )
     from app.routes.exception_pipeline import exception_pipeline_bp
+    from app.routes.mapping_config import mapping_config_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(companies_bp, url_prefix="/api/companies")
@@ -56,6 +57,7 @@ def create_app(config_name: str | None = None) -> Flask:
     app.register_blueprint(analytics_bp, url_prefix="/api/analytics")
     app.register_blueprint(exception_jobs_bp, url_prefix="/api/exception-jobs")
     app.register_blueprint(exception_pipeline_bp, url_prefix="/api/exception-pipeline")
+    app.register_blueprint(mapping_config_bp, url_prefix="/api/mapping-config")
 
     from flask import request
     from app.utils.api_log import log_api
@@ -81,4 +83,41 @@ def create_app(config_name: str | None = None) -> Flask:
     bootstrap_audit_exception_types_on_startup(app)
     start_exception_job_worker(app)
 
+    _register_mapping_cli(app)
+
     return app
+
+
+def _register_mapping_cli(app: Flask) -> None:
+    """Manual seed only — never runs on startup."""
+    import click
+
+    @app.cli.command("seed-shared-config")
+    @click.option(
+        "--replace",
+        is_flag=True,
+        help="Wipe existing mapping rows and load shared_config JSON again.",
+    )
+    def seed_shared_config_command(replace: bool) -> None:
+        """Load shared_config JSON into mapping tables (does not run by itself)."""
+        from app.services.mapping_config_seed import seed_shared_config
+
+        try:
+            result = seed_shared_config(replace=replace)
+        except (RuntimeError, FileNotFoundError) as exc:
+            raise SystemExit(str(exc)) from exc
+        counts = result["counts"]
+        click.echo(
+            "Seeded shared config from {root}\n"
+            "  canonicals: {canonicals}\n"
+            "  aliases: {aliases}\n"
+            "  list items: {list_items}\n"
+            "  settings: {settings}".format(root=result["root"], **counts)
+        )
+        skipped = result.get("skipped") or []
+        if skipped:
+            click.echo(f"Skipped {len(skipped)} duplicate aliases:")
+            for line in skipped[:40]:
+                click.echo(f"  {line}")
+            if len(skipped) > 40:
+                click.echo(f"  … and {len(skipped) - 40} more")

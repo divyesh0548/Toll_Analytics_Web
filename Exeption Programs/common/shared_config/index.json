@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "root": "Exeption Programs/common/shared_config",
+  "domains": [
+    {
+      "id": "vehicle_class",
+      "file": "vehicle_class.json",
+      "replaces": [
+        "Plaza_db_update/config/vehicle_class.json (aliases expanded)",
+        "E4/E5/E6/E15 class alias fragments"
+      ]
+    },
+    {
+      "id": "mop",
+      "file": "mop.json",
+      "replaces": [
+        "Plaza_db_update/config/mop.json (aliases expanded)",
+        "Normalization_JSON_Data.json MOP value aliases"
+      ]
+    },
+    {
+      "id": "column_aliases",
+      "file": "column_aliases.json",
+      "replaces": [
+        "E4 etc/vrn merge_columns",
+        "E5–E15 columns.* / merge_columns",
+        "LC_Normalization_Data.json",
+        "Normalization_JSON_Data.json headers",
+        "excel_config.py column alias lists",
+        "Header_Mapping/header_mapping.py"
+      ]
+    },
+    {
+      "id": "header_keywords",
+      "file": "header_keywords.json",
+      "replaces": [
+        "E4/E6/E11/E15 header_keywords bags",
+        "pass_separator HEADER_KEYWORDS",
+        "excel_config HEADER_KEYWORDS"
+      ]
+    },
+    {
+      "id": "tc_class_index_map",
+      "file": "tc_class_index_map.json",
+      "replaces": [
+        "E4/E5/E6/E15 tc_class_index_map (shared core)"
+      ]
+    },
+    {
+      "id": "journey_type_map",
+      "file": "journey_type_map.json",
+      "replaces": [
+        "E6/E15 journey_type_map core aliases"
+      ]
+    },
+    {
+      "id": "pass_type_values",
+      "file": "pass_type_values.json",
+      "replaces": [
+        "E4 mp/lt pass values",
+        "pass_separator_config.JSON pass values",
+        "E4 exclude_mp_car_jeep value sets"
+      ]
+    },
+    {
+      "id": "detection_defaults",
+      "file": "detection_defaults.json",
+      "replaces": [
+        "Repeated header_scan_rows / min_header_matches defaults"
+      ]
+    }
+  ],
+  "program_local_still": [
+    "E5 plaza_identifier / scrape / class_aliases pairing",
+    "E6 reason_keep / permit_type_keep / journey_type_exclude",
+    "E7 issuance rates + VC4 filter",
+    "E9 unsettled filter",
+    "E10 weight ranges / checkpost / std_weight_lookup",
+    "E15 from/to plaza columns / match_max_hours / tractor-in-index-1 overlay",
+    "annexure_plaza_config.json",
+    "valid_invalid journey drop lists / NPCI_TO_TC_CLASS",
+    "rate_cutover_date (differs by program)"
+  ]
+}

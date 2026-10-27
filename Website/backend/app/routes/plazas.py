@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from io import BytesIO
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 from app.extensions import db
 from app.models.calendar_event import PlazaCalendarEvent
 from app.models.plaza import Plaza
 from app.models.spv import Spv
-from app.services.audit_exceptions import build_plaza_audit_exceptions
+from app.services.audit_exceptions import (
+    audit_exceptions_workbook,
+    build_plaza_audit_exceptions,
+)
 from app.services.auth_tokens import deny_viewer_writes, get_current_user
 from app.services.calendar_events import (
     bulk_upsert_from_upload,
@@ -111,6 +115,43 @@ def get_plaza(plaza_identifier: str):
     plaza = Plaza.query.filter_by(plaza_identifier=plaza_identifier).first_or_404()
     log_ok(f"fetched plaza {plaza.plaza_name}")
     return jsonify(plaza.to_dict())
+
+
+@plazas_bp.get("/<plaza_identifier>/audit-exceptions/export")
+def plaza_audit_exceptions_export(plaza_identifier: str):
+    plaza = Plaza.query.filter_by(plaza_identifier=plaza_identifier).first_or_404()
+    year_raw = (request.args.get("year") or "").strip()
+    month_raw = (request.args.get("month") or "").strip()
+    metrics_source = (request.args.get("metrics_source") or "manual").strip().lower()
+    if metrics_source not in {"manual", "pipeline"}:
+        metrics_source = "manual"
+    try:
+        year = int(year_raw) if year_raw else None
+        month = int(month_raw) if month_raw else None
+    except ValueError:
+        return jsonify({"error": "year and month must be integers"}), 400
+    try:
+        payload = build_plaza_audit_exceptions(
+            plaza.plaza_identifier,
+            year=year,
+            month=month,
+            metrics_source=metrics_source,
+        )
+        content = audit_exceptions_workbook(payload, plaza_name=plaza.plaza_name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+    label = (payload.get("selection") or {}).get("label") or "audit"
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in plaza.plaza_name)
+    filename = f"audit-exceptions-{safe_name}-{label}.xlsx".replace(" ", "-")
+    return send_file(
+        BytesIO(content),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 @plazas_bp.get("/<plaza_identifier>/audit-exceptions")

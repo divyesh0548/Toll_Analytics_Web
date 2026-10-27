@@ -108,9 +108,8 @@ def load_env() -> None:
         and not (
             os.getenv("DB_HOST", "").strip()
             and (
-                os.getenv("Plaza_analytics_DB_NAME", "").strip()
+                os.getenv("Toll_Analytics_DB", "").strip()
                 or os.getenv("DB_NAME", "").strip()
-                or os.getenv("Toll_Analytics_DB", "").strip()
             )
         )
     ):
@@ -131,24 +130,22 @@ def require_env(name: str) -> str:
 
 def metrics_table_name() -> str:
     return (
-        os.getenv("Plaza_analytics_Table_NAME", "").strip()
-        or os.getenv("PLAZA_ANALYTICS_TABLE_NAME", "").strip()
-        or os.getenv("Exception_Metrics_Table", "").strip()
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
         or "audit_exception_metrics"
     )
 
 
 def connection_kwargs() -> dict:
     database = (
-        os.getenv("Plaza_analytics_DB_NAME", "").strip()
+        os.getenv("Toll_Analytics_DB", "").strip()
         or os.getenv("ANALYTICS_DB_NAME", "").strip()
-        or os.getenv("Toll_Analytics_DB", "").strip()
         or os.getenv("DB_NAME", "").strip()
     )
     if not database:
         raise RuntimeError(
             "Missing analytics DB name "
-            "(Plaza_analytics_DB_NAME / ANALYTICS_DB_NAME / Toll_Analytics_DB / DB_NAME)"
+            "(Toll_Analytics_DB / ANALYTICS_DB_NAME / DB_NAME)"
         )
     return {
         "host": require_env("DB_HOST"),

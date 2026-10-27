@@ -409,7 +409,7 @@ function AvgBarChart({
   return (
     <div>
       <div className="mb-2">
-        <h3 className="text-body font-medium">{title}</h3>
+        <h3 className="chart-title">{title}</h3>
         <p className="text-small text-muted-foreground">{subtitle}</p>
       </div>
       <Chart
@@ -913,7 +913,7 @@ export function TrafficStudyPanel({
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
               <div>
-                <CardTitle>Monthly traffic</CardTitle>
+                <CardTitle className="chart-title">Monthly traffic</CardTitle>
                 <CardDescription>
                   Event labels use a vertical line joined to the date on the X-axis
                 </CardDescription>
@@ -938,7 +938,7 @@ export function TrafficStudyPanel({
           <Card>
             <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
               <div>
-                <CardTitle>Events</CardTitle>
+                <CardTitle className="chart-title">Events</CardTitle>
                 <CardDescription>
                   {loading
                     ? 'Loading events…'

@@ -163,7 +163,10 @@ def load_config(path: Path = CONFIG_JSON) -> dict:
     if not path.is_file():
         return {}
     with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+        config = json.load(fh)
+    from common.mapping_store import overlay_shared_config
+
+    return overlay_shared_config(config, header_source="etc")
 
 
 def load_scrape_config(path: Path = CONFIG_JSON) -> dict:

@@ -1,0 +1,9 @@
+Some UI fixes require in the website.
+
+the config pop-up has a dark overlay on the webpage, which is good, but it not leaving some space in the bottom side, please fix that. 
+In that the buttons have dark green bg with black text, that makes it unclear. Fix that too.
+
+File upload shows Recommendation line, which stays there forever. Instaed display it with notification style and vanish it after 1 min. Also provide close button so user can also dismiss it.
+
+There are many design descipencies in the website. In the overview tab the text "Lane throughput
+" is in bold style white other graph labels are in normal text. This same issues is present in many pages. Detect them and fix it with consistent text styling.

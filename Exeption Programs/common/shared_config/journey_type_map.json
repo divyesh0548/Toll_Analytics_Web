@@ -1,0 +1,58 @@
+{
+  "_meta": {
+    "description": "Shared journey-type value aliases (core of E6 ∪ E15). Program exclude/keep lists stay in e6_config / E15_config."
+  },
+  "single": [
+    "single",
+    "single journey",
+    "s",
+    "sj",
+    "first journey",
+    "1st journey",
+    "first jouney",
+    "annualpass",
+    "annual pass",
+    "annual-pass",
+    "annual pass trip",
+    "annual pass trip commercial",
+    "annual pass trip personal",
+    "Local Cont.",
+    "Single Journey Gandhidham_Association",
+    "Single Journey LOCALSPECIALPASS",
+    "Single Journey LocalCommercialMonthly",
+    "Single Journey Mundra_Association",
+    "Single Journey Personal"
+  ],
+  "return": [
+    "return",
+    "return journey",
+    "Cont. Journey",
+    "r",
+    "rj",
+    "round trip",
+    "roundtrip",
+    "Return Journey Gandhidham_Association",
+    "Return Journey LOCALSPECIALPASS",
+    "Return Journey LocalCommercialMonthly",
+    "Return Journey Mundra_Association",
+    "Return Journey Personal"
+  ],
+  "local": [
+    "local",
+    "local journey",
+    "l",
+    "lj",
+    "monthly pass",
+    "local pass",
+    "Local Single",
+    "local single journey commercial",
+    "local monthly pass gandhidham association",
+    "local monthly pass mundra association",
+    "regular monthly pass gandhidham association",
+    "Local Monthly Pass LOCALSPECIALPASS",
+    "Local Monthly Pass Personal",
+    "Regular Monthly Pass LOCALSPECIALPASS",
+    "Regular Monthly Pass Mundra_Association",
+    "Regular Monthly Pass Personal"
+  ]
+}

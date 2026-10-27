@@ -18,6 +18,14 @@ from app.models.exception_pipeline import (
     PlazaMonthlyExceptionInput,
 )
 from app.models.gap_distribution import GapDistributionPerLane
+from app.models.mapping_config import (
+    MappingAlias,
+    MappingAudit,
+    MappingCanonical,
+    MappingDomain,
+    MappingListItem,
+    MappingSetting,
+)
 from app.models.mop_distribution_per_class import MopDistributionPerClass
 from app.models.mop_distribution_per_lane import MopDistributionPerLane
 from app.models.plaza import Plaza
@@ -47,4 +55,10 @@ __all__ = [
     "ExceptionPipelineBatchStep",
     "PipelineAuditExceptionMetric",
     "PipelineAuditExceptionOutputFile",
+    "MappingDomain",
+    "MappingCanonical",
+    "MappingAlias",
+    "MappingListItem",
+    "MappingSetting",
+    "MappingAudit",
 ]

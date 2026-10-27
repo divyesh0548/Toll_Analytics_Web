@@ -720,7 +720,7 @@ function LaneThroughputCard({ laneThroughput }) {
   return (
     <Card className="flex h-full flex-col">
       <CardHeader>
-        <CardTitle>Lane throughput</CardTitle>
+        <CardTitle className="chart-title">Lane throughput</CardTitle>
         <CardDescription>
           {lanes.length
             ? `${lanes.length} lanes · selected interval`
@@ -853,7 +853,7 @@ function LayoutOverview({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-subheader text-muted-foreground">
+          <CardTitle className="chart-title">
             Daily revenue &amp; traffic
           </CardTitle>
           <CardDescription>
@@ -874,7 +874,7 @@ function LayoutOverview({ data, dark }) {
       <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch">
         <Card>
           <CardHeader>
-            <CardTitle className="text-subheader text-muted-foreground">
+            <CardTitle className="chart-title">
               Mode mix — ETC / cash / exempt
             </CardTitle>
             <CardDescription>
@@ -893,7 +893,7 @@ function LayoutOverview({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-subheader text-muted-foreground">Class mix</CardTitle>
+            <CardTitle className="chart-title">Class mix</CardTitle>
             <CardDescription>
               {topClass
                 ? `Top: ${topClass.name} (${topClass.pct}%)`
@@ -951,7 +951,7 @@ function LayoutRevenue({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-subheader text-muted-foreground">Revenue — daily</CardTitle>
+          <CardTitle className="chart-title">Revenue — daily</CardTitle>
           <CardDescription>
             Bar chart for each day in {data.range_label || 'selected period'}
           </CardDescription>

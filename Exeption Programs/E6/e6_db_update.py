@@ -96,7 +96,7 @@ def load_env() -> None:
 
     Order: existing process env (Compose env_file) wins; then optional
     Website/backend/.env; then legacy E4/.env. File absence is OK when
-    DB_HOST / Plaza_analytics_DB_NAME are already set.
+    DB_HOST / Toll_Analytics_DB are already set.
     """
     loaded_any = False
     for path in _env_file_candidates():
@@ -106,9 +106,8 @@ def load_env() -> None:
     if loaded_any:
         return
     if os.getenv("DB_HOST", "").strip() and (
-        os.getenv("Plaza_analytics_DB_NAME", "").strip()
+        os.getenv("Toll_Analytics_DB", "").strip()
         or os.getenv("DB_NAME", "").strip()
-        or os.getenv("Toll_Analytics_DB", "").strip()
     ):
         return
     tried = ", ".join(str(p) for p in _env_file_candidates())
@@ -130,23 +129,19 @@ def require_env(name: str) -> str:
 
 def metrics_table_name() -> str:
     return (
-        os.getenv("Plaza_analytics_Table_NAME", "").strip()
-        or os.getenv("PLAZA_ANALYTICS_TABLE_NAME", "").strip()
-        or os.getenv("Exception_Metrics_Table", "").strip()
+        os.getenv("Exception_Metrics_Table", "").strip()
+        or os.getenv("EXCEPTION_METRICS_TABLE", "").strip()
         or "audit_exception_metrics"
     )
 
 
 def connection_kwargs() -> dict:
     database = (
-        os.getenv("Plaza_analytics_DB_NAME", "").strip()
-        or os.getenv("Toll_Analytics_DB", "").strip()
+        os.getenv("Toll_Analytics_DB", "").strip()
         or os.getenv("DB_NAME", "").strip()
     )
     if not database:
-        raise RuntimeError(
-            "Missing Plaza_analytics_DB_NAME / Toll_Analytics_DB / DB_NAME"
-        )
+        raise RuntimeError("Missing Toll_Analytics_DB / DB_NAME")
     return {
         "host": require_env("DB_HOST"),
         "port": int(os.getenv("DB_PORT") or "5432"),

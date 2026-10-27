@@ -570,7 +570,7 @@ export function LayoutGap({ data, dark }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-subheader text-muted-foreground">
+            <CardTitle className="chart-title">
               Average gap by lane
             </CardTitle>
             <CardDescription>Mean of hourly averages in the selected window</CardDescription>
@@ -590,7 +590,7 @@ export function LayoutGap({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-subheader text-muted-foreground">
+            <CardTitle className="chart-title">
               Gaps &lt; 2 seconds by lane
             </CardTitle>
             <CardDescription>LT2 counts summed over the selected window</CardDescription>
@@ -612,7 +612,7 @@ export function LayoutGap({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-subheader text-muted-foreground">Gap trend</CardTitle>
+          <CardTitle className="chart-title">Gap trend</CardTitle>
           <CardDescription>
             {data.trend_grain === 'hour'
               ? 'Hourly average gap and LT2 counts'
@@ -628,7 +628,7 @@ export function LayoutGap({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Per-lane gap stats</CardTitle>
+          <CardTitle className="chart-title">Per-lane gap stats</CardTitle>
           <CardDescription>Min/max are extremes of hourly average gaps</CardDescription>
         </CardHeader>
         <CardContent>
@@ -697,7 +697,7 @@ export function LayoutClassDistribution({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Class over time</CardTitle>
+          <CardTitle className="chart-title">Class over time</CardTitle>
           <CardDescription>
             {data.trend_grain === 'hour'
               ? 'Hourly class counts as lines'
@@ -722,7 +722,7 @@ export function LayoutClassDistribution({ data, dark }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-subheader text-muted-foreground">
+            <CardTitle className="chart-title">
               Vehicle class mix
             </CardTitle>
           </CardHeader>
@@ -740,7 +740,7 @@ export function LayoutClassDistribution({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Class × lane</CardTitle>
+            <CardTitle className="chart-title">Class × lane</CardTitle>
             <CardDescription>Counts by vehicle class across lanes</CardDescription>
           </CardHeader>
           <CardContent>
@@ -784,7 +784,7 @@ export function LayoutMopDistribution({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>MOP over time</CardTitle>
+          <CardTitle className="chart-title">MOP over time</CardTitle>
           <CardDescription>
             {data.trend_grain === 'hour'
               ? 'Hourly MOP counts as lines'
@@ -809,7 +809,7 @@ export function LayoutMopDistribution({ data, dark }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-subheader text-muted-foreground">MOP × lane</CardTitle>
+            <CardTitle className="chart-title">MOP × lane</CardTitle>
             <CardDescription>Counts by payment mode across lanes</CardDescription>
           </CardHeader>
           <CardContent>
@@ -818,7 +818,7 @@ export function LayoutMopDistribution({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>MOP × class</CardTitle>
+            <CardTitle className="chart-title">MOP × class</CardTitle>
             <CardDescription>Counts by payment mode across vehicle classes</CardDescription>
           </CardHeader>
           <CardContent>
@@ -844,7 +844,7 @@ export function LayoutSummary({ data, dark }) {
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader>
-            <CardTitle>Total by MOP</CardTitle>
+            <CardTitle className="chart-title">Total by MOP</CardTitle>
           </CardHeader>
           <CardContent>
             <SimpleBarChart
@@ -859,7 +859,7 @@ export function LayoutSummary({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Total by class</CardTitle>
+            <CardTitle className="chart-title">Total by class</CardTitle>
           </CardHeader>
           <CardContent>
             <SimpleBarChart
@@ -873,7 +873,7 @@ export function LayoutSummary({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Total by lane</CardTitle>
+            <CardTitle className="chart-title">Total by lane</CardTitle>
           </CardHeader>
           <CardContent>
             <SimpleBarChart
@@ -889,7 +889,7 @@ export function LayoutSummary({ data, dark }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>MOP × lane</CardTitle>
+            <CardTitle className="chart-title">MOP × lane</CardTitle>
             <CardDescription>Cross-join totals for the selected window</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -904,7 +904,7 @@ export function LayoutSummary({ data, dark }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>MOP × class</CardTitle>
+            <CardTitle className="chart-title">MOP × class</CardTitle>
             <CardDescription>Payment mode across vehicle classes</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -921,7 +921,7 @@ export function LayoutSummary({ data, dark }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Class × lane</CardTitle>
+          <CardTitle className="chart-title">Class × lane</CardTitle>
           <CardDescription>Vehicle class totals across lanes</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

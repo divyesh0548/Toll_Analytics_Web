@@ -299,8 +299,6 @@ def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
         for key in (
             "Exception_Metrics_Table",
             "EXCEPTION_METRICS_TABLE",
-            "Plaza_analytics_Table_NAME",
-            "PLAZA_ANALYTICS_TABLE_NAME",
             "EXCEPTION_OUTPUT_FILES_TABLE",
             "Exception_Output_Files_Table",
             "PIPELINE_BATCH_MODE",

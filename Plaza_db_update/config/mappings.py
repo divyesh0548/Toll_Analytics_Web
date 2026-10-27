@@ -1,4 +1,4 @@
-"""Load vehicle class and MOP mapping configs from JSON files.
+"""Load vehicle class and MOP mappings from the shared mapping tables.
 
 Vehicle class aliases are compared after uppercasing and removing spaces and symbols.
 MOP aliases are compared case-insensitively, with spacing collapsed.
@@ -6,10 +6,19 @@ MOP aliases are compared case-insensitively, with spacing collapsed.
 
 from __future__ import annotations
 
-import json
+import sys
 from pathlib import Path
 
 CONFIG_DIR = Path(__file__).resolve().parent
+_PROGRAMS = CONFIG_DIR.parents[1] / "Exeption Programs"
+if str(_PROGRAMS) not in sys.path:
+    sys.path.insert(0, str(_PROGRAMS))
+
+from common.mapping_store import (  # noqa: E402
+    list_values,
+    mop_mappings,
+    vehicle_class_mappings,
+)
 
 # Reserved top-level keys that are not category mappings.
 MOP_IGNORE_KEY = "ignore"
@@ -17,55 +26,19 @@ VEHICLE_CLASS_EXCLUDE_KEY = "exclude"
 RESERVED_MAPPING_KEYS = {MOP_IGNORE_KEY, VEHICLE_CLASS_EXCLUDE_KEY}
 
 
-def load_mappings(config_file: str) -> dict[str, tuple[str, list[str]]]:
-    path = CONFIG_DIR / config_file
-    raw = json.loads(path.read_text(encoding="utf-8"))
-
-    mappings: dict[str, tuple[str, list[str]]] = {}
-    for canonical, entry in raw.items():
-        if canonical in RESERVED_MAPPING_KEYS:
-            continue
-        if not isinstance(entry, dict):
-            raise ValueError(
-                f"{config_file}: entry for '{canonical}' must be an object "
-                f"with db_column and aliases."
-            )
-        db_column = entry["db_column"]
-        aliases = entry["aliases"]
-        if not isinstance(aliases, list):
-            raise ValueError(f"{config_file}: aliases for '{canonical}' must be a list.")
-        mappings[canonical] = (db_column, aliases)
-
-    return mappings
-
-
 def load_vehicle_class_mappings() -> dict[str, tuple[str, list[str]]]:
-    return load_mappings("vehicle_class.json")
+    return vehicle_class_mappings()
 
 
 def load_mop_mappings() -> dict[str, tuple[str, list[str]]]:
-    return load_mappings("mop.json")
+    return mop_mappings()
 
 
 def load_vehicle_class_exclude_aliases() -> list[str]:
     """Raw class labels that are skipped (not counted, do not fail validation)."""
-    path = CONFIG_DIR / "vehicle_class.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    excluded = raw.get(VEHICLE_CLASS_EXCLUDE_KEY, [])
-    if excluded is None:
-        return []
-    if not isinstance(excluded, list):
-        raise ValueError("vehicle_class.json: 'exclude' must be a list of strings.")
-    return [str(item) for item in excluded]
+    return list_values("vehicle_class", VEHICLE_CLASS_EXCLUDE_KEY)
 
 
 def load_mop_ignore_aliases() -> list[str]:
     """Raw MOP labels that are skipped (not counted, do not fail validation)."""
-    path = CONFIG_DIR / "mop.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    ignore = raw.get(MOP_IGNORE_KEY, [])
-    if ignore is None:
-        return []
-    if not isinstance(ignore, list):
-        raise ValueError("mop.json: 'ignore' must be a list of strings.")
-    return [str(item) for item in ignore]
+    return list_values("mop", MOP_IGNORE_KEY)

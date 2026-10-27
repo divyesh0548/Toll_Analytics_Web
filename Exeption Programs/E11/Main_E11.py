@@ -212,12 +212,16 @@ def load_config() -> dict:
     if not CONFIG_PATH.is_file():
         raise FileNotFoundError(f"Config not found: {CONFIG_PATH}")
     with CONFIG_PATH.open(encoding="utf-8") as handle:
-        return json.load(handle)
+        config = json.load(handle)
+    from common.mapping_store import overlay_shared_config
+
+    return overlay_shared_config(config, match_source="e11")
 
 
 def canonical_classes() -> list[str]:
-    raw = json.loads(VEHICLE_CLASS_PATH.read_text(encoding="utf-8"))
-    return [key for key in raw if key != "exclude" and isinstance(raw[key], dict)]
+    from common.mapping_store import canonical_keys
+
+    return canonical_keys("vehicle_class")
 
 
 def _header_cell(value) -> str:

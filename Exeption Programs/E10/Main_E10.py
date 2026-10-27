@@ -138,7 +138,10 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Config not found: {path}")
     with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+        config = json.load(fh)
+    from common.mapping_store import overlay_shared_config
+
+    return overlay_shared_config(config, header_source="vrn", match_source="vrn_thin")
 
 
 def load_env() -> None:
@@ -150,31 +153,16 @@ def load_env() -> None:
             f"Env file not found: {WEBSITE_ENV} (and DB_HOST not in process env)"
         )
 
-    # ETC / submissions (E4 etc-download-merge expects DB_NAME + Table_NAME)
+    # ETC / submissions (E4 etc-download-merge uses Source_DB_NAME + exceptions_Table_NAME)
     source_db = os.getenv("Source_DB_NAME", "").strip()
     if source_db:
         os.environ["DB_NAME"] = source_db
-    table = (
-        os.getenv("exceptions_Table_NAME", "").strip()
-        or os.getenv("Table_NAME", "").strip()
-        or "submissions"
-    )
-    os.environ["Table_NAME"] = table
+    table = os.getenv("exceptions_Table_NAME", "").strip() or "submissions"
+    os.environ["exceptions_Table_NAME"] = table
 
-    # Checkpost lives in E4/.env (Checkpost_DB_NAME / Checkpost_Table_NAME).
-    # override=False so Website Source_DB_NAME → DB_NAME mapping stays intact.
+    # Optional legacy E4/.env — override=False so Website .env wins.
     if E4_ENV.is_file():
         load_dotenv(E4_ENV, override=False)
-
-    # Accept CHECKPOST_* aliases if Checkpost_* not already set
-    if not os.getenv("Checkpost_DB_NAME", "").strip():
-        alias_db = os.getenv("CHECKPOST_DB", "").strip()
-        if alias_db:
-            os.environ["Checkpost_DB_NAME"] = alias_db
-    if not os.getenv("Checkpost_Table_NAME", "").strip():
-        alias_table = os.getenv("CHECKPOST_TABLE", "").strip()
-        if alias_table:
-            os.environ["Checkpost_Table_NAME"] = alias_table
 
 
 def require_env(name: str) -> str:
@@ -188,20 +176,31 @@ def require_env(name: str) -> str:
 
 
 def checkpost_connection_kwargs() -> dict:
+    """Checkpost weights live in RDS nhit (RDS_DB_NAME), not analytics DB_NAME."""
     load_env()
+    database = (
+        os.getenv("RDS_DB_NAME", "").strip()
+        or os.getenv("Checkpost_DB_NAME", "").strip()
+    )
+    if not database:
+        raise RuntimeError(
+            "Missing RDS_DB_NAME (nhit / checkpost DB) in Website/backend/.env"
+        )
+    host = os.getenv("RDS_HOST", "").strip() or require_env("DB_HOST")
+    user = os.getenv("RDS_USER", "").strip() or require_env("DB_USER")
     return {
-        "host": require_env("DB_HOST"),
-        "port": int(os.getenv("DB_PORT") or "5432"),
-        "user": require_env("DB_USER"),
-        "password": os.getenv("DB_PASSWORD", ""),
-        "database": require_env("Checkpost_DB_NAME"),
+        "host": host,
+        "port": int(os.getenv("RDS_PORT") or os.getenv("DB_PORT") or "5432"),
+        "user": user,
+        "password": os.getenv("RDS_PASSWORD", "") or os.getenv("DB_PASSWORD", ""),
+        "database": database,
     }
 
 
 def checkpost_table_name() -> str:
     return (
-        os.getenv("Checkpost_Table_NAME", "").strip()
-        or os.getenv("CHECKPOST_TABLE", "").strip()
+        os.getenv("RDS_TABLE_NAME", "").strip()
+        or os.getenv("Checkpost_Table_NAME", "").strip()
         or "checkpostmaster"
     )
 
@@ -358,7 +357,8 @@ def fetch_checkpost_weight_lookup(
 
     lookup: dict[str, str] = {}
     print(
-        f"Fetching checkpost weights from {require_env('Checkpost_DB_NAME')}.{table} "
+        f"Fetching checkpost weights from "
+        f"{os.getenv('RDS_DB_NAME') or os.getenv('Checkpost_DB_NAME')}.{table} "
         f"for {len(unique_vehs):,} unique vehicles…"
     )
     with psycopg2.connect(**checkpost_connection_kwargs()) as conn:

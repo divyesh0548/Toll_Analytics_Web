@@ -1,0 +1,34 @@
+{
+  "_meta": {
+    "description": "Pass-type value sets used by E4 and pass_separator (MP vs LT). Column aliases for pass fields live in column_aliases.json."
+  },
+  "mp_pass_type_values": [
+    "MP",
+    "LP",
+    "MLP",
+    "Monthly pass",
+    "Local 20 Km VC4 (350)",
+    "Local20KM"
+  ],
+  "lt_pass_type_values": [
+    "LT",
+    "Local Commercial Tariff 50%",
+    "50 % discount for local Comm",
+    "Local Non Commercial"
+  ],
+  "exclude_mp_car_jeep_pass_values": [
+    "MP",
+    "M.P",
+    "M.P.",
+    "Monthly Pass (MP)"
+  ],
+  "exclude_mp_car_jeep_class_values": [
+    "Car/Jeep/Van",
+    "Car / Jeep / Van",
+    "Car/ Jeep / Van",
+    "VC4",
+    "VC 4",
+    "Car Jeep Van",
+    "CAR\\JEEP"
+  ]
+}

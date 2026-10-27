@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "description": "Default header-detection parameters. Programs may override (E11/E15/E6 vrn_merge often use min_header_matches=2)."
+  },
+  "header_scan_rows": 25,
+  "min_header_matches": 3,
+  "overrides_by_source": {
+    "vrn_thin": { "min_header_matches": 2 },
+    "e11": { "min_header_matches": 2 },
+    "e15": { "min_header_matches": 2 }
+  }
+}

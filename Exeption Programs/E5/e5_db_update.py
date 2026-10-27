@@ -91,7 +91,6 @@ def toll_analytics_db_name() -> str:
     """
     return (
         os.getenv("Toll_Analytics_DB", "").strip()
-        or os.getenv("Plaza_analytics_DB_NAME", "").strip()
         or os.getenv("ANALYTICS_DB_NAME", "").strip()
         or require_env("DB_NAME")
     )

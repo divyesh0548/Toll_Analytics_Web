@@ -105,8 +105,6 @@ def connection_kwargs() -> dict:
 def table_name() -> str:
     return (
         os.getenv("exceptions_Table_NAME", "").strip()
-        or os.getenv("Table_NAME", "").strip()
-        or os.getenv("TABLE_NAME", "").strip()
         or "submissions"
     )
 
@@ -115,7 +113,13 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Config not found: {path}")
     with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+        config = json.load(fh)
+    programs = BASE_DIR.parent
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.mapping_store import overlay_shared_config
+
+    return overlay_shared_config(config, header_source="etc")
 
 
 def parse_iso_date(value: str, label: str) -> date:

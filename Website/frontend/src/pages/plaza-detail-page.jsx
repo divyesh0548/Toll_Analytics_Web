@@ -491,6 +491,7 @@ export function PlazaDetailPage() {
       {tab === 'audit' && (
         <AuditExceptionsPanel
           data={auditData}
+          plazaIdentifier={plazaIdentifier}
           loading={auditLoading}
           error={auditError}
           yearValue={auditDraft.year}

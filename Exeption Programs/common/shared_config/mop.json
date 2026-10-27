@@ -1,0 +1,58 @@
+{
+  "_meta": {
+    "description": "Canonical mode-of-payment values for plaza ETL + shared aliases from normalization / E* configs.",
+    "normalize": "casefold; strip trailing hyphens for matching at runtime"
+  },
+  "ignore": ["Violation"],
+  "cash": {
+    "db_column": "mop_cash",
+    "aliases": [
+      "CASH",
+      "Cash",
+      "CASH-CASH",
+      "CASHS",
+      "EXEMPT-CASH"
+    ]
+  },
+  "upi": {
+    "db_column": "mop_upi",
+    "aliases": [
+      "UPI",
+      "CASH-STATIC UPI",
+      "CASH-UPI"
+    ]
+  },
+  "exempt": {
+    "db_column": "mop_exempt",
+    "aliases": [
+      "EXEMPT",
+      "EXEMPTED",
+      "EXEMPT-",
+      "EXEMPT-NA",
+      "EXEMPTION",
+      "RUNTHROUGH",
+      "RUNTHROUGH-NA",
+      "Fleet"
+    ]
+  },
+  "fastag": {
+    "db_column": "mop_fastag",
+    "aliases": [
+      "TAG",
+      "TAG-",
+      "TAG-NA",
+      "TAGNA",
+      "TAG-CASH",
+      "FASTAG",
+      "FAST TAG",
+      "NETC FASTAG",
+      "ETC",
+      "ETC_PENALTY_CASH",
+      "ETC_PENALTY_CD"
+    ]
+  },
+  "overloading": {
+    "db_column": "mop_overloading",
+    "aliases": ["OVERLOADING"]
+  }
+}

@@ -179,8 +179,6 @@ def submissions_db_kwargs() -> dict:
 def submissions_table_name() -> str:
     return (
         os.getenv("exceptions_Table_NAME", "").strip()
-        or os.getenv("Table_NAME", "").strip()
-        or os.getenv("TABLE_NAME", "").strip()
         or SUBMISSIONS_TABLE
     )
 

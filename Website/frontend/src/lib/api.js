@@ -179,6 +179,39 @@ export function getPlazaNumbers(plazaIdentifier, period = 'mtd', range = {}) {
   return request(`/api/analytics/plazas/${plazaIdentifier}/numbers?${params.toString()}`)
 }
 
+export async function downloadPlazaAuditExceptions(
+  plazaIdentifier,
+  { year, month, metricsSource = 'manual' } = {},
+) {
+  const params = new URLSearchParams()
+  if (year != null && year !== '') params.set('year', String(year))
+  if (month != null && month !== '') params.set('month', String(month))
+  if (metricsSource) params.set('metrics_source', String(metricsSource))
+  const token = getToken()
+  const response = await fetch(
+    `${API_BASE}/api/plazas/${plazaIdentifier}/audit-exceptions/export?${params.toString()}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  )
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    const error = new Error(data.error || `Request failed (${response.status})`)
+    error.status = response.status
+    throw error
+  }
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const match = disposition.match(/filename="?([^";]+)"?/)
+  const filename = match?.[1] || 'audit-exceptions.xlsx'
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
 export function getPlazaAuditExceptions(
   plazaIdentifier,
   { year, month, metricsSource = 'manual' } = {},
@@ -503,6 +536,57 @@ export function startExceptionJob(jobUuid, { scrapeMode } = {}) {
 
 export function downloadExceptionJobFile(jobUuid, fileId) {
   return request(`/api/exception-jobs/${jobUuid}/files/${fileId}/download`)
+}
+
+export function getMappingConfig() {
+  return request('/api/mapping-config')
+}
+
+export function addMappingAlias(canonicalId, alias) {
+  return request(`/api/mapping-config/canonicals/${canonicalId}/aliases`, {
+    method: 'POST',
+    body: JSON.stringify({ alias }),
+  })
+}
+
+export function updateMappingAlias(aliasId, alias) {
+  return request(`/api/mapping-config/aliases/${aliasId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ alias }),
+  })
+}
+
+export function deleteMappingAlias(aliasId) {
+  return request(`/api/mapping-config/aliases/${aliasId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function addMappingListItem(domainCode, listKey, value) {
+  return request(`/api/mapping-config/domains/${domainCode}/lists/${listKey}`, {
+    method: 'POST',
+    body: JSON.stringify({ value }),
+  })
+}
+
+export function updateMappingListItem(itemId, value) {
+  return request(`/api/mapping-config/list-items/${itemId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ value }),
+  })
+}
+
+export function deleteMappingListItem(itemId) {
+  return request(`/api/mapping-config/list-items/${itemId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function updateMappingSetting(settingKey, value) {
+  return request(`/api/mapping-config/settings/${settingKey}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ value }),
+  })
 }
 
 export function markExceptionJobFailed(jobUuid, reason) {

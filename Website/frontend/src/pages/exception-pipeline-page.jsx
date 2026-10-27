@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, Loader2 } from 'lucide-react'
+import { ArrowLeft, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/ui/page-header'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { MappingConfigDialog } from '@/components/mapping-config-dialog'
+import { useAuth } from '@/components/auth-provider'
 import { useToast } from '@/components/toast-provider'
 import {
   createExceptionPipelineBatch,
@@ -54,6 +56,9 @@ const MONTHS = [
 
 export function ExceptionPipelinePage() {
   const { showToast } = useToast()
+  const { canWrite } = useAuth()
+  const [configOpen, setConfigOpen] = useState(false)
+  const [recommendationVisible, setRecommendationVisible] = useState(true)
   const now = new Date()
   const [plazas, setPlazas] = useState([])
   const [catalog, setCatalog] = useState(null)
@@ -89,6 +94,11 @@ export function ExceptionPipelinePage() {
   )
   const removeCount = pendingRemoveIds.size
   const hasUnsavedChanges = pendingCount > 0 || removeCount > 0
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setRecommendationVisible(false), 60_000)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -409,13 +419,41 @@ export function ExceptionPipelinePage() {
         }
         title="File Upload"
         description="Select plaza files for a month, stage adds or removals, click Save, then start the process. Independent exception checks can run two at a time; dependents (e.g. E15) wait for required outputs. Plaza analytics runs in parallel when VRN/ETC are present."
+        actions={
+          canWrite ? (
+            <Button type="button" variant="outline" onClick={() => setConfigOpen(true)}>
+              Config
+            </Button>
+          ) : null
+        }
       />
+      {canWrite ? (
+        <MappingConfigDialog open={configOpen} onClose={() => setConfigOpen(false)} />
+      ) : null}
 
-      <p className="w-full rounded-sm border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
-        Recommendation: upload and process one calendar month at a time. Mixing
-        multiple months in a single run can confuse period matching and make
-        results harder to review.
-      </p>
+      {recommendationVisible ? (
+        <div
+          role="status"
+          className="flex items-start justify-between gap-3 rounded-sm border border-primary/30 bg-card px-4 py-3 text-body shadow-sm"
+        >
+          <div>
+            <p className="font-medium text-primary">Notice</p>
+            <p className="mt-1 text-muted-foreground">
+              Recommendation: upload and process one calendar month at a time. Mixing
+              multiple months in a single run can confuse period matching and make
+              results harder to review.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Dismiss recommendation"
+            onClick={() => setRecommendationVisible(false)}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
 
       {error ? (
         <p className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-body">

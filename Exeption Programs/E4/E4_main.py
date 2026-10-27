@@ -107,7 +107,10 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Config not found: {path}")
     with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+        config = json.load(fh)
+    from common.mapping_store import overlay_shared_config
+
+    return overlay_shared_config(config, header_source="pass")
 
 
 def list_pass_files(folder: Path, extensions: list[str]) -> list[Path]:

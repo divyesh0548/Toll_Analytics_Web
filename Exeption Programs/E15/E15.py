@@ -153,6 +153,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         raise FileNotFoundError(f"Config not found: {path}")
     with path.open(encoding="utf-8") as fh:
         _CONFIG = json.load(fh)
+    from common.mapping_store import overlay_shared_config
+
+    _CONFIG = overlay_shared_config(_CONFIG, header_source="vrn", match_source="e15")
     return _CONFIG
 
 

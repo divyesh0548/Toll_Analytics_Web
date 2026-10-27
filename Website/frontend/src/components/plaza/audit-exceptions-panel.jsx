@@ -7,6 +7,7 @@ import { SearchableSelect } from '@/components/ui/searchable-select'
 import { Switch } from '@/components/ui/switch'
 import { Kpi } from '@/components/plaza/numbers-tabs'
 import { formatMoneyCompact } from '@/lib/chart-axis'
+import { downloadPlazaAuditExceptions } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const LAC = 100_000
@@ -222,6 +223,7 @@ function OutputCell({ line, wholeYear }) {
 
 export function AuditExceptionsPanel({
   data,
+  plazaIdentifier = '',
   loading = false,
   error = '',
   yearValue,
@@ -241,6 +243,8 @@ export function AuditExceptionsPanel({
     () => buildAuditYearOptions(data?.availability?.years || [], yearValue || data?.selection?.year),
     [data, yearValue],
   )
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const exceptions = data?.exceptions || []
   const summary = data?.summary
   const periodRevenue =
@@ -330,6 +334,32 @@ export function AuditExceptionsPanel({
             type="button"
             variant="outline"
             className="h-10"
+            disabled={loading || exporting || !plazaIdentifier || !data?.exceptions}
+            onClick={async () => {
+              const selection = data?.selection
+              if (!plazaIdentifier || !selection) return
+              setExporting(true)
+              setExportError('')
+              try {
+                await downloadPlazaAuditExceptions(plazaIdentifier, {
+                  year: selection.year,
+                  month: selection.scope === 'year' ? undefined : selection.month,
+                  metricsSource: data?.metrics_source || metricsSource,
+                })
+              } catch (err) {
+                setExportError(err.message || 'Could not export audit exceptions')
+              } finally {
+                setExporting(false)
+              }
+            }}
+          >
+            <Download className="h-3.5 w-3.5" />
+            {exporting ? 'Exporting…' : 'Export Excel'}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10"
             disabled={loading}
             onClick={() => onRefresh?.()}
             aria-label="Refresh audit exceptions"
@@ -339,6 +369,12 @@ export function AuditExceptionsPanel({
           </Button>
         </div>
       </div>
+
+      {exportError ? (
+        <p className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-body">
+          {exportError}
+        </p>
+      ) : null}
 
       {error ? (
         <Card>

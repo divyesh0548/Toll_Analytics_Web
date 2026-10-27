@@ -1,0 +1,64 @@
+{
+  "_meta": {
+    "description": "Header-row detection keyword bags by source file type. Used with header_scan_rows / min_header_matches.",
+    "usage": "A row is a header when it matches at least min_header_matches keywords (case-insensitive substring or exact, per program)."
+  },
+  "vrn": [
+    "Veh Reg No",
+    "Vehicle Reg No",
+    "TC Class",
+    "MVC",
+    "Date",
+    "Lane",
+    "MOP",
+    "AVC",
+    "Transaction"
+  ],
+  "etc": [
+    "Veh Reg No",
+    "Vehicle Reg No",
+    "Vehicle Number",
+    "Date & Time",
+    "Date and Time",
+    "Txn Date",
+    "Transaction Date",
+    "Tag Read",
+    "Reader Read Time",
+    "Settlement",
+    "Journey",
+    "Lane",
+    "MOP",
+    "Vehicle Class",
+    "NPCI"
+  ],
+  "pass": [
+    "Pass Type",
+    "Pass Scheme",
+    "Chassis",
+    "Vehicle No",
+    "Validity Start",
+    "Validity End",
+    "Start Date",
+    "End Date",
+    "Issuance",
+    "Transaction ID",
+    "Trips"
+  ],
+  "plaza": [
+    "DATE",
+    "TIME",
+    "MOP",
+    "LANE",
+    "VEH CLASS",
+    "Vehicle Class",
+    "Veh Reg"
+  ],
+  "lifecycle": [
+    "Veh Reg No",
+    "Vehicle Class",
+    "Issuance",
+    "Tag",
+    "Status",
+    "Date"
+  ]
+}

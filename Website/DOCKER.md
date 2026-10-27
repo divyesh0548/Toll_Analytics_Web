@@ -205,11 +205,15 @@ Quick check: open DevTools → Network while uploading. Look for a request to
 | Area | Keys |
 |------|------|
 | App DB | `DB_*`, `SECRET_KEY` |
-| Exempt headers | `RDS_*` |
+| Exempt headers / checkpost | `RDS_*` (`RDS_DB_NAME`=nhit, `RDS_TABLE_NAME`=checkpostmaster) |
 | Metrics | `Toll_Analytics_DB`, `Exception_Metrics_Table` |
+| Submissions | `Source_DB_NAME`, `exceptions_Table_NAME` |
 | S3 | `AWS_*` |
 | Scrape (all programs) | `SCRAPE_ENABLED`, `SCRAPE_USE_GRID`, `SCRAPE_GRID_URL`, `SCRAPE_MAX_NODES`, `SCRAPE_MAX_CONCURRENCY`, `SCRAPE_AUTO_MANAGE_NODES`, `SCRAPE_HEADLESS` |
 | Paths (Compose sets these) | `TOLL_REPO_ROOT`, `EXCEPTION_PROGRAMS_ROOT`, … |
+
+Canonical only — do not re-add: `Table_NAME`, `Plaza_analytics_*`, `Checkpost_*`
+(see `backend/.env.example`).
 
 Old `Exeption Programs/.env` and `E4/.env` are no longer read by the Website worker.
 Scrape settings no longer live in `e5_config.json` / `e6_config.json` (infra moved to `.env`).
