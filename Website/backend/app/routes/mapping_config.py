@@ -189,11 +189,11 @@ def add_alias(canonical_id: int):
         return {"error": "Alias is required"}, 400
     normalized = normalize_alias(alias)
     existing = MappingAlias.query.filter_by(
-        domain_id=canonical.domain_id,
+        canonical_id=canonical.id,
         alias_normalized=normalized,
     ).first()
     if existing and existing.is_active:
-        return {"error": "That value is already stored"}, 409
+        return {"error": "That word is already in this list"}, 409
     if existing:
         before = {"alias": existing.alias, "is_active": False}
         existing.alias = alias
@@ -239,12 +239,15 @@ def update_alias(alias_id: int):
         return {"error": "Alias is required"}, 400
     normalized = normalize_alias(alias)
     clash = MappingAlias.query.filter(
-        MappingAlias.domain_id == row.domain_id,
+        MappingAlias.canonical_id == row.canonical_id,
         MappingAlias.alias_normalized == normalized,
         MappingAlias.id != row.id,
     ).first()
+    if clash and clash.is_active:
+        return {"error": "That word is already in this list"}, 409
     if clash:
-        return {"error": "That value is already stored"}, 409
+        db.session.delete(clash)
+        db.session.flush()
     domain = _domain_for_canonical(row.canonical)
     before = {"alias": row.alias, "group": row.canonical.canonical_key}
     row.alias = alias

@@ -44,6 +44,9 @@ class Config:
     DEVELOPMENT_EXCEPTIONS = _env_flag("Development_Exceptions", False) or _env_flag(
         "SHOW_EXCEPTION_UPLOADS", False
     )
+    # 1 = upload exception outputs to S3 and write metrics tables.
+    # 0 = leave generated files on the server and offer a download instead.
+    PUBLISH_EXCEPTION_RESULTS = _env_flag("PUBLISH_EXCEPTION_RESULTS", True)
 
 
 class DevelopmentConfig(Config):

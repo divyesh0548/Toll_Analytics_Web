@@ -8,7 +8,8 @@ Common keys (all scrape programs):
   SCRAPE_USE_GRID         — 1 = Selenium Grid; 0 = local Chrome in this process
   SCRAPE_GRID_URL         — Grid hub URL (when USE_GRID=1)
   SCRAPE_MAX_NODES        — Chrome node containers to auto-start (when auto-manage)
-  SCRAPE_MAX_CONCURRENCY  — parallel scrape sessions / work chunks
+  SCRAPE_MAX_CONCURRENCY  — browser sessions on each node
+                            total scrape sessions = nodes × concurrency
   SCRAPE_MAX_SESSIONS     — legacy alias for CONCURRENCY (also fills NODES if unset)
   SCRAPE_AUTO_MANAGE_NODES— 1 = spawn chrome nodes against existing hub; 0 = use
                             already-registered nodes only

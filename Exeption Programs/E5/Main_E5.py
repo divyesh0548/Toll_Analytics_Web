@@ -473,14 +473,18 @@ def scrape_via_grid(
         scrape_cfg.get("selenium_node_image") or "selenium/node-chrome:latest"
     )
 
-    chunks = split_dataframe(vehicle_df, max_concurrency)
+    chunks = split_dataframe(vehicle_df, max_nodes * max_concurrency)
     if not chunks:
         return pd.DataFrame()
 
-    workers = min(len(chunks), max_concurrency)
+    # One browser session per chunk. Each node accepts max_concurrency sessions,
+    # so 10 nodes × 5 sessions = 50 browsers.
+    total_sessions = max_nodes * max_concurrency
+    workers = min(len(chunks), total_sessions)
     print(
         f"Grid scrape: {len(vehicle_df)} VRN(s) in {len(chunks)} chunk(s), "
-        f"concurrency={workers}, nodes={max_nodes}, auto_manage={auto_manage} → {remote_url}"
+        f"sessions={workers} ({max_nodes} nodes × {max_concurrency} each), "
+        f"auto_manage={auto_manage} → {remote_url}"
     )
 
     managed_nodes: list[str] = []
@@ -496,7 +500,11 @@ def scrape_via_grid(
                 node_image=node_image,
                 max_sessions=max_concurrency,
             )
-            wait_for_grid_ready(remote_url)
+            wait_for_grid_ready(
+                remote_url,
+                timeout_seconds=max(180, 25 * max_nodes),
+                min_nodes=max_nodes,
+            )
         else:
             assert_grid_ready(remote_url)
 

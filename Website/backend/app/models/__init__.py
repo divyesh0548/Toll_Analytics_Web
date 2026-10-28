@@ -28,6 +28,7 @@ from app.models.mapping_config import (
 )
 from app.models.mop_distribution_per_class import MopDistributionPerClass
 from app.models.mop_distribution_per_lane import MopDistributionPerLane
+from app.models.permit_scrape_cache import PermitScrapeCache
 from app.models.plaza import Plaza
 from app.models.plaza_daily_revenue import PlazaDailyRevenue
 from app.models.spv import Spv
@@ -38,6 +39,7 @@ __all__ = [
     "Company",
     "CompanyContact",
     "Spv",
+    "PermitScrapeCache",
     "Plaza",
     "PlazaCalendarEvent",
     "PlazaDailyRevenue",

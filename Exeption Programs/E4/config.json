@@ -22,6 +22,8 @@
     "NPCI Vehicle Class",
     "NPCI Vehicle Class Description",
     "Vehicle Class Description",
+    "Vehicle Class Desc",
+    "Vehilce Class Desc",
     "Vehicle Class"
   ],
   "exclude_mp_car_jeep_van": {
@@ -82,6 +84,8 @@
     "Issuance Fee",
     "Issueance Fee",
     "Issuance Fees",
+    "Issuance Fees(Rs.)",
+    "Issuance Fees (Rs.)",
     "Issue Fee",
     "Issuance fee"
   ],

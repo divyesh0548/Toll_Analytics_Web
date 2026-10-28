@@ -5,7 +5,7 @@ E6 — Local ETC + permit folder + local VRN → single rates/Loss → DB.
 2) Remove ETC rows whose Vehicle Class is Car/Jeep (index 1) or tc_class_skip_list
 3) Keep only Reason = "Discount Local Price"
 4) Join permit columns from PERMIT_FOLDER by vehicle number
-   (if no folder: shared permit_data.xlsx cache → scrape only missing VRNs)
+   (if no folder: permit_scrape_cache table → scrape only missing VRNs)
 5) Keep only rows whose Permit Type is "NATIONAL PERMIT"
 6) Merge VRN from VRN_INPUT_FOLDER; attach TC Class
 7) Applicable Rate = always single-journey rate for TC Class index; Loss = Rate − settlement
@@ -25,8 +25,7 @@ import json
 import os
 import re
 import sys
-import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -40,12 +39,6 @@ CONFIG_PATH = BASE_DIR / "e6_config.json"
 ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 OUTPUT_DIR = BASE_DIR / "output"
-# Shared across plazas — scrape once, reuse for 7 days.
-PERMIT_CACHE_DIR = BASE_DIR / "permit_cache"
-PERMIT_CACHE_FILE_NAME = "permit_data.xlsx"
-PERMIT_CACHE_RETENTION_DAYS = 7
-PERMIT_CACHE_VEHICLE_COL = "Veh Reg No"
-PERMIT_CACHE_SCRAPED_AT_COL = "scraped_at"
 
 if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
@@ -72,11 +65,10 @@ ENTITY_NAME = "mokha"
 ETC_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/etc_input"
 # Local VRN Excel/CSV folder for the same period. Required — VRN is not downloaded.
 VRN_INPUT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/vrn_input"
-# Folder of already-scraped permit Excel/CSV files (joined by vehicle number).
-# Empty / missing files → web scrape (Parivahan).
+# Optional folder of permit files for this run only.
+# Empty / missing files → permit table, then Parivahan for vehicles not stored.
 PERMIT_FOLDER = r"C:/Divyesh/Toll Analytics Dashboard/Exeption Programs/E6/Permit Input"
 ETC_OUTPUT_FILE = OUTPUT_DIR / "etc_enriched.xlsx"
-PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
 # plazas.plaza_identifier — required for metrics DB and S3 upload
 PLAZA_IDENTIFIER = ""
 EXCEPTION_TYPE_ID = 6
@@ -102,7 +94,7 @@ def _env_flag(name: str, default: bool) -> bool:
 def apply_website_env_overrides() -> None:
     """Apply E6_* env from Website job runner."""
     global ENTITY_NAME, ETC_INPUT_FOLDER, VRN_INPUT_FOLDER, PERMIT_FOLDER
-    global OUTPUT_DIR, ETC_OUTPUT_FILE, PERMIT_OUTPUT_FILE
+    global OUTPUT_DIR, ETC_OUTPUT_FILE
     global PLAZA_IDENTIFIER, UPDATE_DB, DB_DRY_RUN, UPLOAD_OUTPUT_TO_S3
 
     if os.environ.get("E6_ETC_INPUT_FOLDER", "").strip():
@@ -114,7 +106,6 @@ def apply_website_env_overrides() -> None:
     if os.environ.get("E6_OUTPUT_FILE", "").strip():
         ETC_OUTPUT_FILE = Path(os.environ["E6_OUTPUT_FILE"].strip())
         OUTPUT_DIR = ETC_OUTPUT_FILE.parent
-        PERMIT_OUTPUT_FILE = OUTPUT_DIR / "permit_data.xlsx"
     if os.environ.get("E6_PLAZA_IDENTIFIER", "").strip():
         PLAZA_IDENTIFIER = os.environ["E6_PLAZA_IDENTIFIER"].strip()
     if os.environ.get("E6_ENTITY_NAME", "").strip():
@@ -848,303 +839,6 @@ def unique_vehicle_frame(df: pd.DataFrame, vehicle_col: str) -> pd.DataFrame:
     )
 
 
-def permit_cache_path() -> Path:
-    """Shared plaza-agnostic permit Excel (not job/plaza specific)."""
-    override = os.environ.get("E6_PERMIT_CACHE_FILE", "").strip()
-    if override:
-        path = Path(override)
-        return path if path.is_absolute() else BASE_DIR / path
-    return PERMIT_CACHE_DIR / PERMIT_CACHE_FILE_NAME
-
-
-def _permit_cache_cutoff() -> datetime:
-    days = int(
-        os.environ.get("E6_PERMIT_CACHE_RETENTION_DAYS", "").strip()
-        or PERMIT_CACHE_RETENTION_DAYS
-    )
-    return datetime.now(timezone.utc) - timedelta(days=max(1, days))
-
-
-def cleanup_expired_permit_cache_files() -> int:
-    """Delete shared permit_data*.xlsx files older than retention (by mtime)."""
-    folder = permit_cache_path().parent
-    if not folder.is_dir():
-        return 0
-    cutoff_ts = _permit_cache_cutoff().timestamp()
-    deleted = 0
-    for path in folder.glob("permit_data*.xlsx"):
-        if path.name.startswith("~$"):
-            continue
-        try:
-            if path.stat().st_mtime < cutoff_ts:
-                path.unlink()
-                deleted += 1
-                print(f"Removed expired permit cache file: {path.name}")
-        except OSError as exc:
-            print(f"WARNING could not delete expired permit cache {path}: {exc}")
-    return deleted
-
-
-def _parse_scraped_at(value) -> datetime | None:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    if isinstance(value, datetime):
-        stamp = value
-    else:
-        text = str(value).strip()
-        if not text or text.casefold() in {"nan", "none", "nat", ""}:
-            return None
-        stamp = pd.to_datetime(text, utc=True, errors="coerce")
-        if pd.isna(stamp):
-            return None
-        stamp = stamp.to_pydatetime()
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
-    return stamp.astimezone(timezone.utc)
-
-
-def load_shared_permit_cache(
-    *,
-    vehicle_col: str,
-    columns_cfg: dict,
-) -> pd.DataFrame:
-    """
-    Load fresh rows from the shared permit_data.xlsx (≤ retention days).
-    Returns columns renamed to the job's vehicle_col + PERMIT_FIELDS.
-    """
-    cleanup_expired_permit_cache_files()
-    path = permit_cache_path()
-    if not path.is_file():
-        print(f"Shared permit cache not found ({path.name}) — will scrape as needed.")
-        return pd.DataFrame()
-
-    try:
-        frame = pd.read_excel(path, sheet_name=0, dtype=str)
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARNING could not read permit cache {path}: {exc}")
-        return pd.DataFrame()
-
-    if frame is None or frame.empty:
-        return pd.DataFrame()
-
-    frame.columns = [_normalize_header_cell(c) for c in frame.columns]
-    cache_veh = None
-    for candidate in (
-        PERMIT_CACHE_VEHICLE_COL,
-        "Veh Reg No.",
-        "vehicle_reg_no",
-        vehicle_col,
-    ):
-        if candidate in frame.columns:
-            cache_veh = candidate
-            break
-    if cache_veh is None:
-        try:
-            cache_veh = resolve_vehicle_column(frame, columns_cfg)
-        except KeyError:
-            print(
-                f"Shared permit cache missing vehicle column: {list(frame.columns)}"
-            )
-            return pd.DataFrame()
-
-    scraped_at_col = (
-        PERMIT_CACHE_SCRAPED_AT_COL
-        if PERMIT_CACHE_SCRAPED_AT_COL in frame.columns
-        else None
-    )
-    cutoff = _permit_cache_cutoff()
-    if scraped_at_col:
-        stamps = frame[scraped_at_col].map(_parse_scraped_at)
-        fresh_mask = stamps.map(
-            lambda ts: ts is not None and ts >= cutoff
-        )
-        # Rows without scraped_at: keep only if file itself is still within retention.
-        try:
-            file_fresh = path.stat().st_mtime >= cutoff.timestamp()
-        except OSError:
-            file_fresh = False
-        missing_at = stamps.map(lambda ts: ts is None)
-        keep = fresh_mask | (missing_at & file_fresh)
-        frame = frame.loc[keep].copy()
-    else:
-        try:
-            if path.stat().st_mtime < cutoff.timestamp():
-                print(
-                    f"Shared permit cache {path.name} has no scraped_at and is "
-                    f"older than {PERMIT_CACHE_RETENTION_DAYS} days — ignoring."
-                )
-                return pd.DataFrame()
-        except OSError:
-            return pd.DataFrame()
-
-    if frame.empty:
-        print("Shared permit cache has no fresh rows.")
-        return pd.DataFrame()
-
-    out = pd.DataFrame()
-    out[vehicle_col] = frame[cache_veh]
-    for field in PERMIT_FIELDS:
-        if field in frame.columns:
-            out[field] = frame[field]
-        else:
-            out[field] = ""
-    if scraped_at_col and scraped_at_col in frame.columns:
-        out[PERMIT_CACHE_SCRAPED_AT_COL] = frame[scraped_at_col]
-
-    out["_key"] = out[vehicle_col].map(normalize_vehicle_number)
-    out = (
-        out.loc[out["_key"].ne("")]
-        .drop_duplicates(subset=["_key"], keep="last")
-        .drop(columns=["_key"])
-        .reset_index(drop=True)
-    )
-    print(
-        f"Shared permit cache: {len(out):,} fresh VRN(s) from {path} "
-        f"(retention={PERMIT_CACHE_RETENTION_DAYS}d)"
-    )
-    return out
-
-
-def upsert_shared_permit_cache(
-    scraped_df: pd.DataFrame,
-    *,
-    vehicle_col: str,
-    columns_cfg: dict,
-) -> Path | None:
-    """Merge newly scraped rows into shared permit_data.xlsx (cross-plaza)."""
-    if scraped_df is None or scraped_df.empty:
-        return None
-
-    path = permit_cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    right = scraped_df.copy()
-    right.columns = [_normalize_header_cell(c) for c in right.columns]
-    try:
-        scrape_veh = resolve_vehicle_column(right, columns_cfg)
-    except KeyError:
-        scrape_veh = vehicle_col if vehicle_col in right.columns else None
-    if scrape_veh is None:
-        for col in right.columns:
-            key = str(col).casefold()
-            if "veh" in key and ("reg" in key or "no" in key or "number" in key):
-                scrape_veh = col
-                break
-    if scrape_veh is None:
-        print("Permit cache upsert skipped — no vehicle column on scrape result.")
-        return None
-
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
-    fresh = pd.DataFrame()
-    fresh[PERMIT_CACHE_VEHICLE_COL] = right[scrape_veh].map(
-        lambda v: str(v).strip() if v is not None else ""
-    )
-    for field in PERMIT_FIELDS:
-        if field in right.columns:
-            fresh[field] = right[field]
-        else:
-            fresh[field] = ""
-    fresh[PERMIT_CACHE_SCRAPED_AT_COL] = now_iso
-    fresh["_key"] = fresh[PERMIT_CACHE_VEHICLE_COL].map(normalize_vehicle_number)
-    fresh = fresh.loc[fresh["_key"].ne("")].copy()
-    # Skip rows with no scrape result (empty permits) — do not poison the cache
-    # when Chrome fails before any vehicle is processed.
-    has_result = False
-    for field in PERMIT_FIELDS:
-        if field not in fresh.columns:
-            continue
-        has_result = has_result | fresh[field].map(
-            lambda v: bool(str(v).strip()) if v is not None else False
-        )
-    if isinstance(has_result, bool):
-        if not has_result:
-            print("Permit cache upsert skipped — no rows with permit scrape results.")
-            return None
-    else:
-        fresh = fresh.loc[has_result].copy()
-    if fresh.empty:
-        print("Permit cache upsert skipped — no rows with permit scrape results.")
-        return None
-
-    existing = pd.DataFrame()
-    if path.is_file():
-        try:
-            existing = pd.read_excel(path, sheet_name=0, dtype=str)
-            existing.columns = [_normalize_header_cell(c) for c in existing.columns]
-        except Exception as exc:  # noqa: BLE001
-            print(f"WARNING could not read existing permit cache for upsert: {exc}")
-            existing = pd.DataFrame()
-
-    if not existing.empty:
-        # Normalize legacy vehicle column name.
-        if PERMIT_CACHE_VEHICLE_COL not in existing.columns:
-            for alt in ("Veh Reg No.", "vehicle_reg_no", vehicle_col):
-                if alt in existing.columns:
-                    existing = existing.rename(columns={alt: PERMIT_CACHE_VEHICLE_COL})
-                    break
-        for field in PERMIT_FIELDS:
-            if field not in existing.columns:
-                existing[field] = ""
-        if PERMIT_CACHE_SCRAPED_AT_COL not in existing.columns:
-            existing[PERMIT_CACHE_SCRAPED_AT_COL] = ""
-        if PERMIT_CACHE_VEHICLE_COL in existing.columns:
-            existing["_key"] = existing[PERMIT_CACHE_VEHICLE_COL].map(
-                normalize_vehicle_number
-            )
-            existing = existing.loc[existing["_key"].ne("")].copy()
-        else:
-            existing = pd.DataFrame()
-
-    # Drop expired rows from existing, then replace keys present in fresh.
-    cutoff = _permit_cache_cutoff()
-    if not existing.empty and PERMIT_CACHE_SCRAPED_AT_COL in existing.columns:
-        stamps = existing[PERMIT_CACHE_SCRAPED_AT_COL].map(_parse_scraped_at)
-        existing = existing.loc[
-            stamps.map(lambda ts: ts is not None and ts >= cutoff)
-        ].copy()
-
-    if not existing.empty and "_key" in existing.columns:
-        new_keys = set(fresh["_key"].tolist())
-        existing = existing.loc[~existing["_key"].isin(new_keys)].copy()
-
-    cols = [
-        PERMIT_CACHE_VEHICLE_COL,
-        *PERMIT_FIELDS,
-        PERMIT_CACHE_SCRAPED_AT_COL,
-        "_key",
-    ]
-    parts = []
-    if not existing.empty:
-        parts.append(existing[[c for c in cols if c in existing.columns]])
-    parts.append(fresh[cols])
-    merged = pd.concat(parts, ignore_index=True)
-    merged = (
-        merged.drop_duplicates(subset=["_key"], keep="last")
-        .drop(columns=["_key"])
-        .reset_index(drop=True)
-    )
-
-    # Atomic replace so parallel plaza jobs don't corrupt the workbook.
-    fd, tmp_name = tempfile.mkstemp(
-        suffix=".xlsx", prefix="permit_data_", dir=str(path.parent)
-    )
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        merged.to_excel(tmp_path, index=False)
-        tmp_path.replace(path)
-    except Exception:
-        if tmp_path.is_file():
-            tmp_path.unlink(missing_ok=True)
-        raise
-
-    print(
-        f"Updated shared permit cache: {path} "
-        f"({len(merged):,} VRN(s), +{len(fresh):,} this run)"
-    )
-    return path
-
-
 def scrape_permit_for_etc(
     etc_df: pd.DataFrame,
     vehicle_col: str,
@@ -1152,22 +846,17 @@ def scrape_permit_for_etc(
 ) -> pd.DataFrame:
     """
     Permit lookup for unique ETC VRNs:
-      1) shared permit_data.xlsx cache (cross-plaza, 7-day retention)
+      1) permit_scrape_cache table (cross-plaza, kept until replaced)
       2) Parivahan scrape for remaining VRNs only
-      3) upsert new scrapes into the shared cache
+      3) save new scrapes into that table
     """
     from web_scrap_for_permit import scrape_vehicle_details_for_permit
 
-    columns_cfg = config.get("columns") or {}
     unique_df = unique_vehicle_frame(etc_df, vehicle_col)
     if unique_df.empty:
         print("No vehicle numbers to scrape for permits.")
         return pd.DataFrame()
 
-    cache_df = load_shared_permit_cache(
-        vehicle_col=vehicle_col,
-        columns_cfg=columns_cfg,
-    )
     needed_keys = {
         normalize_vehicle_number(v)
         for v in unique_df[vehicle_col].tolist()
@@ -1175,19 +864,27 @@ def scrape_permit_for_etc(
     }
     cache_hits = pd.DataFrame()
     hit_keys: set[str] = set()
-    if not cache_df.empty:
-        cache_df = cache_df.copy()
-        cache_df["_key"] = cache_df[vehicle_col].map(normalize_vehicle_number)
-        cache_hits = (
-            cache_df.loc[cache_df["_key"].isin(needed_keys)]
-            .drop_duplicates(subset=["_key"], keep="last")
-            .reset_index(drop=True)
-        )
-        hit_keys = set(cache_hits["_key"].tolist())
-        cache_hits = cache_hits.drop(columns=["_key"], errors="ignore")
-        if PERMIT_CACHE_SCRAPED_AT_COL in cache_hits.columns:
-            cache_hits = cache_hits.drop(
-                columns=[PERMIT_CACHE_SCRAPED_AT_COL], errors="ignore"
+    if needed_keys:
+        try:
+            from common.permit_scrape_store import fetch_cached_permits
+
+            db_hits = fetch_cached_permits(needed_keys, vehicle_col=vehicle_col)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING permit database lookup failed: {exc}", flush=True)
+            db_hits = pd.DataFrame()
+        if db_hits is not None and not db_hits.empty:
+            db_hits = db_hits.copy()
+            db_hits["_key"] = db_hits[vehicle_col].map(normalize_vehicle_number)
+            db_hits = (
+                db_hits.loc[db_hits["_key"].isin(needed_keys)]
+                .drop_duplicates(subset=["_key"], keep="last")
+                .reset_index(drop=True)
+            )
+            hit_keys = set(db_hits["_key"].tolist())
+            cache_hits = db_hits.drop(columns=["_key"], errors="ignore")
+            print(
+                f"Permit database hits: {len(hit_keys):,} / {len(needed_keys):,}",
+                flush=True,
             )
 
     remaining = unique_df.copy()
@@ -1222,7 +919,7 @@ def scrape_permit_for_etc(
         scrape_mode = resolve_scrape_mode(env_key="E6_SCRAPE_MODE", default="live")
         print(f"E6 scrape mode: {scrape_mode}", flush=True)
         if scrape_mode == "export":
-            export_dir = Path(PERMIT_OUTPUT_FILE).parent if PERMIT_OUTPUT_FILE else OUTPUT_DIR
+            export_dir = OUTPUT_DIR
             export_path = write_vehicles_export(
                 remaining,
                 output_dir=export_dir,
@@ -1252,13 +949,11 @@ def scrape_permit_for_etc(
         if scraped is None:
             scraped = pd.DataFrame()
         if not scraped.empty:
-            upsert_shared_permit_cache(
-                scraped,
-                vehicle_col=vehicle_col,
-                columns_cfg=columns_cfg,
-            )
+            from common.permit_scrape_store import upsert_permit_frame
+
+            upsert_permit_frame(scraped, vehicle_col)
     else:
-        print("All VRNs found in shared permit cache — scrape skipped.")
+        print("All VRNs found in the permit table — scrape skipped.")
 
     frames = [f for f in (cache_hits, scraped) if f is not None and not f.empty]
     if not frames:
@@ -1385,39 +1080,6 @@ def merge_permit_into_etc(
     return merged
 
 
-def save_fetched_permit(
-    enriched: pd.DataFrame,
-    vehicle_col: str,
-    columns_cfg: dict,
-) -> Path | None:
-    """Write one row per vehicle with the permit columns that were joined."""
-    permit_cols = [
-        columns_cfg.get("permit_type") or PERMIT_FIELDS[0],
-        columns_cfg.get("permit_no") or PERMIT_FIELDS[1],
-        columns_cfg.get("permit_validity") or PERMIT_FIELDS[2],
-    ]
-    missing = [col for col in [vehicle_col, *permit_cols] if col not in enriched.columns]
-    if missing:
-        print(f"Permit Excel not written — missing columns: {missing}")
-        return None
-
-    work = enriched[[vehicle_col, *permit_cols]].copy()
-    work["_key"] = work[vehicle_col].map(normalize_vehicle_number)
-    work = (
-        work.loc[work["_key"].ne("")]
-        .drop_duplicates(subset=["_key"], keep="first")
-        .drop(columns=["_key"])
-        .reset_index(drop=True)
-    )
-    if work.empty:
-        print("Permit Excel not written — no vehicle rows.")
-        return None
-
-    path = save_etc(work, Path(PERMIT_OUTPUT_FILE))
-    print(f"Wrote permit data: {path} ({len(work):,} vehicle(s))")
-    return path
-
-
 def attach_permit_data(
     etc_df: pd.DataFrame,
     vehicle_col: str,
@@ -1431,14 +1093,14 @@ def attach_permit_data(
     paths = resolve_permit_paths()
     if paths:
         scraped = load_permit_frames(config, paths=paths)
-        print("Using uploaded / local permit files (shared cache not used).")
+        print("Using uploaded permit files for this run.")
     else:
         print(
-            f"No PERMIT_FOLDER upload — using shared {PERMIT_CACHE_FILE_NAME} "
-            f"cache then scrape remaining VRNs."
+            "No PERMIT_FOLDER upload — using the permit table, "
+            "then scraping remaining VRNs."
         )
         scraped = scrape_permit_for_etc(etc_df, vehicle_col, config)
-        print(f"Permit rows (cache + scrape): {len(scraped):,}")
+        print(f"Permit rows (table + scrape): {len(scraped):,}")
 
     enriched = merge_permit_into_etc(etc_df, scraped, vehicle_col, columns_cfg)
     matched = 0
@@ -1451,7 +1113,6 @@ def attach_permit_data(
         f"Permit fields applied to full ETC: {len(enriched):,} rows retained "
         f"({matched:,} with permit data)."
     )
-    save_fetched_permit(enriched, vehicle_col, columns_cfg)
     return enriched
 
 

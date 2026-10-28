@@ -101,7 +101,9 @@
     "Mapper VC",
     "Mapper Vehicle Class",
     "NPCI Vehicle Class",
-    "NPCI Vehicle Class Description"
+    "NPCI Vehicle Class Description",
+    "Vehicle Class Desc",
+    "Vehilce Class Desc"
   ],
   "mop": [
     "MOP",
@@ -233,6 +235,8 @@
     "Issuance Fee",
     "Issueance Fee",
     "Issuance Fees",
+    "Issuance Fees(Rs.)",
+    "Issuance Fees (Rs.)",
     "Issue Fee",
     "Issuance fee"
   ],

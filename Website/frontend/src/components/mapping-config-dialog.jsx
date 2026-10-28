@@ -122,10 +122,11 @@ function withSetting(data, setting) {
 }
 
 function ValueChip({ value, busy, onSave, onRemove, label }) {
+  const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(value)
   const inputRef = useRef(null)
-  const cancelRef = useRef(false)
+  const rootRef = useRef(null)
 
   useEffect(() => {
     setText(value)
@@ -135,86 +136,138 @@ function ValueChip({ value, busy, onSave, onRemove, label }) {
     if (editing) inputRef.current?.focus()
   }, [editing])
 
-  function commit() {
-    if (cancelRef.current) {
-      cancelRef.current = false
-      return
+  useEffect(() => {
+    if (!menuOpen) return undefined
+    function onPointerDown(event) {
+      if (!rootRef.current?.contains(event.target)) setMenuOpen(false)
     }
-    const next = text.trim()
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [menuOpen])
+
+  function cancel() {
+    setText(value)
     setEditing(false)
-    if (!next || next === value) {
-      setText(value)
-      return
-    }
+  }
+
+  function save() {
+    const next = text.trim()
+    if (!next || next === value || busy) return
+    setEditing(false)
     onSave(next)
   }
 
   if (editing) {
     return (
-      <input
-        ref={inputRef}
-        aria-label={label}
-        className="h-7 min-w-[8rem] rounded-sm border border-border bg-background px-2 text-small"
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            event.currentTarget.blur()
-          }
-          if (event.key === 'Escape') {
-            cancelRef.current = true
-            setText(value)
-            setEditing(false)
-          }
-        }}
-      />
+      <span className="inline-flex max-w-full flex-wrap items-center gap-1.5">
+        <input
+          ref={inputRef}
+          aria-label={label}
+          className="h-8 min-w-[12rem] rounded-sm border border-border bg-background px-2 text-small"
+          value={text}
+          disabled={busy}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              save()
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              cancel()
+            }
+          }}
+        />
+        <Button
+          type="button"
+          size="sm"
+          disabled={busy || !text.trim() || text.trim() === value}
+          onClick={save}
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          Save
+        </Button>
+        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={cancel}>
+          Cancel
+        </Button>
+      </span>
     )
   }
 
   return (
-    <span className="group inline-flex max-w-full items-center gap-1 rounded-sm border border-border bg-muted/50 py-0.5 pl-2 pr-1 text-small">
+    <span ref={rootRef} className="relative inline-flex">
       <button
         type="button"
-        className="max-w-[16rem] truncate text-left"
-        title="Click to rename"
-        onClick={() => setEditing(true)}
+        className="max-w-[16rem] truncate rounded-sm border border-border bg-muted/50 px-2 py-1 text-small"
+        aria-expanded={menuOpen}
+        aria-label={value}
+        disabled={busy}
+        onClick={() => setMenuOpen((open) => !open)}
       >
+        {busy ? <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> : null}
         {value}
       </button>
-      <button
-        type="button"
-        className="rounded-sm p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus:opacity-100"
-        aria-label={`Remove ${value}`}
-        disabled={busy}
-        onClick={onRemove}
-      >
-        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
-      </button>
+      {menuOpen ? (
+        <span className="config-word-actions absolute left-0 top-full z-20 mt-1 flex gap-1 rounded-sm border border-border bg-card p-1 shadow-md">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setMenuOpen(false)
+              setEditing(true)
+            }}
+          >
+            Edit
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setMenuOpen(false)
+              onRemove()
+            }}
+          >
+            Delete
+          </Button>
+        </span>
+      ) : null}
     </span>
   )
 }
 
 function AddChip({ busy, onAdd, placeholder }) {
   const [text, setText] = useState('')
+  const trimmed = text.trim()
+
+  async function save() {
+    if (!trimmed || busy) return
+    const ok = await onAdd(trimmed)
+    if (ok) setText('')
+  }
+
   return (
-    <input
-      className="h-7 w-36 rounded-sm border border-dashed border-border bg-transparent px-2 text-small placeholder:text-muted-foreground"
-      value={text}
-      placeholder={placeholder}
-      disabled={busy}
-      aria-label={placeholder}
-      onChange={(event) => setText(event.target.value)}
-      onKeyDown={async (event) => {
-        if (event.key !== 'Enter') return
-        event.preventDefault()
-        const next = text.trim()
-        if (!next || busy) return
-        const ok = await onAdd(next)
-        if (ok) setText('')
-      }}
-    />
+    <div className="mt-2 flex w-full flex-wrap items-center gap-2">
+      <input
+        className="h-8 min-w-[14rem] flex-1 rounded-sm border border-border bg-background px-2 text-small placeholder:text-muted-foreground"
+        value={text}
+        placeholder={placeholder}
+        disabled={busy}
+        aria-label={placeholder}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter') return
+          event.preventDefault()
+          save()
+        }}
+      />
+      <Button type="button" size="sm" disabled={busy || !trimmed} onClick={save}>
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        Save
+      </Button>
+    </div>
   )
 }
 
@@ -294,7 +347,7 @@ export function MappingConfigDialog({ open, onClose }) {
       open={open}
       onClose={onClose}
       title="Config"
-      description="Click a value to rename it. Press Enter in the dashed box to add one. Hover a value and use × to remove it."
+      description="Click a word for Edit and Delete. Type a new word and click Save."
       className="mapping-config-dialog max-w-5xl"
     >
       {loading ? (
@@ -339,7 +392,7 @@ export function MappingConfigDialog({ open, onClose }) {
               <p className="text-small text-muted-foreground">
                 Values in this list are skipped and are not mapped to a group.
               </p>
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-start gap-1.5">
                 {(list.items || []).map((item) => (
                   <ValueChip
                     key={item.id}
@@ -363,7 +416,7 @@ export function MappingConfigDialog({ open, onClose }) {
                   />
                 ))}
                 <AddChip
-                  placeholder="Add and press Enter"
+                  placeholder="Type a new word"
                   busy={busyKey === `add-list-${list.list_key}`}
                   onAdd={(value) =>
                     commit(
@@ -396,7 +449,7 @@ export function MappingConfigDialog({ open, onClose }) {
               <p className="text-small font-medium text-foreground">
                 {ALIAS_LABEL[activeDomain.code] || 'Aliases'}
               </p>
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-start gap-1.5">
                 {(group.aliases || []).map((alias) => (
                   <ValueChip
                     key={alias.id}
@@ -420,7 +473,7 @@ export function MappingConfigDialog({ open, onClose }) {
                   />
                 ))}
                 <AddChip
-                  placeholder="Add and press Enter"
+                  placeholder="Type a new word"
                   busy={busyKey === `add-alias-${group.id}`}
                   onAdd={(value) =>
                     commit(
@@ -559,9 +612,10 @@ function NumberSetting({ row, busy, onSave }) {
     setText(String(row.value ?? ''))
   }, [row.value])
 
+  const unchanged = String(text) === String(row.value ?? '')
+
   function commitValue() {
-    if (busy) return
-    if (String(text) === String(row.value ?? '')) return
+    if (busy || unchanged || text === '') return
     onSave(Number(text))
   }
 
@@ -571,18 +625,26 @@ function NumberSetting({ row, busy, onSave }) {
       {SETTING_HELP[row.key] ? (
         <p className="text-small text-muted-foreground">{SETTING_HELP[row.key]}</p>
       ) : null}
-      <input
-        type="number"
-        min="0"
-        className="h-8 w-28 rounded-sm border border-border bg-background px-2 text-small"
-        value={text}
-        disabled={busy}
-        onChange={(event) => setText(event.target.value)}
-        onBlur={commitValue}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') event.currentTarget.blur()
-        }}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="number"
+          min="0"
+          className="h-8 w-28 rounded-sm border border-border bg-background px-2 text-small"
+          value={text}
+          disabled={busy}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              commitValue()
+            }
+          }}
+        />
+        <Button type="button" size="sm" disabled={busy || unchanged || text === ''} onClick={commitValue}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          Save
+        </Button>
+      </div>
     </section>
   )
 }

@@ -7,6 +7,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/ui/page-header'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 import { MappingConfigDialog } from '@/components/mapping-config-dialog'
+import { LocalOutputDownloads } from '@/components/local-output-downloads'
 import { useAuth } from '@/components/auth-provider'
 import { useToast } from '@/components/toast-provider'
 import {
@@ -19,6 +20,7 @@ import {
   listPlazas,
   startExceptionPipelineBatch,
   stopExceptionPipelineBatch,
+  resumeInterruptedPipelineBatch,
   uploadExceptionPipelineInput,
 } from '@/lib/api'
 
@@ -28,16 +30,19 @@ function batchIsActive(batch) {
   return ['queued', 'running'].includes(String(batch.analytics?.status || ''))
 }
 
-function pickActiveBatchForPeriod(batches, year, month) {
+function pickBatchForPeriod(batches, year, month) {
   const y = Number(year)
   const m = Number(month)
-  const matches = (Array.isArray(batches) ? batches : []).filter(
-    (b) => Number(b.year) === y && Number(b.month) === m && batchIsActive(b),
-  )
+  const matches = (Array.isArray(batches) ? batches : []).filter((b) => {
+    if (Number(b.year) !== y || Number(b.month) !== m) return false
+    return batchIsActive(b) || String(b.status || '') === 'interrupted'
+  })
   if (!matches.length) return null
-  // API returns newest first; keep that order.
   return matches[0]
 }
+
+const FULL_EXEMPT_CODE = 'full_exempt_e1_e2_e3_e13_e14'
+const E15_CODE = 'e15'
 
 const MONTHS = [
   { value: 1, label: 'Jan' },
@@ -56,7 +61,7 @@ const MONTHS = [
 
 export function ExceptionPipelinePage() {
   const { showToast } = useToast()
-  const { canWrite } = useAuth()
+  const { canWrite, publishExceptionResults } = useAuth()
   const [configOpen, setConfigOpen] = useState(false)
   const [recommendationVisible, setRecommendationVisible] = useState(true)
   const now = new Date()
@@ -74,6 +79,8 @@ export function ExceptionPipelinePage() {
   const [busy, setBusy] = useState(false)
   const [periodLoading, setPeriodLoading] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
+  const [exemptPromptOpen, setExemptPromptOpen] = useState(false)
+  const [startAfterExemptPrompt, setStartAfterExemptPrompt] = useState(false)
   const [error, setError] = useState('')
 
   const uploadSlots = useMemo(
@@ -148,7 +155,7 @@ export function ExceptionPipelinePage() {
         ])
         if (!active) return
         setPeriod(data)
-        const restored = pickActiveBatchForPeriod(
+        const restored = pickBatchForPeriod(
           batchesRes?.batches,
           year,
           month,
@@ -327,7 +334,73 @@ export function ExceptionPipelinePage() {
     }
   }
 
+  const hasExemptFinal = (period?.files || []).some(
+    (f) => f.slot === 'full_exempt_final',
+  )
+  const fullExemptProgram = programs.find((p) => p.code === FULL_EXEMPT_CODE)
+
+  function scrapeVehicleText(code) {
+    const preview = period?.scrape_preview
+    const row = code === 'e05' ? preview?.e05 : code === 'e06' ? preview?.e06 : null
+    if (!row) return ''
+    if (row.error) return row.error
+    if (row.vehicles == null || row.vehicles === undefined) return ''
+    const count = Number(row.vehicles || 0).toLocaleString()
+    if (!row.live) {
+      return code === 'e05'
+        ? 'Scraped file uploaded — no live IHMCL scrape.'
+        : 'Scraped file uploaded — no live permit scrape.'
+    }
+    if (code === 'e06') {
+      const hits = Number(row.cache_hits || 0)
+      if (hits > 0) {
+        return `Live permit scrape: ${count} vehicles (${hits.toLocaleString()} already stored).`
+      }
+      return `Live permit scrape: ${count} vehicles.`
+    }
+    if (row.basis === 'two_axle') {
+      return `Live IHMCL scrape: ${count} unique vehicles (2-axle and above).`
+    }
+    return `Live IHMCL scrape: up to ${count} unique vehicles from the ETC file. The invalid 2-axle rows are the ones scraped.`
+  }
+
+  function slotLabel(slot) {
+    const match = (catalog?.input_slots || []).find((s) => s.key === slot)
+    return match?.label || slot
+  }
+
+  function e15CanBeChosen(program) {
+    if (!program) return false
+    const missing = program.missing_slots || []
+    if (program.enabled) return true
+    return missing.length > 0 && missing.every((slot) => slot === 'full_exempt_final')
+  }
+
+  function openExemptPrompt(thenStart) {
+    setStartAfterExemptPrompt(Boolean(thenStart))
+    setExemptPromptOpen(true)
+  }
+
+  function closeExemptPrompt() {
+    setExemptPromptOpen(false)
+    setStartAfterExemptPrompt(false)
+  }
+
   function toggleProgram(code, enabled) {
+    if (code === E15_CODE) {
+      const program = programs.find((p) => p.code === E15_CODE)
+      if (selectedCodes.includes(E15_CODE)) {
+        setSelectedCodes((prev) => prev.filter((c) => c !== E15_CODE))
+        return
+      }
+      if (!e15CanBeChosen(program)) return
+      if (!hasExemptFinal && !selectedCodes.includes(FULL_EXEMPT_CODE)) {
+        openExemptPrompt(false)
+        return
+      }
+      setSelectedCodes((prev) => [...prev, E15_CODE])
+      return
+    }
     if (!enabled) return
     setSelectedCodes((prev) =>
       prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code],
@@ -342,10 +415,10 @@ export function ExceptionPipelinePage() {
     (selectedCodes.length > 0 || (runAnalytics && analyticsReady))
   const mappedPipelineKey =
     catalog?.plaza_identifier_to_pipeline_key?.[plazaIdentifier] || ''
+  const interruptedBatch = String(batch?.status || '') === 'interrupted'
   const batchActive = batchIsActive(batch)
 
-  async function handleStart() {
-    if (!canStart) return
+  async function startWithCodes(codes) {
     setBusy(true)
     setError('')
     try {
@@ -353,7 +426,7 @@ export function ExceptionPipelinePage() {
         plaza_identifier: plazaIdentifier,
         year,
         month,
-        program_codes: selectedCodes,
+        program_codes: codes,
         continue_on_failure: true,
         run_analytics: runAnalytics,
       })
@@ -362,7 +435,7 @@ export function ExceptionPipelinePage() {
       })
       setBatch(started.batch)
       const bits = []
-      if (selectedCodes.length) bits.push('exception checks')
+      if (codes.length) bits.push('exception checks')
       if (started.batch?.analytics) bits.push('plaza analytics')
       showToast(
         bits.length
@@ -371,6 +444,63 @@ export function ExceptionPipelinePage() {
       )
     } catch (err) {
       setError(err.message || 'Could not start processing')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleStart() {
+    if (!canStart) return
+    if (
+      selectedCodes.includes(E15_CODE) &&
+      !hasExemptFinal &&
+      !selectedCodes.includes(FULL_EXEMPT_CODE)
+    ) {
+      openExemptPrompt(true)
+      return
+    }
+    await startWithCodes(selectedCodes)
+  }
+
+  function confirmRunFullExemptWithE15() {
+    if (!fullExemptProgram?.enabled) return
+    const codes = Array.from(
+      new Set([...selectedCodes, FULL_EXEMPT_CODE, E15_CODE]),
+    )
+    setSelectedCodes(codes)
+    const shouldStart = startAfterExemptPrompt
+    closeExemptPrompt()
+    if (shouldStart) {
+      void startWithCodes(codes)
+    }
+  }
+
+  async function handleResumeInterrupted() {
+    if (!batch?.batch_uuid) return
+    setBusy(true)
+    setError('')
+    try {
+      const data = await resumeInterruptedPipelineBatch(batch.batch_uuid)
+      setBatch(data.batch)
+      showToast('Process queued again.')
+    } catch (err) {
+      setError(err.message || 'Could not run the interrupted process')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRemoveInterrupted() {
+    if (!batch?.batch_uuid) return
+    setBusy(true)
+    setError('')
+    try {
+      await stopExceptionPipelineBatch(batch.batch_uuid)
+      setBatch(null)
+      showToast('Interrupted process removed. Uploaded files were kept.', 'warning')
+      await refreshPeriod()
+    } catch (err) {
+      setError(err.message || 'Could not remove the interrupted process')
     } finally {
       setBusy(false)
     }
@@ -684,6 +814,21 @@ export function ExceptionPipelinePage() {
             </div>
           ) : (
             <>
+              {scrapeVehicleText('e05') || scrapeVehicleText('e06') ? (
+                <div className="rounded-sm border border-border bg-muted/40 px-3 py-2 text-small">
+                  <p className="font-medium">Vehicles to scrape</p>
+                  {scrapeVehicleText('e05') ? (
+                    <p className="mt-1 text-muted-foreground">
+                      E05 — {scrapeVehicleText('e05')}
+                    </p>
+                  ) : null}
+                  {scrapeVehicleText('e06') ? (
+                    <p className="mt-1 text-muted-foreground">
+                      E06 — {scrapeVehicleText('e06')}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               <label
                 className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
                   analyticsReady ? '' : 'opacity-55'
@@ -709,37 +854,66 @@ export function ExceptionPipelinePage() {
                   </span>
                 </span>
               </label>
-              {programs.map((p) => (
+              {programs.map((p) => {
+                const choosable = p.code === E15_CODE ? e15CanBeChosen(p) : p.enabled
+                const e15NeedsExempt = p.code === E15_CODE && !hasExemptFinal
+                const e15MissingOther = e15NeedsExempt
+                  ? (p.missing_slots || []).filter((slot) => slot !== 'full_exempt_final')
+                  : []
+                let statusText = 'Ready'
+                if (e15NeedsExempt && e15MissingOther.length) {
+                  statusText = `Missing: ${e15MissingOther.map(slotLabel).join(', ')}. No Full Exempt file for this month.`
+                } else if (
+                  e15NeedsExempt &&
+                  selectedCodes.includes(E15_CODE) &&
+                  selectedCodes.includes(FULL_EXEMPT_CODE)
+                ) {
+                  statusText = 'E15 will run after Full Exempt finishes for this month.'
+                } else if (e15NeedsExempt && !fullExemptProgram?.enabled) {
+                  const need = (fullExemptProgram?.missing_slots || [])
+                    .map(slotLabel)
+                    .join(', ')
+                  statusText = need
+                    ? `No Full Exempt file for this month. Full Exempt also needs: ${need}`
+                    : 'No Full Exempt file for this month. Run Exempt Query — Full Process as well.'
+                } else if (e15NeedsExempt) {
+                  statusText =
+                    'No Full Exempt file for this month. Select E15 to run Full Exempt as well.'
+                } else if (!p.enabled) {
+                  statusText = `Missing: ${(p.missing_slots || []).map(slotLabel).join(', ') || 'inputs'}`
+                } else if (
+                  p.code === 'e05' &&
+                  !(period?.files || []).some((f) => f.slot === 'scraped') &&
+                  !scrapeVehicleText('e05')
+                ) {
+                  statusText =
+                    'Ready. No scraped file — IHMCL will be scraped live when this check runs.'
+                }
+                const scrapeText = scrapeVehicleText(p.code)
+                if (scrapeText) {
+                  statusText = p.enabled ? scrapeText : `${statusText} ${scrapeText}`
+                }
+                return (
                 <label
                   key={p.code}
                   className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
-                    p.enabled ? '' : 'opacity-55'
+                    choosable ? '' : 'opacity-55'
                   }`}
                 >
                   <input
                     type="checkbox"
                     className="mt-1"
                     checked={selectedCodes.includes(p.code)}
-                    disabled={!p.enabled || busy}
+                    disabled={!choosable || busy}
                     onChange={() => toggleProgram(p.code, p.enabled)}
                   />
                   <span>
                     <span className="block text-body font-medium">{p.label}</span>
-                    {!p.enabled ? (
-                      <span className="text-small text-muted-foreground">
-                        Missing: {(p.missing_slots || []).join(', ') || 'inputs'}
-                      </span>
-                    ) : p.code === 'e05' &&
-                      !(period?.files || []).some((f) => f.slot === 'scraped') ? (
-                      <span className="text-small text-muted-foreground">
-                        Ready. No scraped file — IHMCL will be scraped live when this check runs.
-                      </span>
-                    ) : (
-                      <span className="text-small text-muted-foreground">Ready</span>
-                    )}
+                    <span className="text-small text-muted-foreground">{statusText}</span>
                   </span>
                 </label>
-              ))}
+                )
+              })}
               {hasUnsavedChanges ? (
                 <p className="text-small text-muted-foreground">
                   Click Save above before starting the process. Unsaved adds and
@@ -749,7 +923,7 @@ export function ExceptionPipelinePage() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
-                  disabled={busy || !canStart || batchActive || periodLoading}
+                  disabled={busy || !canStart || batchActive || interruptedBatch || periodLoading}
                   onClick={handleStart}
                 >
                   Start process
@@ -796,9 +970,20 @@ export function ExceptionPipelinePage() {
               </div>
             ) : null}
             {(batch.steps || []).map((s) => (
-              <div key={s.program_code} className="text-small">
-                {s.program_code}: {s.status}
-                {s.error_message ? ` — ${s.error_message}` : ''}
+              <div key={s.program_code} className="space-y-2 text-small">
+                <p>
+                  {s.program_code}: {s.status}
+                  {s.error_message ? ` — ${s.error_message}` : ''}
+                </p>
+                {s.status === 'succeeded' &&
+                s.child_job_uuid &&
+                !publishExceptionResults ? (
+                  <LocalOutputDownloads
+                    jobUuid={s.child_job_uuid}
+                    enabled
+                    title={`${s.program_code} output files`}
+                  />
+                ) : null}
               </div>
             ))}
             {batchActive ? (
@@ -814,6 +999,27 @@ export function ExceptionPipelinePage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <Dialog
+        open={interruptedBatch}
+        onClose={() => {}}
+        title="This process was stopped when the server closed"
+        description="It was still running. Run it again, or remove it. Uploaded files stay either way. It will not start on its own."
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={handleRemoveInterrupted}
+          >
+            Remove
+          </Button>
+          <Button type="button" disabled={busy} onClick={handleResumeInterrupted}>
+            Run again
+          </Button>
+        </div>
+      </Dialog>
 
       <Dialog
         open={stopConfirmOpen}
@@ -835,6 +1041,39 @@ export function ExceptionPipelinePage() {
           <Button type="button" disabled={busy} onClick={handleStopConfirm}>
             Stop all processes
           </Button>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={exemptPromptOpen}
+        onClose={() => {
+          if (!busy) closeExemptPrompt()
+        }}
+        title="Run Full Exempt for this month?"
+        description={
+          fullExemptProgram?.enabled
+            ? 'No Full Exempt file is stored for this month. E15 needs that file. Run Exempt Query — Full Process in this same process. E15 will start after it finishes.'
+            : `No Full Exempt file is stored for this month. E15 needs that file. Upload the Full Exempt files first${
+                (fullExemptProgram?.missing_slots || []).length
+                  ? `: ${(fullExemptProgram?.missing_slots || []).map(slotLabel).join(', ')}`
+                  : ''
+              }.`
+        }
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={closeExemptPrompt}
+          >
+            Cancel
+          </Button>
+          {fullExemptProgram?.enabled ? (
+            <Button type="button" disabled={busy} onClick={confirmRunFullExemptWithE15}>
+              {startAfterExemptPrompt ? 'Run Full Exempt too' : 'Add Full Exempt'}
+            </Button>
+          ) : null}
         </div>
       </Dialog>
     </section>

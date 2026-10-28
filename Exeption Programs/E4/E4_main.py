@@ -705,13 +705,10 @@ def load_vrn_download_merge_module():
 
 
 def normalize_tc_class_key(value) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    text = str(value).strip().lower()
-    text = re.sub(r"\s+", " ", text)
-    if text in {"", "nan", "none", "nat"}:
-        return ""
-    return text
+    """Letters and digits only, so CAR\\JEEP, car jeep, and carjeep match."""
+    from common.header_match import normalize_header_match
+
+    return normalize_header_match(value)
 
 
 def build_tc_class_skip_set(config: dict) -> set[str]:

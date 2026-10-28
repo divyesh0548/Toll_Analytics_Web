@@ -26,7 +26,13 @@ from app.services.analytics_program_catalog import (
     ANALYTICS_VRN_ETC_PROGRAM,
     plaza_db_update_root,
 )
-from app.services.exception_job_cleanup import cleanup_expired_exception_jobs
+from app.services.exception_job_cleanup import (
+    cleanup_expired_exception_jobs,
+    cleanup_expired_local_job_folders,
+    cleanup_expired_monthly_inputs,
+    delete_local_job_inputs,
+    write_job_retention_stamp,
+)
 from app.services.exception_job_s3 import (
     delete_keys,
     download_to_path,
@@ -364,6 +370,21 @@ def _build_e4_subprocess_env() -> dict[str, str]:
     return _build_job_subprocess_env(require_rds=False)
 
 
+def publish_exception_results_enabled() -> bool:
+    """True = upload outputs to S3 and write exception metrics tables."""
+    from flask import current_app
+
+    try:
+        return bool(current_app.config.get("PUBLISH_EXCEPTION_RESULTS", True))
+    except RuntimeError:
+        raw = os.getenv("PUBLISH_EXCEPTION_RESULTS", "1")
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _publish_arg() -> str:
+    return "1" if publish_exception_results_enabled() else "0"
+
+
 def _popen_job(cmd: list[str], *, cwd: str, env: dict[str, str]) -> subprocess.Popen:
     """Start a job child; new session on Linux so we can kill the process group."""
     kwargs: dict = {
@@ -421,16 +442,38 @@ def _job_failure_message(combined: str, *, limit: int = 2000) -> str:
     return text[-limit:]
 
 
+def requeue_interrupted_job(job: ExceptionJob) -> None:
+    """Put an interrupted job back on the queue. Does not commit."""
+    saved_mode = _read_scrape_mode_from_process_name(job) or "live"
+    remember_scrape_mode(job.job_uuid, saved_mode)
+    job.status = "queued"
+    job.error_message = None
+    job.finished_at = None
+    job.progress_message = (
+        f"[[scrape_mode={saved_mode}]]Queued again after the server restart."
+    )
+
+
+def _mark_job_interrupted(job: ExceptionJob) -> None:
+    saved_mode = _read_scrape_mode_from_process_name(job) or "live"
+    remember_scrape_mode(job.job_uuid, saved_mode)
+    job.status = "interrupted"
+    job.error_message = None
+    job.finished_at = None
+    job.progress_message = (
+        f"[[scrape_mode={saved_mode}]]"
+        "Stopped when the server closed. Run this again or remove it."
+    )
+
+
 def recover_orphaned_running_jobs() -> int:
     """
-    Re-queue jobs left as 'running' after a backend restart.
+    Jobs left 'running' after a restart have no process left.
 
-    The previous process is gone, so 'running' cannot make progress. Putting
-    them back to 'queued' lets the new worker finish them (and preserves a
-    real pipeline error if they fail again).
-
-    Jobs whose parent pipeline batch is already terminal are cancelled instead,
-    so they do not block a newer File Upload run after restart.
+    Do not queue them again. Mark them interrupted so the user can run or
+    remove them. A File Upload batch in that state is paused the same way,
+    including its other queued steps, so the rest of the run does not start
+    on its own.
     """
     from app.models.exception_pipeline import (
         ExceptionPipelineBatch,
@@ -440,9 +483,10 @@ def recover_orphaned_running_jobs() -> int:
     stuck = ExceptionJob.query.filter_by(status="running").all()
     if not stuck:
         return 0
-    recovered = 0
+    interrupted = 0
     cancelled = 0
     now = _utc_now()
+    paused_batch_ids: set[int] = set()
     for job in stuck:
         parent_batch = None
         step = ExceptionPipelineBatchStep.query.filter_by(
@@ -467,36 +511,60 @@ def recover_orphaned_running_jobs() -> int:
             job.progress_message = "Cancelled on restart (batch no longer active)."
             job.finished_at = now
             cancelled += 1
-            logger.warning(
-                "Cancelled orphaned job %s (batch %s is %s)",
-                job.job_uuid,
-                parent_batch.batch_uuid,
-                parent_batch.status,
-            )
             continue
 
-        job.status = "queued"
-        job.error_message = None
-        # Preserve scrape mode across restart (was previously wiped → always live).
-        saved_mode = _read_scrape_mode_from_process_name(job) or "live"
-        remember_scrape_mode(job.job_uuid, saved_mode)
-        job.progress_message = (
-            f"[[scrape_mode={saved_mode}]]"
-            "Re-queued after backend restart — worker will pick this up again."
-        )
-        job.finished_at = None
-        recovered += 1
-        logger.warning(
-            "Recovered orphaned running job %s → queued (scrape_mode=%s)",
-            job.job_uuid,
-            saved_mode,
-        )
+        if parent_batch is not None:
+            paused_batch_ids.add(parent_batch.id)
+            continue
+
+        _mark_job_interrupted(job)
+        interrupted += 1
+
+    if paused_batch_ids:
+        batches = ExceptionPipelineBatch.query.filter(
+            ExceptionPipelineBatch.id.in_(paused_batch_ids)
+        ).all()
+        for batch in batches:
+            if str(batch.status or "") in {"cancelled", "failed", "succeeded"}:
+                continue
+            batch.status = "interrupted"
+            batch.error_message = None
+            batch.finished_at = None
+            batch.progress_message = (
+                "Stopped when the server closed. Run this process again or remove it."
+            )
+            for step in batch.steps:
+                if step.status not in {"running", "queued"}:
+                    continue
+                step.status = "interrupted"
+                step.error_message = None
+                if not step.child_job_uuid:
+                    continue
+                child = ExceptionJob.query.filter_by(
+                    job_uuid=step.child_job_uuid
+                ).first()
+                if child is not None and child.status in {"running", "queued"}:
+                    _mark_job_interrupted(child)
+                    interrupted += 1
+            if batch.analytics_job_uuid:
+                analytics = ExceptionJob.query.filter_by(
+                    job_uuid=batch.analytics_job_uuid
+                ).first()
+                if analytics is not None and analytics.status in {"running", "queued"}:
+                    _mark_job_interrupted(analytics)
+                    interrupted += 1
+
     db.session.commit()
     if cancelled:
         logger.info(
             "Cancelled %s orphaned job(s) tied to finished batches", cancelled
         )
-    return recovered
+    if interrupted:
+        logger.info(
+            "Marked %s job(s) interrupted after restart (not auto-started)",
+            interrupted,
+        )
+    return interrupted
 
 
 def _maybe_cleanup_staging() -> None:
@@ -524,6 +592,12 @@ def _maybe_cleanup_expired_jobs() -> None:
         n = cleanup_expired_exception_jobs()
         if n:
             logger.info("Expired job cleanup removed %s job(s)", n)
+        local_n = cleanup_expired_local_job_folders()
+        if local_n:
+            logger.info("Expired local job cleanup removed %s folder(s)", local_n)
+        monthly_n = cleanup_expired_monthly_inputs()
+        if monthly_n:
+            logger.info("Monthly input cleanup removed %s file(s)", monthly_n)
     except Exception:  # noqa: BLE001
         logger.exception("Expired exception job cleanup failed")
 
@@ -662,7 +736,10 @@ def start_exception_job_worker(app) -> None:
         try:
             n = recover_orphaned_running_jobs()
             if n:
-                logger.info("Recovered %s orphaned running exception job(s)", n)
+                logger.info(
+                    "Left %s interrupted job(s) for the user to run or remove",
+                    n,
+                )
         except Exception:  # noqa: BLE001
             logger.exception("Failed to recover orphaned running jobs")
         try:
@@ -874,7 +951,13 @@ def _process_claimed_job(job_id: int) -> None:
             _print_job_runtime(job, time.perf_counter() - t0, ok=False)
         else:
             job.status = "succeeded"
-            job.progress_message = "Completed successfully."
+            if publish_exception_results_enabled():
+                job.progress_message = "Completed successfully."
+            else:
+                job.progress_message = (
+                    "Completed successfully. Metrics were not updated and "
+                    "output files were not uploaded. Download them below."
+                )
             job.finished_at = _utc_now()
             db.session.commit()
             # Save *_final.xlsx to S3 (monthly full_exempt_final) for E15 — pipeline
@@ -893,6 +976,30 @@ def _process_claimed_job(job_id: int) -> None:
             # full_exempt_final lives under monthly/ keys (not job.files) so it survives.
             if not pipeline_mode and not pipeline_analytics:
                 _cleanup_input_files(job)
+            try:
+                # Separate jobs: stamp the local folder and delete it, output
+                # included, seven days later. Pipeline inputs are re-downloaded
+                # next run, so drop those copies now. When results were uploaded,
+                # the local pipeline folder is only a duplicate and goes now too.
+                # When upload is off, keep output/ and let the seven-day stamp
+                # remove it after the download window.
+                if (
+                    process_dir is not None
+                    and job.program_code != ANALYTICS_VRN_ETC_PROGRAM["code"]
+                ):
+                    if pipeline_mode:
+                        delete_local_job_inputs(process_dir)
+                        if publish_exception_results_enabled():
+                            _safe_rmtree(process_dir)
+                            process_dir = None
+                        else:
+                            write_job_retention_stamp(process_dir)
+                    else:
+                        write_job_retention_stamp(process_dir)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Local file retention step failed for job %s", job.job_uuid
+                )
             # Analytics has no downloadable outputs — free local scratch.
             if job.program_code == ANALYTICS_VRN_ETC_PROGRAM["code"]:
                 _release_job_resources(process_dir, child)
@@ -923,8 +1030,8 @@ def _process_claimed_job(job_id: int) -> None:
             except Exception:  # noqa: BLE001
                 logger.exception("Pipeline analytics finish hook failed for %s", job.job_uuid)
         # Kill leftover children so Windows releases file locks.
-        # Delete workspace only on failure (keep outputs after success).
-        # Analytics success already cleaned above; failed analytics also cleans.
+        # Failure removes the workspace immediately. Success keeps it only
+        # until the retention stamp (seven days) or the pipeline input purge.
         if failed:
             _release_job_resources(process_dir, child)
         else:
@@ -1088,7 +1195,7 @@ def _run_full_exempt_job(
             "--plaza-identifier",
             job.plaza_identifier,
             "--update-metrics",
-            "1",
+            _publish_arg(),
         ],
         cwd=str(portal),
         env=env,
@@ -1182,9 +1289,9 @@ def _run_e4_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
             "--output-file",
             str(output_file),
             "--update-metrics",
-            "1",
+            _publish_arg(),
             "--upload-output",
-            "1",
+            _publish_arg(),
         ],
         cwd=str(e4_root),
         env=env,
@@ -1217,7 +1324,8 @@ def _cleanup_input_files(job: ExceptionJob) -> None:
     expire via the 7-day staging cleanup.
 
     Do not delete Full Exempt finals registered as monthly inputs
-    (slot=full_exempt_final) — E15 may re-attach them on later jobs.
+    (slot=full_exempt_final) on success — E15 in a later run of this month
+    still needs them. The monthly cleanup removes that S3 object after 31 days.
     """
     from app.models.exception_pipeline import PlazaMonthlyExceptionInput
 
@@ -1310,7 +1418,7 @@ def _run_valid_invalid_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | 
             "--output-dir",
             str(output_dir),
             "--upload-staging",
-            "1",
+            _publish_arg(),
         ],
         cwd=str(script_dir),
         env=env,
@@ -1478,9 +1586,9 @@ def _run_e5_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         "--output-dir",
         str(e5_output_dir),
         "--update-metrics",
-        "1",
+        _publish_arg(),
         "--upload-output",
-        "1",
+        _publish_arg(),
     ]
     if ihmcl_dest is not None:
         e5_cmd.extend(["--ihmcl-file", str(ihmcl_dest)])
@@ -1626,9 +1734,9 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         "--output-file",
         str(output_file),
         "--update-metrics",
-        "1",
+        _publish_arg(),
         "--upload-output",
-        "1",
+        _publish_arg(),
     ]
     if permit_paths:
         cmd.extend(["--permit-folder", str(permit_dir)])
@@ -1656,7 +1764,7 @@ def _run_e6_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         job,
         returncode=child.returncode,
         stdout=combined,
-        search_dirs=[output_dir, process_dir, e6_root / "permit_cache", e6_root / "output"],
+        search_dirs=[output_dir, process_dir, e6_root / "output"],
     )
     if child.returncode != 0:
         raise RuntimeError(
@@ -1732,9 +1840,9 @@ def _run_e7_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         "--output-file",
         str(output_file),
         "--update-metrics",
-        "1",
+        _publish_arg(),
         "--upload-output",
-        "1",
+        _publish_arg(),
     ]
     # Full pipeline: roll metrics + S3 label into the batch year/month so the
     # pipeline metrics view and download match this run (even when Loss is 0).
@@ -1833,9 +1941,9 @@ def _run_e9_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
             "--output-file",
             str(output_file),
             "--update-metrics",
-            "1",
+            _publish_arg(),
             "--upload-output",
-            "1",
+            _publish_arg(),
         ],
         cwd=str(e9_root),
         env=env,
@@ -1920,9 +2028,9 @@ def _run_e10_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
             "--output-file",
             str(output_file),
             "--update-metrics",
-            "1",
+            _publish_arg(),
             "--upload-output",
-            "1",
+            _publish_arg(),
         ],
         cwd=str(e10_root),
         env=env,
@@ -1995,9 +2103,9 @@ def _run_e11_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         "--output-dir",
         str(output_dir),
         "--update-metrics",
-        "1",
+        _publish_arg(),
         "--upload-output",
-        "1",
+        _publish_arg(),
     ]
     try:
         from app.services.exception_pipeline_service import find_batch_step_for_job
@@ -2101,9 +2209,9 @@ def _run_e15_job(job: ExceptionJob) -> tuple[Path, subprocess.Popen | None]:
         "--output-file",
         str(output_file),
         "--update-metrics",
-        "1",
+        _publish_arg(),
         "--upload-output",
-        "1",
+        _publish_arg(),
     ]
     try:
         from app.services.exception_pipeline_service import find_batch_step_for_job

@@ -29,6 +29,8 @@ else:
     _BOTO3_IMPORT_ERROR = None
 
 S3_ROOT_PREFIX = "Toll Analytics Files"
+# Stored in s3_key when PUBLISH_EXCEPTION_RESULTS=0 (file stays on disk).
+LOCAL_OBJECT_PREFIX = "local:"
 
 # Keep local names short — deep Exempt portal paths easily hit Windows MAX_PATH (260).
 _MAX_LOCAL_STEM = 48
@@ -240,6 +242,14 @@ def head_object_size(s3_key: str) -> int | None:
     return int(size) if size is not None else None
 
 
+def is_local_object_key(s3_key: str) -> bool:
+    return str(s3_key or "").strip().startswith(LOCAL_OBJECT_PREFIX)
+
+
+def local_object_path(s3_key: str) -> Path:
+    return Path(str(s3_key).strip()[len(LOCAL_OBJECT_PREFIX) :])
+
+
 def s3_key_confirmed_missing(s3_key: str) -> bool | None:
     """
     True = object definitely not in S3 (404 / NoSuchKey).
@@ -251,6 +261,8 @@ def s3_key_confirmed_missing(s3_key: str) -> bool | None:
     key = str(s3_key or "").strip()
     if not key:
         return True
+    if is_local_object_key(key):
+        return not local_object_path(key).is_file()
     client = s3_client()
     try:
         client.head_object(Bucket=bucket_name(), Key=key)
@@ -410,6 +422,18 @@ def download_to_path(s3_key: str, local_path: Path) -> Path:
     """
     from botocore.exceptions import ClientError
 
+    if is_local_object_key(s3_key):
+        import shutil
+
+        src = local_object_path(s3_key)
+        if not src.is_file():
+            raise FileNotFoundError(f"Local output not found: {src}")
+        local_path = Path(local_path)
+        local_path = local_path.with_name(shorten_local_filename(local_path.name))
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, local_path)
+        return local_path
+
     local_path = Path(local_path)
     # Enforce short final name as well (deep job paths / Windows MAX_PATH).
     local_path = local_path.with_name(shorten_local_filename(local_path.name))
@@ -440,6 +464,13 @@ def download_to_path(s3_key: str, local_path: Path) -> Path:
 
 
 def delete_object(s3_key: str) -> None:
+    if is_local_object_key(s3_key):
+        path = local_object_path(s3_key)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove local output %s", path)
+        return
     client = s3_client()
     client.delete_object(Bucket=bucket_name(), Key=s3_key)
 
@@ -447,11 +478,19 @@ def delete_object(s3_key: str) -> None:
 def delete_keys(keys: list[str]) -> None:
     if not keys:
         return
+    remote: list[str] = []
+    for key in keys:
+        if is_local_object_key(key):
+            delete_object(key)
+        elif key:
+            remote.append(key)
+    if not remote:
+        return
     client = s3_client()
     bucket = bucket_name()
     # delete_objects accepts up to 1000 keys
-    for i in range(0, len(keys), 1000):
-        chunk = keys[i : i + 1000]
+    for i in range(0, len(remote), 1000):
+        chunk = remote[i : i + 1000]
         client.delete_objects(
             Bucket=bucket,
             Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},

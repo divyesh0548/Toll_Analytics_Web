@@ -35,6 +35,9 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# Local exception outputs kept when PUBLISH_EXCEPTION_RESULTS=0
+Website/backend/var/
+
 # Virtual environments
 .venv/
 venv/

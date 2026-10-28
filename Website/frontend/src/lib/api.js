@@ -322,6 +322,12 @@ export function stopExceptionPipelineBatch(batchUuid) {
   })
 }
 
+export function resumeInterruptedPipelineBatch(batchUuid) {
+  return request(`/api/exception-pipeline/batches/${batchUuid}/resume-interrupted`, {
+    method: 'POST',
+  })
+}
+
 export function getExceptionPipelineBatch(batchUuid) {
   return request(`/api/exception-pipeline/batches/${batchUuid}`)
 }
@@ -534,8 +540,45 @@ export function startExceptionJob(jobUuid, { scrapeMode } = {}) {
   })
 }
 
+export function resumeInterruptedJob(jobUuid) {
+  return request(`/api/exception-jobs/${jobUuid}/resume-interrupted`, {
+    method: 'POST',
+  })
+}
+
 export function downloadExceptionJobFile(jobUuid, fileId) {
   return request(`/api/exception-jobs/${jobUuid}/files/${fileId}/download`)
+}
+
+export function listExceptionJobOutputs(jobUuid) {
+  return request(`/api/exception-jobs/${jobUuid}/outputs`)
+}
+
+export async function downloadExceptionJobOutput(jobUuid, relativePath, fileName) {
+  const params = new URLSearchParams({ path: relativePath })
+  const token = getToken()
+  const response = await fetch(
+    `${API_BASE}/api/exception-jobs/${jobUuid}/outputs/download?${params.toString()}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  )
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    const error = new Error(data.error || `Request failed (${response.status})`)
+    error.status = response.status
+    throw error
+  }
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const match = disposition.match(/filename="?([^";]+)"?/)
+  const filename = fileName || match?.[1] || 'output'
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export function getMappingConfig() {

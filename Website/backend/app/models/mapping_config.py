@@ -76,9 +76,9 @@ class MappingAlias(db.Model):
     __tablename__ = "mapping_aliases"
     __table_args__ = (
         db.UniqueConstraint(
-            "domain_id",
+            "canonical_id",
             "alias_normalized",
-            name="uq_mapping_aliases_domain_norm",
+            name="uq_mapping_aliases_canonical_norm",
         ),
     )
 

@@ -253,10 +253,25 @@ def overlay_shared_config(
         config["lt_pass_type_values"] = list(pass_lists["lt_pass_type_values"])
 
     columns = snap["alias_lists"].get("column_alias") or {}
+    from common.header_match import normalize_header_match
+
     for config_key, canonical in _COLUMN_KEYS.items():
         values = columns.get(canonical) or []
-        if config_key in config and values:
-            config[config_key] = list(values)
+        if config_key not in config or not values:
+            continue
+        # DB aliases first (what the config screen stores). Keep local JSON
+        # names the DB list does not already have, so a pass header such as
+        # "NPCI Vehicle Class" is not dropped when the stored list only has
+        # ETC names like "NPCI Class".
+        merged = [str(item) for item in values]
+        seen = {normalize_header_match(item) for item in merged}
+        seen.discard("")
+        for item in config.get(config_key) or []:
+            token = normalize_header_match(item)
+            if token and token not in seen:
+                merged.append(str(item))
+                seen.add(token)
+        config[config_key] = merged
 
     if header_source and "header_keywords" in config:
         keywords = alias_list("header_keyword", header_source)

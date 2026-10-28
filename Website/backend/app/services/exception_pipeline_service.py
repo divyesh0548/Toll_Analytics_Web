@@ -106,6 +106,13 @@ def period_status(plaza_identifier: str, year: int, month: int) -> dict:
         .all()
     )
     analytics_ready = bool(present & {"vrn", "etc"})
+    try:
+        from app.services.scrape_vehicle_preview import preview_scrape_vehicles
+
+        scrape_preview = preview_scrape_vehicles(files)
+    except Exception:  # noqa: BLE001
+        logger.exception("Scrape vehicle preview failed")
+        scrape_preview = {}
     return {
         "plaza_identifier": plaza_identifier,
         "year": int(year),
@@ -117,6 +124,7 @@ def period_status(plaza_identifier: str, year: int, month: int) -> dict:
         "analytics_label": ANALYTICS_VRN_ETC_PROGRAM.get("label")
         or "Plaza analytics (VRN / ETC)",
         "pruned_missing_files": int(pruned),
+        "scrape_preview": scrape_preview,
     }
 
 
@@ -146,14 +154,26 @@ def create_batch(
         p["code"]: p for p in evaluate_program_availability(present)
     }
 
+    selected_codes = {str(code).strip() for code in program_codes}
     selected: list[dict] = []
     for code in program_codes:
         program = get_pipeline_program(code)
         if program is None:
             raise ValueError(f"Unknown program_code: {code}")
         info = availability.get(code) or {}
-        if not info.get("enabled"):
-            missing = ", ".join(info.get("missing_slots") or [])
+        missing_slots = list(info.get("missing_slots") or [])
+        e15_waiting_on_exempt = (
+            code == "e15"
+            and set(missing_slots) == {"full_exempt_final"}
+            and "full_exempt_e1_e2_e3_e13_e14" in selected_codes
+        )
+        if not info.get("enabled") and not e15_waiting_on_exempt:
+            if code == "e15" and set(missing_slots) == {"full_exempt_final"}:
+                raise ValueError(
+                    "No Full Exempt file is stored for this month. "
+                    "Run Exempt Query — Full Process as well."
+                )
+            missing = ", ".join(missing_slots)
             raise ValueError(
                 f"Program {code} is not enabled for this period "
                 f"(missing slots: {missing or 'unknown'})."
@@ -805,28 +825,53 @@ def register_full_exempt_final_local(
         created_at=_utc_now(),
         suffix=path.suffix or ".xlsx",
     )
-    key = build_monthly_input_key(
-        plaza_name=plaza_name,
-        year=primary_year,
-        month=primary_month,
-        slot="full_exempt_final",
-        original_file_name=friendly_name,
-    )
-    bucket = bucket_name()
-    region = os.getenv("AWS_REGION", "us-east-1").strip() or "us-east-1"
-    client = s3_client()
-    client.upload_file(
-        str(path),
-        bucket,
-        key,
-        ExtraArgs={
-            "ContentType": (
-                "application/vnd.openxmlformats-officedocument"
-                ".spreadsheetml.sheet"
-            )
-        },
-    )
-    file_url = object_url(bucket, region, key)
+    from flask import current_app
+
+    from app.services.exception_job_s3 import LOCAL_OBJECT_PREFIX
+    from app.services.repo_paths import backend_root
+
+    publish = bool(current_app.config.get("PUBLISH_EXCEPTION_RESULTS", True))
+    if publish:
+        key = build_monthly_input_key(
+            plaza_name=plaza_name,
+            year=primary_year,
+            month=primary_month,
+            slot="full_exempt_final",
+            original_file_name=friendly_name,
+        )
+        bucket = bucket_name()
+        region = os.getenv("AWS_REGION", "us-east-1").strip() or "us-east-1"
+        client = s3_client()
+        client.upload_file(
+            str(path),
+            bucket,
+            key,
+            ExtraArgs={
+                "ContentType": (
+                    "application/vnd.openxmlformats-officedocument"
+                    ".spreadsheetml.sheet"
+                )
+            },
+        )
+        file_url = object_url(bucket, region, key)
+    else:
+        import shutil
+
+        dest_dir = (
+            backend_root()
+            / "var"
+            / "exception-outputs"
+            / plaza_identifier
+            / f"{primary_year}-{primary_month:02d}"
+        )
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / friendly_name
+        shutil.copy2(path, dest)
+        key = f"{LOCAL_OBJECT_PREFIX}{dest}"
+        file_url = None
+        logger.info(
+            "Kept full_exempt_final on disk (S3 upload off): %s", dest
+        )
     size = path.stat().st_size
     content_type = (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1015,7 +1060,7 @@ def _cancel_batch_inplace(
 
     job_uuids: list[str] = []
     for step in batch.steps:
-        if step.status in {"pending", "queued", "running"}:
+        if step.status in {"pending", "queued", "running", "interrupted"}:
             step.status = "cancelled"
             step.finished_at = now
             step.error_message = reason
@@ -1028,7 +1073,7 @@ def _cancel_batch_inplace(
         job = ExceptionJob.query.filter_by(job_uuid=juuid).first()
         if job is None:
             continue
-        if job.status in {"queued", "running", "draft"}:
+        if job.status in {"queued", "running", "draft", "interrupted"}:
             job.status = "cancelled"
             job.error_message = reason
             job.progress_message = reason
@@ -1169,6 +1214,50 @@ def supersede_active_batches_for_period(
     return len(others)
 
 
+def resume_interrupted_batch(batch_uuid: str) -> ExceptionPipelineBatch:
+    """Queue interrupted work again. Pending steps stay pending and can start."""
+    from app.services.exception_job_worker import requeue_interrupted_job
+
+    batch = ExceptionPipelineBatch.query.filter_by(batch_uuid=batch_uuid).first()
+    if batch is None:
+        raise ValueError("Batch not found")
+    if batch.status != "interrupted":
+        raise ValueError(
+            f"Cannot resume batch while status is {batch.status}."
+        )
+
+    for step in batch.steps:
+        if step.status != "interrupted":
+            continue
+        child = None
+        if step.child_job_uuid:
+            child = ExceptionJob.query.filter_by(job_uuid=step.child_job_uuid).first()
+        if child is not None and child.status == "interrupted":
+            requeue_interrupted_job(child)
+            step.status = "queued"
+        else:
+            step.status = "pending"
+            step.child_job_uuid = None
+        step.error_message = None
+        step.finished_at = None
+
+    if batch.analytics_job_uuid:
+        analytics = ExceptionJob.query.filter_by(
+            job_uuid=batch.analytics_job_uuid
+        ).first()
+        if analytics is not None and analytics.status == "interrupted":
+            requeue_interrupted_job(analytics)
+
+    batch.status = "running"
+    batch.error_message = None
+    batch.finished_at = None
+    batch.progress_message = "Resumed. Interrupted work is queued again."
+    db.session.commit()
+    enqueue_ready_pipeline_steps(batch)
+    db.session.refresh(batch)
+    return batch
+
+
 def cancel_batch(batch_uuid: str) -> ExceptionPipelineBatch:
     """
     Stop a running/queued pipeline batch.
@@ -1177,7 +1266,7 @@ def cancel_batch(batch_uuid: str) -> ExceptionPipelineBatch:
     batch = ExceptionPipelineBatch.query.filter_by(batch_uuid=batch_uuid).first()
     if batch is None:
         raise ValueError("Batch not found")
-    if batch.status not in {"queued", "running"}:
+    if batch.status not in {"queued", "running", "interrupted"}:
         raise ValueError(
             f"Cannot stop batch while status is {batch.status}."
         )

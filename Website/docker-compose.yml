@@ -11,6 +11,7 @@
 #   SCRAPE_GRID_URL=http://host.docker.internal:4444/wd/hub   # from Docker backend
 #   SCRAPE_MAX_NODES=3
 #   SCRAPE_MAX_CONCURRENCY=3
+#   Total scrape sessions = nodes × concurrency (sessions on each node).
 #   SCRAPE_AUTO_MANAGE_NODES=1
 #
 # Requires Website/backend/.env (see backend/.env.example + DOCKER.md).
@@ -38,7 +39,6 @@ services:
       - e4_jobs:/app/Exeption Programs/E4/jobs
       - e5_jobs:/app/Exeption Programs/E5/jobs
       - e6_jobs:/app/Exeption Programs/E6/jobs
-      - e6_permit_cache:/app/Exeption Programs/E6/permit_cache
       - e7_jobs:/app/Exeption Programs/E7/jobs
       - e9_jobs:/app/Exeption Programs/E9/jobs
       - e10_jobs:/app/Exeption Programs/E10/jobs
@@ -130,7 +130,6 @@ volumes:
   e4_jobs:
   e5_jobs:
   e6_jobs:
-  e6_permit_cache:
   e7_jobs:
   e9_jobs:
   e10_jobs:

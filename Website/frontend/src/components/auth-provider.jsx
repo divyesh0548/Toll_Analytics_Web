@@ -17,7 +17,10 @@ function shouldPromptPasswordChange(user) {
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [features, setFeatures] = useState({ development_exceptions: false })
+  const [features, setFeatures] = useState({
+    development_exceptions: false,
+    publish_exception_results: true,
+  })
   const [loading, setLoading] = useState(true)
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
 
@@ -25,14 +28,20 @@ export function AuthProvider({ children }) {
     const enabled = Boolean(
       dataFeatures?.development_exceptions ?? dataFeatures?.show_exception_uploads,
     )
-    return { development_exceptions: enabled }
+    return {
+      development_exceptions: enabled,
+      publish_exception_results: dataFeatures?.publish_exception_results !== false,
+    }
   }
 
   const refreshUser = useCallback(async () => {
     const token = getToken()
     if (!token) {
       setUser(null)
-      setFeatures({ development_exceptions: false })
+      setFeatures({
+        development_exceptions: false,
+        publish_exception_results: true,
+      })
       setUserRole(null)
       setPasswordChangeOpen(false)
       setLoading(false)
@@ -47,7 +56,10 @@ export function AuthProvider({ children }) {
     } catch {
       clearToken()
       setUser(null)
-      setFeatures({ development_exceptions: false })
+      setFeatures({
+        development_exceptions: false,
+        publish_exception_results: true,
+      })
       setPasswordChangeOpen(false)
       return null
     } finally {
@@ -72,7 +84,10 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     clearToken()
     setUser(null)
-    setFeatures({ development_exceptions: false })
+    setFeatures({
+      development_exceptions: false,
+      publish_exception_results: true,
+    })
     setPasswordChangeOpen(false)
   }, [])
 
@@ -97,6 +112,7 @@ export function AuthProvider({ children }) {
       developmentExceptions: Boolean(features?.development_exceptions),
       // Legacy alias used by older call sites.
       showExceptionUploads: Boolean(features?.development_exceptions),
+      publishExceptionResults: features?.publish_exception_results !== false,
       loading,
       isAuthenticated: Boolean(user),
       isSiteAdmin: user?.role === 'siteadmin',

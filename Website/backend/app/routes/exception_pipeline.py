@@ -21,6 +21,7 @@ from app.services.exception_pipeline_service import (
     cancel_batch,
     create_batch,
     period_status,
+    resume_interrupted_batch,
     start_batch,
 )
 from app.services.exception_program_catalog import (
@@ -257,6 +258,16 @@ def stop_pipeline_batch(batch_uuid: str):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     log_ok(f"pipeline batch stopped {batch_uuid}")
+    return jsonify({"batch": batch.to_dict()})
+
+
+@exception_pipeline_bp.post("/batches/<batch_uuid>/resume-interrupted")
+def resume_pipeline_batch(batch_uuid: str):
+    try:
+        batch = resume_interrupted_batch(batch_uuid)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    log_ok(f"pipeline batch resumed {batch_uuid}")
     return jsonify({"batch": batch.to_dict()})
 
 

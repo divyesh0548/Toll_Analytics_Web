@@ -1,3 +1,0 @@
-flask --app run:app db migrate -m "migration message"
-
-flask --app run:app db upgrade

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
 from app.extensions import db
@@ -789,6 +789,45 @@ def mark_job_failed(job_uuid: str):
     return jsonify({"job": job.to_dict(), "cleanup": cleanup})
 
 
+@exception_jobs_bp.post("/<job_uuid>/resume-interrupted")
+def resume_interrupted_job_route(job_uuid: str):
+    """Queue a job that was left running when the server closed."""
+    job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    if job.status != "interrupted":
+        return (
+            jsonify({"error": f"Job is {job.status}; nothing to resume."}),
+            409,
+        )
+
+    from app.models.exception_pipeline import (
+        ExceptionPipelineBatch,
+        ExceptionPipelineBatchStep,
+    )
+    from app.services.exception_job_worker import requeue_interrupted_job
+    from app.services.exception_pipeline_service import resume_interrupted_batch
+
+    step = ExceptionPipelineBatchStep.query.filter_by(child_job_uuid=job.job_uuid).first()
+    batch = step.batch if step is not None else None
+    if batch is None:
+        batch = ExceptionPipelineBatch.query.filter_by(
+            analytics_job_uuid=job.job_uuid
+        ).first()
+    if batch is not None and batch.status == "interrupted":
+        try:
+            resumed = resume_interrupted_batch(batch.batch_uuid)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        db.session.refresh(job)
+        return jsonify({"job": job.to_dict(), "batch": resumed.to_dict()})
+
+    requeue_interrupted_job(job)
+    db.session.commit()
+    log_ok(f"resumed interrupted job {job.job_uuid}")
+    return jsonify({"job": job.to_dict()})
+
+
 @exception_jobs_bp.post("/<job_uuid>/start")
 def start_job(job_uuid: str):
     job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
@@ -912,3 +951,39 @@ def download_job_file(job_uuid: str, file_id: int):
             "slot": row.slot,
         }
     )
+
+
+@exception_jobs_bp.get("/<job_uuid>/outputs")
+def list_job_outputs(job_uuid: str):
+    """Generated files kept on the server when S3 publish is off."""
+    job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    from app.services.exception_job_cleanup import list_local_job_outputs
+
+    return jsonify(
+        {
+            "files": list_local_job_outputs(job),
+            "publish_exception_results": bool(
+                Config.PUBLISH_EXCEPTION_RESULTS
+            ),
+        }
+    )
+
+
+@exception_jobs_bp.get("/<job_uuid>/outputs/download")
+def download_job_output(job_uuid: str):
+    """Stream one generated output file from the job workspace."""
+    job = ExceptionJob.query.filter_by(job_uuid=job_uuid).first()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    from app.services.exception_job_cleanup import resolve_local_job_output
+
+    relative = str(request.args.get("path") or "").strip()
+    try:
+        path = resolve_local_job_output(job, relative)
+    except PermissionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return send_file(path, as_attachment=True, download_name=path.name)

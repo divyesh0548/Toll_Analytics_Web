@@ -8,7 +8,10 @@ export function Dialog({ open, onClose, title, description, children, className 
   useEffect(() => {
     if (!open) return undefined
     function onKeyDown(event) {
-      if (event.key === 'Escape') onClose?.()
+      if (event.key !== 'Escape') return
+      const tag = event.target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      onClose?.()
     }
     document.addEventListener('keydown', onKeyDown)
     const previousOverflow = document.body.style.overflow

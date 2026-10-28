@@ -1,0 +1,11 @@
+# Database migration commands
+
+flask --app run:app db migrate -m "migration message"
+
+flask --app run:app db upgrade
+
+
+
+# Run command
+
+waitress-serve --listen=0.0.0.0:5000 run:app

@@ -773,7 +773,8 @@ def scrape_vehicle_details_for_permit(
         f"Web scrape mode: Selenium Grid ({grid_url}, "
         f"auto_nodes={SELENIUM_AUTO_MANAGE_NODES}, "
         f"nodes={MAX_SELENIUM_GRID_NODES}, "
-        f"concurrency={MAX_SELENIUM_GRID_CONCURRENCY})",
+        f"per_node={MAX_SELENIUM_GRID_CONCURRENCY}, "
+        f"sessions={MAX_SELENIUM_GRID_NODES * MAX_SELENIUM_GRID_CONCURRENCY})",
         flush=True,
     )
     return _run_grid_scrape(df_input, grid_url, vehicle_column=vehicle_column)
@@ -793,14 +794,17 @@ def _run_grid_scrape(df_input, remote_url, vehicle_column=None):
     Auto-start Chrome nodes (if enabled), split the work across parallel Grid sessions,
     merge results, and fall back to local Chrome on failure.
     """
-    chunks = split_df_for_grid(df_input, MAX_SELENIUM_GRID_CONCURRENCY)
+    total_sessions = MAX_SELENIUM_GRID_NODES * MAX_SELENIUM_GRID_CONCURRENCY
+    chunks = split_df_for_grid(df_input, total_sessions)
     if not chunks:
         return df_input
 
-    workers = min(len(chunks), MAX_SELENIUM_GRID_CONCURRENCY)
+    workers = min(len(chunks), total_sessions)
     print(
-        f"  [SELENIUM GRID] {len(chunks)} chunk(s), concurrency={workers}, "
-        f"nodes={MAX_SELENIUM_GRID_NODES} -> {remote_url}",
+        f"  [SELENIUM GRID] {len(chunks)} chunk(s), "
+        f"sessions={workers} "
+        f"({MAX_SELENIUM_GRID_NODES} nodes × {MAX_SELENIUM_GRID_CONCURRENCY} each) "
+        f"-> {remote_url}",
         flush=True,
     )
 
@@ -817,7 +821,11 @@ def _run_grid_scrape(df_input, remote_url, vehicle_column=None):
                 node_image=SELENIUM_NODE_IMAGE,
                 max_sessions=MAX_SELENIUM_GRID_CONCURRENCY,
             )
-            wait_for_grid_ready(remote_url)
+            wait_for_grid_ready(
+                remote_url,
+                timeout_seconds=max(180, 25 * MAX_SELENIUM_GRID_NODES),
+                min_nodes=MAX_SELENIUM_GRID_NODES,
+            )
         else:
             assert_grid_ready(remote_url)
 
@@ -956,26 +964,52 @@ def _scrape_vehicle_details_for_permit_impl(df_input, vehicle_column=None):
             pass
         return df
 
-    # Process all vehicles
+    # Process all vehicles. Useful permit rows are written to the shared
+    # database every 5 minutes so a stopped run can be resumed.
     start_time = time.perf_counter()
     scraped_count = 0
+    last_db_flush = time.monotonic()
+    pending_indexes: list = []
+    flush_seconds = 300
 
-    for idx, row in df.iterrows():
-        vehicle_no = normalize_vehicle_number(row[veh_col])
-        if not vehicle_no or not is_vehicle_number_eligible(vehicle_no):
-            for field in PERMIT_FIELDS:
-                if field not in df.columns:
-                    df[field] = ""
-                df.at[idx, field] = "none"
-            continue
+    def _flush_permit_db(force: bool = False) -> None:
+        nonlocal last_db_flush, pending_indexes
+        if not pending_indexes:
+            return
+        if not force and (time.monotonic() - last_db_flush) < flush_seconds:
+            return
+        from common.permit_scrape_store import upsert_permit_frame
 
-        driver, wait, success = process_single_vehicle(driver, wait, vehicle_no, idx, df)
+        subset = df.loc[list(pending_indexes)]
+        written = upsert_permit_frame(subset, veh_col)
+        if written < 0:
+            return
+        pending_indexes = []
+        last_db_flush = time.monotonic()
 
-        if success:
-            scraped_count += 1
-            print(f"Progress: {scraped_count}/{len(df)} scraped")
+    try:
+        for idx, row in df.iterrows():
+            vehicle_no = normalize_vehicle_number(row[veh_col])
+            if not vehicle_no or not is_vehicle_number_eligible(vehicle_no):
+                for field in PERMIT_FIELDS:
+                    if field not in df.columns:
+                        df[field] = ""
+                    df.at[idx, field] = "none"
+                continue
 
-        time.sleep(1)
+            driver, wait, success = process_single_vehicle(
+                driver, wait, vehicle_no, idx, df
+            )
+
+            if success:
+                scraped_count += 1
+                pending_indexes.append(idx)
+                print(f"Progress: {scraped_count}/{len(df)} scraped")
+                _flush_permit_db()
+
+            time.sleep(1)
+    finally:
+        _flush_permit_db(force=True)
 
     try:
         driver.quit()

@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { useAuth } from '@/components/auth-provider'
+import { LocalOutputDownloads } from '@/components/local-output-downloads'
 import {
   attachExemptFinalFile,
   attachStagingInvalidFile,
@@ -22,6 +24,7 @@ import {
   listStagingInvalidFiles,
   markExceptionJobFailed,
   startExceptionJob,
+  resumeInterruptedJob,
   uploadExceptionJobFile,
 } from '@/lib/api'
 import { cn, formatLocalDateTime } from '@/lib/utils'
@@ -79,6 +82,7 @@ function statusClass(status) {
       return 'bg-red-500/15 text-red-700 dark:text-red-300'
     case 'running':
     case 'queued':
+    case 'interrupted':
       return 'bg-amber-500/15 text-amber-800 dark:text-amber-200'
     default:
       return 'bg-secondary text-secondary-foreground'
@@ -157,6 +161,7 @@ function SlotPendingUpload({
 }
 
 export function ExceptionUploadsPage() {
+  const { publishExceptionResults } = useAuth()
   const [programs, setPrograms] = useState([])
   const [pipelineKeys, setPipelineKeys] = useState([])
   const [plazas, setPlazas] = useState([])
@@ -220,6 +225,7 @@ export function ExceptionUploadsPage() {
     0,
   )
   const isUploading = Boolean(uploadingSlot)
+  const interruptedJob = jobs.find((job) => job.status === 'interrupted')
 
   const loadCatalog = useCallback(async () => {
     const [catalog, plazaData] = await Promise.all([
@@ -612,6 +618,40 @@ export function ExceptionUploadsPage() {
       }
     } catch (err) {
       setError(err.message || 'Could not delete jobs')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleResumeInterruptedJob() {
+    if (!interruptedJob) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const data = await resumeInterruptedJob(interruptedJob.job_uuid)
+      setActiveJob(data.job)
+      setNotice('Job queued again.')
+      await loadJobsForProgram(selectedProgram)
+    } catch (err) {
+      setError(err.message || 'Could not run the interrupted job')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRemoveInterruptedJob() {
+    if (!interruptedJob) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await deleteExceptionJob(interruptedJob.job_uuid)
+      if (activeJob?.job_uuid === interruptedJob.job_uuid) setActiveJob(null)
+      setNotice('Interrupted job removed.')
+      await loadJobsForProgram(selectedProgram)
+    } catch (err) {
+      setError(err.message || 'Could not remove the interrupted job')
     } finally {
       setBusy(false)
     }
@@ -1400,6 +1440,10 @@ export function ExceptionUploadsPage() {
                     </div>
                   ) : null}
 
+                  {activeJob.status === 'succeeded' && !publishExceptionResults ? (
+                    <LocalOutputDownloads jobUuid={activeJob.job_uuid} enabled />
+                  ) : null}
+
                   {activeJob.progress_message ? (
                     <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-sm bg-secondary/40 p-3 text-small">
                       {activeJob.progress_message}
@@ -1556,6 +1600,29 @@ export function ExceptionUploadsPage() {
           </Card>
         </div>
       )}
+
+      <Dialog
+        open={Boolean(interruptedJob)}
+        onClose={() => {}}
+        title="This job was stopped when the server closed"
+        description={`${
+          PROGRAM_SHORT[interruptedJob?.program_code] || interruptedJob?.program_code || 'This job'
+        } was still running. Run it again, or remove it. It will not start on its own.`}
+      >
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={handleRemoveInterruptedJob}
+          >
+            Remove
+          </Button>
+          <Button type="button" disabled={busy} onClick={handleResumeInterruptedJob}>
+            Run again
+          </Button>
+        </div>
+      </Dialog>
 
       <Dialog
         open={scrapeModeOpen}

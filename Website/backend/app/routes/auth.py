@@ -27,11 +27,14 @@ def _generate_temp_password(length: int = 14) -> str:
 
 def _ui_features() -> dict:
     enabled = bool(current_app.config.get("DEVELOPMENT_EXCEPTIONS", False))
+    publish = bool(current_app.config.get("PUBLISH_EXCEPTION_RESULTS", True))
     return {
         # Prefer this name in the UI.
         "development_exceptions": enabled,
         # Legacy alias — keep until older frontends are retired.
         "show_exception_uploads": enabled,
+        # False = exception outputs stay local and can be downloaded.
+        "publish_exception_results": publish,
     }
 
 

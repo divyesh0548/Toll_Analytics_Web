@@ -161,16 +161,31 @@ def assert_grid_ready(remote_url=DEFAULT_REMOTE_URL):
 def wait_for_grid_ready(
     remote_url=DEFAULT_REMOTE_URL,
     timeout_seconds=DEFAULT_NODE_STARTUP_TIMEOUT,
+    min_nodes=1,
 ):
+    """Wait until the hub is ready and at least min_nodes Chrome nodes are registered."""
     deadline = time.time() + timeout_seconds
+    needed = max(1, int(min_nodes or 1))
     last_error = None
     while time.time() < deadline:
         try:
-            assert_grid_ready(remote_url)
-            return
+            status_url = build_grid_status_url(remote_url)
+            with urllib.request.urlopen(status_url, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            value = payload.get("value", {})
+            nodes = value.get("nodes") or []
+            if value.get("ready") and len(nodes) >= needed:
+                print(
+                    f"Selenium Grid ready: {len(nodes)} node(s) (need {needed})",
+                    flush=True,
+                )
+                return
+            last_error = RuntimeError(
+                f"ready={bool(value.get('ready'))} nodes={len(nodes)}/{needed}"
+            )
         except Exception as exc:
             last_error = exc
-            time.sleep(3)
+        time.sleep(3)
     raise RuntimeError(
-        f"Selenium Grid did not become ready within {timeout_seconds}s. {last_error}"
+        f"Selenium Grid did not register {needed} node(s) within {timeout_seconds}s. {last_error}"
     )
