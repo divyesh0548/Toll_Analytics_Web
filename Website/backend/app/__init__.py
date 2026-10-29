@@ -49,6 +49,7 @@ def create_app(config_name: str | None = None) -> Flask:
     )
     from app.routes.exception_pipeline import exception_pipeline_bp
     from app.routes.mapping_config import mapping_config_bp
+    from app.routes.plaza_reference_files import plaza_reference_files_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(companies_bp, url_prefix="/api/companies")
@@ -58,6 +59,9 @@ def create_app(config_name: str | None = None) -> Flask:
     app.register_blueprint(exception_jobs_bp, url_prefix="/api/exception-jobs")
     app.register_blueprint(exception_pipeline_bp, url_prefix="/api/exception-pipeline")
     app.register_blueprint(mapping_config_bp, url_prefix="/api/mapping-config")
+    app.register_blueprint(
+        plaza_reference_files_bp, url_prefix="/api/plaza-reference-files"
+    )
 
     from flask import request
     from app.utils.api_log import log_api

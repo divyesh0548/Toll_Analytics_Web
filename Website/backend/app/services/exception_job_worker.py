@@ -280,12 +280,53 @@ def _backend_env_path() -> Path:
     return backend_env_path()
 
 
+# Per worker-thread: File Upload jobs use pipeline_* tables; separate
+# Exceptions-page jobs use audit_exception_*. Never mix the two in one run.
+_job_run_state = threading.local()
+
+_LEGACY_METRICS_TABLE = "audit_exception_metrics"
+_LEGACY_OUTPUT_FILES_TABLE = "audit_exception_output_files"
+
+
+def _set_job_pipeline_tables(use_pipeline: bool) -> None:
+    _job_run_state.use_pipeline_tables = bool(use_pipeline)
+
+
+def _job_uses_pipeline_tables() -> bool:
+    return bool(getattr(_job_run_state, "use_pipeline_tables", False))
+
+
+def _apply_result_table_env(env: dict[str, str], *, use_pipeline: bool) -> None:
+    """Metrics and output-file tables always move together."""
+    from app.services.pipeline_dependency_catalog import (
+        PIPELINE_METRICS_TABLE,
+        PIPELINE_OUTPUT_FILES_TABLE,
+    )
+
+    if use_pipeline:
+        env["Exception_Metrics_Table"] = PIPELINE_METRICS_TABLE
+        env["EXCEPTION_METRICS_TABLE"] = PIPELINE_METRICS_TABLE
+        env["EXCEPTION_OUTPUT_FILES_TABLE"] = PIPELINE_OUTPUT_FILES_TABLE
+        env["Exception_Output_Files_Table"] = PIPELINE_OUTPUT_FILES_TABLE
+        env["PIPELINE_BATCH_MODE"] = "1"
+        return
+    env["Exception_Metrics_Table"] = _LEGACY_METRICS_TABLE
+    env["EXCEPTION_METRICS_TABLE"] = _LEGACY_METRICS_TABLE
+    env["EXCEPTION_OUTPUT_FILES_TABLE"] = _LEGACY_OUTPUT_FILES_TABLE
+    env["Exception_Output_Files_Table"] = _LEGACY_OUTPUT_FILES_TABLE
+    env.pop("PIPELINE_BATCH_MODE", None)
+
+
 def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
     """
     Single source of truth: Website/backend/.env (+ process env).
 
     Do not load Exeption Programs/.env or E4/.env — merge those keys into
     backend/.env instead (see backend/.env.example).
+
+    Result tables are chosen per job thread (File Upload → pipeline_*,
+    Exceptions page → audit_exception_*), after .env is merged, so a stale
+    Exception_Metrics_Table in .env cannot split metrics from output files.
     """
     from app.services.repo_paths import (
         backend_root,
@@ -297,20 +338,6 @@ def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
     env: dict[str, str] = {
         str(k): str(v) for k, v in os.environ.items() if v is not None
     }
-    # File Upload pipeline mode sets these on the worker process. dotenv must
-    # not overwrite them back to audit_exception_metrics / output_files.
-    pipeline_mode = str(os.environ.get("PIPELINE_BATCH_MODE") or "").strip() == "1"
-    pipeline_preserve = {
-        key: str(os.environ[key])
-        for key in (
-            "Exception_Metrics_Table",
-            "EXCEPTION_METRICS_TABLE",
-            "EXCEPTION_OUTPUT_FILES_TABLE",
-            "Exception_Output_Files_Table",
-            "PIPELINE_BATCH_MODE",
-        )
-        if pipeline_mode and os.environ.get(key)
-    }
 
     env_path = _backend_env_path()
     if env_path.is_file():
@@ -320,9 +347,6 @@ def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
             text = str(value).strip()
             if text:
                 env[str(key)] = text
-
-    if pipeline_preserve:
-        env.update(pipeline_preserve)
 
     # Host/user/password fallbacks only — never DB_NAME → RDS_DB_NAME.
     if env.get("DB_HOST") and not env.get("RDS_HOST"):
@@ -335,7 +359,9 @@ def _build_job_subprocess_env(*, require_rds: bool = False) -> dict[str, str]:
         env["RDS_PASSWORD"] = env["DB_PASSWORD"]
     if env.get("DB_NAME") and not env.get("Toll_Analytics_DB"):
         env["Toll_Analytics_DB"] = env["DB_NAME"]
-    env.setdefault("Exception_Metrics_Table", "audit_exception_metrics")
+
+    _apply_result_table_env(env, use_pipeline=_job_uses_pipeline_tables())
+
     # Path roots for scripts inside the container / local checkout.
     env.setdefault("TOLL_REPO_ROOT", str(repo_root()))
     env.setdefault("EXCEPTION_PROGRAMS_ROOT", str(exception_programs_root()))
@@ -914,6 +940,7 @@ def _process_claimed_job(job_id: int) -> None:
     )
 
     pipeline_mode = apply_pipeline_env_for_job(job)
+    _set_job_pipeline_tables(pipeline_mode)
     pipeline_analytics = is_pipeline_analytics_job(job.job_uuid)
     process_dir: Path | None = None
     child: subprocess.Popen | None = None
@@ -1018,6 +1045,7 @@ def _process_claimed_job(job_id: int) -> None:
         db.session.commit()
         _print_job_runtime(job, time.perf_counter() - t0, ok=False)
     finally:
+        _set_job_pipeline_tables(False)
         if pipeline_mode:
             try:
                 on_pipeline_child_finished(job)
@@ -1053,61 +1081,18 @@ def _safe_rmtree(path: Path) -> bool:
 
 def _stage_full_exempt_annexure_defaults(
     *,
-    portal: Path,
     input_root: Path,
-    plaza_key: str,
+    job: ExceptionJob,
 ) -> None:
     """
-    Copy mapped RatesAfter April / Approved Exmption defaults into the process
-    input folders when the Website job did not upload those slots.
+    Download rates and approved-exemption workbooks stored for this plaza
+    when the job period sits inside their valid dates. A file already uploaded
+    on the job is left in place.
     """
-    import shutil
-    import sys
+    from app.services.plaza_reference_files import stage_reference_file
 
-    key = str(plaza_key or "").strip().upper()
-    if not key:
-        raise RuntimeError("pipeline_plaza_key is required for Full Exempt rates lookup.")
-
-    final_dir = (
-        portal / "Scripts" / "Excempy_Query" / "Final_7_scripts"
-    )
-    if str(final_dir) not in sys.path:
-        sys.path.insert(0, str(final_dir))
-    try:
-        from annexure_plaza_config import (  # noqa: WPS433
-            resolve_approved_exemption_file,
-            resolve_rates_file,
-            uses_approved_exemption_script,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f"Could not load annexure_plaza_config for rates lookup: {exc}"
-        ) from exc
-
-    rates_dir = input_root / "rates"
-    rates_dir.mkdir(parents=True, exist_ok=True)
-    if not any(rates_dir.iterdir()):
-        rates_src = resolve_rates_file(key)
-        if rates_src is None or not rates_src.is_file():
-            raise RuntimeError(
-                f"No rates file for plaza {key!r}. "
-                "Add it under Scripts/Excempy_Query/RatesAfter April "
-                "(see annexure_plaza_config.json rates_files), or upload a rates file."
-            )
-        shutil.copy2(rates_src, rates_dir / rates_src.name)
-
-    if uses_approved_exemption_script(key):
-        approved_dir = input_root / "approved_exemption"
-        approved_dir.mkdir(parents=True, exist_ok=True)
-        if not any(approved_dir.iterdir()):
-            approved_src = resolve_approved_exemption_file(key)
-            if approved_src is None or not approved_src.is_file():
-                raise RuntimeError(
-                    f"Plaza {key!r} needs an Approved Exemption file. "
-                    "Add it under Scripts/Excempy_Query/Approved Exmption "
-                    "(see annexure_plaza_config.json), or upload one."
-                )
-            shutil.copy2(approved_src, approved_dir / approved_src.name)
+    stage_reference_file(job, input_root, "rates")
+    stage_reference_file(job, input_root, "approved_exemption")
 
 
 def _run_full_exempt_job(
@@ -1168,12 +1153,10 @@ def _run_full_exempt_job(
                 f"({type(exc).__name__}: {exc})"
             ) from exc
 
-    # Stage plaza default rates / approved-exemption when not uploaded on the job.
-    plaza_key = str(job.pipeline_plaza_key or "").strip().upper()
+    # Stage S3 rates / approved-exemption when the job did not upload those slots.
     _stage_full_exempt_annexure_defaults(
-        portal=portal,
         input_root=input_root,
-        plaza_key=plaza_key,
+        job=job,
     )
 
     job.progress_message = "Running Full Exempt Pipeline…"
@@ -1184,6 +1167,7 @@ def _run_full_exempt_job(
         raise RuntimeError(f"Runner script missing: {runner}")
 
     env = _build_full_exempt_subprocess_env()
+    env["FULL_EXEMPT_REFERENCE_FROM_S3"] = "1"
     child = _popen_job(
         [
             sys.executable,

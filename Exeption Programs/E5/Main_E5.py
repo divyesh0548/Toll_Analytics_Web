@@ -66,7 +66,7 @@ MERGED_OUTPUT_HINT: Path = OUTPUT_DIR
 # Import plaza rates (same module used by E5_main)
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
-from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
+from common.plaza_rates_loader import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Runtime inputs (Website overrides via E5_* / SCRAPE_* env)

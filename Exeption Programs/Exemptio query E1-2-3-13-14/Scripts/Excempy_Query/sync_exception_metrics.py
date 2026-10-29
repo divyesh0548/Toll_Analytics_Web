@@ -35,17 +35,33 @@ EXCEPTION_PROGRAMS_ROOT = SCRIPT_DIR.parents[2]
 REPO_ROOT = EXCEPTION_PROGRAMS_ROOT.parent
 
 
+_RESULT_TABLE_ENV_KEYS = (
+    "Exception_Metrics_Table",
+    "EXCEPTION_METRICS_TABLE",
+    "EXCEPTION_OUTPUT_FILES_TABLE",
+    "Exception_Output_Files_Table",
+    "PIPELINE_BATCH_MODE",
+)
+
+
 def _load_metrics_env() -> None:
     """
     Prefer Website/backend/.env for toll_analytics + AWS, then Exeption Programs/.env.
     override=True so a stale process env cannot block RDS_/Toll_Analytics_DB.
+    Keep File Upload / Exceptions-page table routing set by the website worker.
     """
+    preserved = {
+        key: os.environ[key]
+        for key in _RESULT_TABLE_ENV_KEYS
+        if os.environ.get(key)
+    }
     for env_path in (
         REPO_ROOT / "Website" / "backend" / ".env",
         EXCEPTION_PROGRAMS_ROOT / ".env",
     ):
         if env_path.is_file():
             load_dotenv(env_path, override=True)
+    os.environ.update(preserved)
 
 
 _load_metrics_env()
@@ -466,10 +482,13 @@ def upload_annexure_exception_outputs(
         detail = "; ".join(notes + [f"missing: {', '.join(skipped)}"] if skipped else notes)
         return False, f"No annexure outputs uploaded: {detail}"
 
-    msg = (
-        f"Uploaded {uploaded} annexure output file(s) to S3 / "
-        f"audit_exception_output_files."
-    )
+    try:
+        from common.s3_output_upload import output_files_table_name  # noqa: WPS433
+
+        out_table = output_files_table_name()
+    except Exception:  # noqa: BLE001
+        out_table = "audit_exception_output_files"
+    msg = f"Uploaded {uploaded} annexure output file(s) to S3 / {out_table}."
     if notes:
         msg += " " + " | ".join(notes)
     return True, msg

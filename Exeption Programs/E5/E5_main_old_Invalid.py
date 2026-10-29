@@ -38,7 +38,7 @@ SKIP_DB_UPDATE = False  # True = scrape/compare only, no DB write
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_EXCEL = BASE_DIR / "bassi_combined_2026-06-01_to_2026-07-31.xlsx"
-# Plaza name in E4/plaza_rates.py. June 2026 uses the April 2026 tariff.
+# Plaza name in Website/backend/app/plaza_rates.py. June 2026 uses the April 2026 tariff.
 ENTITY_NAME = "bassi"
 RATE_CUTOVER = date(2026, 5, 1)
 CONFIG_JSON = BASE_DIR / "e5_config.json"
@@ -290,13 +290,12 @@ def filter_matching_rows(
 
 
 def _rate_books() -> tuple[dict, dict]:
-    path = BASE_DIR.parent / "E4" / "plaza_rates.py"
-    spec = importlib.util.spec_from_file_location("e4_plaza_rates", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load plaza rates from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.PLAZA_RATES, module.Plaza_Rates_Apr26_onwards
+    programs = BASE_DIR.parent
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.plaza_rates_loader import PLAZA_RATES, Plaza_Rates_Apr26_onwards
+
+    return PLAZA_RATES, Plaza_Rates_Apr26_onwards
 
 
 def _single_rate(

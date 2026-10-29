@@ -362,6 +362,48 @@ def upload_stream(
     }
 
 
+def upload_reference_stream(
+    *,
+    fileobj: BinaryIO,
+    plaza_name: str,
+    kind: str,
+    original_file_name: str,
+    content_type: str | None = None,
+) -> dict:
+    """Store a plaza rates or approved-exemption workbook."""
+    bucket = bucket_name()
+    region = _require_env("AWS_REGION")
+    file_name = _safe_folder(Path(original_file_name).name) or "file.xlsx"
+    key = (
+        f"{S3_ROOT_PREFIX}/{_safe_folder(plaza_name)}/reference/"
+        f"{_safe_folder(kind)}/{uuid.uuid4().hex[:10]}_{file_name}"
+    )
+    extra: dict = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    if hasattr(fileobj, "seek"):
+        fileobj.seek(0)
+    counter = _CountingReader(fileobj)
+    client = s3_client()
+    transfer_cfg = _multipart_transfer_config()
+    if transfer_cfg is not None:
+        client.upload_fileobj(
+            counter,
+            bucket,
+            key,
+            ExtraArgs=extra or None,
+            Config=transfer_cfg,
+        )
+    else:
+        client.upload_fileobj(counter, bucket, key, ExtraArgs=extra or None)
+    return {
+        "bucket": bucket,
+        "s3_key": key,
+        "file_url": object_url(bucket, region, key),
+        "file_size_bytes": counter.bytes_read,
+    }
+
+
 def upload_bytes(
     *,
     body: bytes,

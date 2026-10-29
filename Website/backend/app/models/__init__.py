@@ -30,6 +30,7 @@ from app.models.mop_distribution_per_class import MopDistributionPerClass
 from app.models.mop_distribution_per_lane import MopDistributionPerLane
 from app.models.permit_scrape_cache import PermitScrapeCache
 from app.models.plaza import Plaza
+from app.models.plaza_reference_file import PlazaReferenceFile
 from app.models.plaza_daily_revenue import PlazaDailyRevenue
 from app.models.spv import Spv
 from app.models.user import User
@@ -41,6 +42,7 @@ __all__ = [
     "Spv",
     "PermitScrapeCache",
     "Plaza",
+    "PlazaReferenceFile",
     "PlazaCalendarEvent",
     "PlazaDailyRevenue",
     "MopDistributionPerClass",

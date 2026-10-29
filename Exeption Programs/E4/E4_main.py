@@ -43,11 +43,10 @@ from e4_db_update import (
     update_db_from_dataframe,
     update_db_zero_months,
 )
-from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards
-
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR.parent) not in sys.path:
     sys.path.insert(0, str(BASE_DIR.parent))
+from common.plaza_rates_loader import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 from common.plaza_entity_map import (  # noqa: E402
     resolve_entity_name as entity_name_from_plaza,
 )

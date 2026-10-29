@@ -48,7 +48,6 @@ CONFIG_PATH = BASE_DIR / "e10_config.json"
 VRN_DOWNLOAD_MERGE_PATH = E4_DIR / "vrn-download-merge.py"
 ETC_DOWNLOAD_MERGE_PATH = E4_DIR / "etc-download-merge.py"
 VEHICLE_CLASS_PATH = BASE_DIR / "vehicle-class.py"
-PLAZA_RATES_PATH = E4_DIR / "plaza_rates.py"
 OUTPUT_DIR = BASE_DIR / "output"
 
 
@@ -63,9 +62,7 @@ def _load_module_from_path(path: Path, module_name: str):
     return module
 
 
-_PLAZA_RATES_MOD = _load_module_from_path(PLAZA_RATES_PATH, "e4_plaza_rates")
-PLAZA_RATES = _PLAZA_RATES_MOD.PLAZA_RATES
-Plaza_Rates_Apr26_onwards = _PLAZA_RATES_MOD.Plaza_Rates_Apr26_onwards
+from common.plaza_rates_loader import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 
 def _load_vehicle_class_module():
@@ -144,8 +141,22 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     return overlay_shared_config(config, header_source="vrn", match_source="vrn_thin")
 
 
+_RESULT_TABLE_ENV_KEYS = (
+    "Exception_Metrics_Table",
+    "EXCEPTION_METRICS_TABLE",
+    "EXCEPTION_OUTPUT_FILES_TABLE",
+    "Exception_Output_Files_Table",
+    "PIPELINE_BATCH_MODE",
+)
+
+
 def load_env() -> None:
     """Load Website + E4 .env files and map names used by downloads / checkpost."""
+    preserved = {
+        key: os.environ[key]
+        for key in _RESULT_TABLE_ENV_KEYS
+        if os.environ.get(key)
+    }
     if WEBSITE_ENV.is_file():
         load_dotenv(WEBSITE_ENV, override=True)
     elif not os.getenv("DB_HOST", "").strip():
@@ -163,6 +174,7 @@ def load_env() -> None:
     # Optional legacy E4/.env — override=False so Website .env wins.
     if E4_ENV.is_file():
         load_dotenv(E4_ENV, override=False)
+    os.environ.update(preserved)
 
 
 def require_env(name: str) -> str:

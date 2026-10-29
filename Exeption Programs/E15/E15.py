@@ -44,7 +44,7 @@ VEHICLE_CLASS_PATH = E10_DIR / "vehicle-class.py"
 # Plaza rates (E4)
 if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
-from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
+from common.plaza_rates_loader import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 
 def _load_vehicle_class_module():

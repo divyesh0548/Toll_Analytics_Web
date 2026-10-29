@@ -186,6 +186,23 @@ def create_batch(
                 f"Set plaza_identifiers in annexure_plaza_config.json "
                 f"(required for {code})."
             )
+        if code == "full_exempt_e1_e2_e3_e13_e14":
+            from app.services.plaza_reference_files import (
+                full_exempt_reference_block_reason,
+                month_bounds,
+            )
+
+            period_start, period_end = month_bounds(int(year), int(month))
+            block = full_exempt_reference_block_reason(
+                plaza_identifier=plaza_identifier,
+                pipeline_plaza_key=pipeline_plaza_key,
+                start=period_start,
+                end=period_end,
+                has_rates_upload="rates" in present,
+                has_approved_upload="approved_exemption" in present,
+            )
+            if block:
+                raise ValueError(block)
         selected.append(program)
 
     analytics_ready = bool(present & {"vrn", "etc"})

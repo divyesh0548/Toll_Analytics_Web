@@ -403,12 +403,35 @@ export function listExceptionJobs(plazaIdentifier, programCode) {
   return request(`/api/exception-jobs${query}`)
 }
 
-export function getAnnexureServerDefaults(pipelinePlazaKey) {
-  return request(
-    `/api/exception-jobs/annexure-defaults?pipeline_plaza_key=${encodeURIComponent(
-      pipelinePlazaKey || '',
-    )}`,
-  )
+export function getAnnexureServerDefaults(pipelinePlazaKey, plazaIdentifier, year, month) {
+  const params = new URLSearchParams()
+  if (pipelinePlazaKey) params.set('pipeline_plaza_key', pipelinePlazaKey)
+  if (plazaIdentifier) params.set('plaza_identifier', plazaIdentifier)
+  if (year) params.set('year', String(year))
+  if (month) params.set('month', String(month))
+  return request(`/api/exception-jobs/annexure-defaults?${params.toString()}`)
+}
+
+export function listPlazaReferenceFiles(plazaIdentifier) {
+  const params = new URLSearchParams()
+  if (plazaIdentifier) params.set('plaza_identifier', plazaIdentifier)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return request(`/api/plaza-reference-files${query}`)
+}
+
+export function uploadPlazaReferenceFile(formData) {
+  return request('/api/plaza-reference-files', {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function deletePlazaReferenceFile(fileId) {
+  return request(`/api/plaza-reference-files/${fileId}`, { method: 'DELETE' })
+}
+
+export function downloadPlazaReferenceFile(fileId) {
+  return request(`/api/plaza-reference-files/${fileId}/download`)
 }
 
 export function listStagingInvalidFiles(plazaIdentifier, exceptionTypeId = 5) {

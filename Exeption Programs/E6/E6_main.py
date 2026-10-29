@@ -57,7 +57,7 @@ PERMIT_FILE_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".csv"}
 # Import plaza rates from E4
 if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
-from plaza_rates import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
+from common.plaza_rates_loader import PLAZA_RATES, Plaza_Rates_Apr26_onwards  # noqa: E402
 
 # --- Runtime inputs / flags (Website overrides via E6_* env) ---
 ENTITY_NAME = "mokha"

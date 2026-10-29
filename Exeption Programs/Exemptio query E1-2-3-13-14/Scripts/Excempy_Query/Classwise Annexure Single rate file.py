@@ -5,6 +5,7 @@ import glob
 import re
 import warnings
 import concurrent.futures
+from pathlib import Path
 from openpyxl.styles import Font, Border, Side
 
 # Ignore performance warnings
@@ -117,35 +118,17 @@ def load_data():
         return None
     return pd.concat(all_data, ignore_index=True)
 
-def _without_excluded_tc_classes(df):
-    """Drop EXCLUDE_TC_PATTERN rows, except the non-tollable class list."""
-    from pathlib import Path
-
-    programs = Path(__file__).resolve().parents[3]
-    if str(programs) not in sys.path:
-        sys.path.insert(0, str(programs))
-    from common.non_tollable import is_non_tollable_class
-
-    matched = df["TC Class"].astype(str).str.contains(
-        CONFIG["EXCLUDE_TC_PATTERN"], case=False, na=False
-    )
-    protected = df["TC Class"].map(is_non_tollable_class)
-    kept = int((matched & protected).sum())
-    removed = int((matched & ~protected).sum())
-    if kept or removed:
-        print(
-            f"  TC class filter: kept {kept} non-tollable row(s), "
-            f"removed {removed} other excluded row(s)."
-        )
-    return df[~(matched & ~protected)].copy()
-
-
 def clean_base_data(df):
     """Applies common cleaning steps across all processing flows."""
     print("Applying base cleaning...")
     
-    # 1. TC Class Exclusion. Classes on non_tollable_vehicle_classes stay in the output.
-    df = _without_excluded_tc_classes(df)
+    # 1. TC Class Exclusion (AUTO, Tractor, Trailer). These stay out of annexure
+    # files even when they are also on the non-tollable class list.
+    before = len(df)
+    df = df[~df['TC Class'].astype(str).str.contains(
+        CONFIG["EXCLUDE_TC_PATTERN"], case=False, na=False
+    )].copy()
+    print(f"  Removed {before - len(df)} AUTO/Tractor/Trailer row(s).")
     
     # 2. TC Class Standardization
     df['TC Class'] = df['TC Class'].astype(str).str.strip().str.upper()
@@ -171,6 +154,33 @@ def clean_base_data(df):
 
     return df
 
+def _apply_python_rates(df):
+    """One rate per row from Website/backend/app/plaza_rates.py, chosen by date."""
+    programs = Path(__file__).resolve().parents[3]
+    if str(programs) not in sys.path:
+        sys.path.insert(0, str(programs))
+    from common.plaza_rates_loader import lookup_annexure_amount
+
+    plaza = os.environ.get("ANNEXURE_PLAZA_KEY", "").strip()
+    date_col = CONFIG["DATE_COLUMN"] if CONFIG["DATE_COLUMN"] in df.columns else None
+    tc_values = df["TC Class"].tolist() if "TC Class" in df.columns else [""] * len(df)
+    journey_values = (
+        df["updated journey type"].tolist()
+        if "updated journey type" in df.columns
+        else [""] * len(df)
+    )
+    date_values = df[date_col].tolist() if date_col else [None] * len(df)
+    for tc_class, journey, stamp in zip(tc_values, journey_values, date_values):
+        amount = lookup_annexure_amount(plaza, tc_class, journey, stamp)
+        amounts.append(0 if amount is None else amount)
+    df[CONFIG["AMOUNT_COLUMN"]] = amounts
+    print(
+        f"  Applied plaza_rates.py for '{plaza}' "
+        f"({sum(1 for value in amounts if value)} of {len(amounts)} rows priced)."
+    )
+    return df
+
+
 def apply_enrichment(df):
     """Applies Journey Type updates and Rates integration."""
     # 1. Updated Journey Type Logic
@@ -186,6 +196,8 @@ def apply_enrichment(df):
     df['updated journey type'] = df['updated journey type'].replace("Single Journey", "First Journey")
 
     # 2. Rates Integration
+    if os.environ.get("ANNEXURE_PYTHON_RATES", "").strip() == "1":
+        return _apply_python_rates(df)
     try:
         rates_temp = pd.read_excel(CONFIG["RATES_FILE"], header=None)
         header_row_idx = -1

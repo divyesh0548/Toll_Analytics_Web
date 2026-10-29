@@ -7,6 +7,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { PageHeader } from '@/components/ui/page-header'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 import { MappingConfigDialog } from '@/components/mapping-config-dialog'
+import { PlazaReferenceFilesDialog } from '@/components/plaza-reference-files-dialog'
 import { LocalOutputDownloads } from '@/components/local-output-downloads'
 import { useAuth } from '@/components/auth-provider'
 import { useToast } from '@/components/toast-provider'
@@ -14,6 +15,7 @@ import {
   createExceptionPipelineBatch,
   deleteExceptionPipelineInput,
   getExceptionPipelineBatch,
+  getAnnexureServerDefaults,
   getExceptionPipelineCatalog,
   getExceptionPipelinePeriod,
   listExceptionPipelineBatches,
@@ -63,6 +65,8 @@ export function ExceptionPipelinePage() {
   const { showToast } = useToast()
   const { canWrite, publishExceptionResults } = useAuth()
   const [configOpen, setConfigOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [referenceStatus, setReferenceStatus] = useState(null)
   const [recommendationVisible, setRecommendationVisible] = useState(true)
   const now = new Date()
   const [plazas, setPlazas] = useState([])
@@ -172,8 +176,15 @@ export function ExceptionPipelinePage() {
             const enabled = new Set(
               (data.programs || []).filter((p) => p.enabled).map((p) => p.code),
             )
-            const kept = prev.filter((c) => enabled.has(c))
-            return kept.length ? kept : Array.from(enabled)
+            const next = prev.filter((code) => enabled.has(code))
+            const chosen = next.length ? next : Array.from(enabled)
+            if (
+              chosen.length === prev.length &&
+              chosen.every((code, index) => code === prev[index])
+            ) {
+              return prev
+            }
+            return chosen
           })
         }
         setError('')
@@ -408,13 +419,47 @@ export function ExceptionPipelinePage() {
   }
 
   const analyticsReady = Boolean(period?.analytics_ready)
+  const fullExemptSelected = selectedCodes.includes(FULL_EXEMPT_CODE)
+  const approvedBlocksRun = Boolean(
+    fullExemptSelected && referenceStatus?.approved_exemption?.blocks_run,
+  )
+  const ratesBlockRun = Boolean(
+    fullExemptSelected &&
+      referenceStatus &&
+      !referenceStatus.rates?.exists &&
+      !referenceStatus.rates?.python_fallback,
+  )
+  const referenceBlockMessage = approvedBlocksRun
+    ? 'Exempt Query needs an Approved exemption file that covers this month. Upload it with Configure rates and other files.'
+    : ratesBlockRun
+      ? 'No rates file covers this month, and this plaza is not in the server rate table. Upload a rates file with Configure rates and other files.'
+      : ''
   const canStart =
     Boolean(plazaIdentifier) &&
     !periodLoading &&
     !hasUnsavedChanges &&
+    !referenceBlockMessage &&
     (selectedCodes.length > 0 || (runAnalytics && analyticsReady))
   const mappedPipelineKey =
     catalog?.plaza_identifier_to_pipeline_key?.[plazaIdentifier] || ''
+
+  useEffect(() => {
+    if (!plazaIdentifier || !mappedPipelineKey) {
+      setReferenceStatus((current) => (current == null ? current : null))
+      return undefined
+    }
+    let cancelled = false
+    getAnnexureServerDefaults(mappedPipelineKey, plazaIdentifier, year, month)
+      .then((data) => {
+        if (!cancelled) setReferenceStatus(data)
+      })
+      .catch(() => {
+        if (!cancelled) setReferenceStatus((current) => (current == null ? current : null))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [plazaIdentifier, mappedPipelineKey, year, month, filesOpen])
   const interruptedBatch = String(batch?.status || '') === 'interrupted'
   const batchActive = batchIsActive(batch)
 
@@ -551,14 +596,27 @@ export function ExceptionPipelinePage() {
         description="Select plaza files for a month, stage adds or removals, click Save, then start the process. Independent exception checks can run two at a time; dependents (e.g. E15) wait for required outputs. Plaza analytics runs in parallel when VRN/ETC are present."
         actions={
           canWrite ? (
-            <Button type="button" variant="outline" onClick={() => setConfigOpen(true)}>
-              Config
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => setConfigOpen(true)}>
+                Config
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setFilesOpen(true)}>
+                Configure rates and other files
+              </Button>
+            </div>
           ) : null
         }
       />
       {canWrite ? (
-        <MappingConfigDialog open={configOpen} onClose={() => setConfigOpen(false)} />
+        <>
+          <MappingConfigDialog open={configOpen} onClose={() => setConfigOpen(false)} />
+          <PlazaReferenceFilesDialog
+            open={filesOpen}
+            onClose={() => setFilesOpen(false)}
+            plazas={plazas}
+            initialPlazaIdentifier={plazaIdentifier}
+          />
+        </>
       ) : null}
 
       {recommendationVisible ? (
@@ -881,6 +939,19 @@ export function ExceptionPipelinePage() {
                     'No Full Exempt file for this month. Select E15 to run Full Exempt as well.'
                 } else if (!p.enabled) {
                   statusText = `Missing: ${(p.missing_slots || []).map(slotLabel).join(', ') || 'inputs'}`
+                } else if (p.code === FULL_EXEMPT_CODE && approvedBlocksRun) {
+                  statusText =
+                    'Needs an Approved exemption file that covers this month. Upload it with Configure rates and other files.'
+                } else if (p.code === FULL_EXEMPT_CODE && ratesBlockRun) {
+                  statusText =
+                    'No rates file covers this month, and this plaza is not in the server rate table.'
+                } else if (
+                  p.code === FULL_EXEMPT_CODE &&
+                  referenceStatus &&
+                  !referenceStatus.rates?.exists &&
+                  referenceStatus.rates?.python_fallback
+                ) {
+                  statusText = 'Ready. No uploaded rates file — the server rate table will be used.'
                 } else if (
                   p.code === 'e05' &&
                   !(period?.files || []).some((f) => f.slot === 'scraped') &&
@@ -897,15 +968,33 @@ export function ExceptionPipelinePage() {
                 <label
                   key={p.code}
                   className={`flex items-start gap-3 rounded-sm border border-border p-3 ${
-                    choosable ? '' : 'opacity-55'
+                    choosable &&
+                    !(p.code === FULL_EXEMPT_CODE && (approvedBlocksRun || ratesBlockRun))
+                      ? ''
+                      : 'opacity-55'
                   }`}
                 >
                   <input
                     type="checkbox"
                     className="mt-1"
                     checked={selectedCodes.includes(p.code)}
-                    disabled={!choosable || busy}
-                    onChange={() => toggleProgram(p.code, p.enabled)}
+                    disabled={
+                      busy ||
+                      (!choosable && !selectedCodes.includes(p.code)) ||
+                      (p.code === FULL_EXEMPT_CODE &&
+                        (approvedBlocksRun || ratesBlockRun) &&
+                        !selectedCodes.includes(p.code))
+                    }
+                    onChange={() => {
+                      if (
+                        p.code === FULL_EXEMPT_CODE &&
+                        (approvedBlocksRun || ratesBlockRun) &&
+                        !selectedCodes.includes(p.code)
+                      ) {
+                        return
+                      }
+                      toggleProgram(p.code, p.enabled)
+                    }}
                   />
                   <span>
                     <span className="block text-body font-medium">{p.label}</span>
@@ -918,6 +1007,11 @@ export function ExceptionPipelinePage() {
                 <p className="text-small text-muted-foreground">
                   Click Save above before starting the process. Unsaved adds and
                   removals do not change which checks are unlocked.
+                </p>
+              ) : null}
+              {referenceBlockMessage ? (
+                <p className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-body">
+                  {referenceBlockMessage}
                 </p>
               ) : null}
               <div className="flex flex-wrap gap-2">

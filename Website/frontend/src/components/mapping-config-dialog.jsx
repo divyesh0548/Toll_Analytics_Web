@@ -29,6 +29,9 @@ const SETTING_HELP = {
   overrides_by_source: 'Lower match counts used for specific file sources.',
 }
 
+const EMPTY_OVERRIDES = {}
+const EMPTY_SETTINGS = []
+
 const SOURCE_LABELS = {
   vrn_thin: 'VRN thin files',
   e11: 'E11',
@@ -304,14 +307,19 @@ export function MappingConfigDialog({ open, onClose }) {
     }
   }, [open])
 
-  const settings = data?.settings || []
-  const overrides = useMemo(
-    () => settings.find((row) => row.key === 'overrides_by_source')?.value || {},
-    [settings],
-  )
+  const settings = data?.settings ?? EMPTY_SETTINGS
+  const overrides = useMemo(() => {
+    const value = settings.find((row) => row.key === 'overrides_by_source')?.value
+    return value && typeof value === 'object' ? value : EMPTY_OVERRIDES
+  }, [settings])
 
   useEffect(() => {
-    setOverrideDraft(overrides && typeof overrides === 'object' ? { ...overrides } : {})
+    setOverrideDraft((current) => {
+      if (overrides === EMPTY_OVERRIDES) {
+        return current && Object.keys(current).length === 0 ? current : {}
+      }
+      return { ...overrides }
+    })
   }, [overrides])
 
   const sections = useMemo(() => {

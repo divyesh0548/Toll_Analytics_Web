@@ -87,17 +87,35 @@ def _website_env_path() -> Path:
     return ENV_FILE
 
 
+_RESULT_TABLE_ENV_KEYS = (
+    "Exception_Metrics_Table",
+    "EXCEPTION_METRICS_TABLE",
+    "EXCEPTION_OUTPUT_FILES_TABLE",
+    "Exception_Output_Files_Table",
+    "PIPELINE_BATCH_MODE",
+)
+
+
 def load_env() -> None:
     """
     Load Website/backend/.env when present on disk.
 
     In Docker the file is not copied into the image — Compose injects the same
     keys into the process environment. Do not require the file in that case.
+
+    Preserve metrics/output-table routing from the website worker so File Upload
+    stays on pipeline_* tables and the Exceptions page stays on audit_exception_*.
     """
+    preserved = {
+        key: os.environ[key]
+        for key in _RESULT_TABLE_ENV_KEYS
+        if os.environ.get(key)
+    }
     path = _website_env_path()
     if path.is_file():
         # override=True so E4/other .env DB_NAME (submissions) does not stick.
         load_dotenv(path, override=True)
+        os.environ.update(preserved)
         return
     if os.getenv("DB_HOST", "").strip() and os.getenv("AWS_ACCESS_KEY_ID", "").strip():
         # Align DB_NAME with analytics when only Toll_Analytics_DB was set.
@@ -108,6 +126,7 @@ def load_env() -> None:
             )
             if alt:
                 os.environ["DB_NAME"] = alt
+        os.environ.update(preserved)
         return
     raise FileNotFoundError(
         f"Env file not found: {path} (and DB_HOST/AWS_ACCESS_KEY_ID not in process env)"

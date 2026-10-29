@@ -75,6 +75,7 @@ from pass_config import (  # noqa: E402
     save_config_values as save_pass_config_values,
 )
 from annexure_plaza_config import (  # noqa: E402
+    APPROVED_EXEMPTION_SCRIPT,
     annexure_script_name_for_plaza,
     resolve_approved_exemption_file,
     resolve_plaza_identifier,
@@ -90,8 +91,12 @@ from sync_exception_metrics import sync_exception_metrics_from_folder  # noqa: E
 _SCRIPTS_DIR = Path(__file__).resolve().parent / "Scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
-from plaza_rates import (  # noqa: E402
+_PROGRAMS_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROGRAMS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROGRAMS_ROOT))
+from common.plaza_rates_loader import (  # noqa: E402
     get_all_plaza_names,
+    has_plaza_rates,
     normalize_plaza_rate_key,
 )
 
@@ -2304,22 +2309,53 @@ def _run_annexure_after_final(
     if not concessionaire_files:
         return False, "Upload at least one Concessionaire / Project Vehicle file before annexure."
 
-    rates_file = resolve_rates_file(plaza_name, rates_override)
+    if os.environ.get("FULL_EXEMPT_REFERENCE_FROM_S3", "").strip() == "1":
+        rates_file = (
+            Path(rates_override)
+            if rates_override and Path(rates_override).is_file()
+            else None
+        )
+    else:
+        rates_file = resolve_rates_file(plaza_name, rates_override)
+    use_python_rates = False
     if not rates_file:
-        return False, (
-            f"No rates file for plaza '{plaza_name}'. Upload a rates Excel under Rates, "
-            "or add a default mapping in annexure_plaza_config.json."
+        if not has_plaza_rates(plaza_name):
+            return False, (
+                f"No rates file for plaza '{plaza_name}', and that plaza is not in "
+                "Website/backend/app/plaza_rates.py. Upload a rates Excel, or add the plaza there."
+            )
+        use_python_rates = True
+        setter(
+            "Annexure: no rates Excel for this plaza. "
+            "Using plaza_rates.py (rates on/after 1 Apr 2026 use the new tariff)."
         )
 
-    use_approved = uses_approved_exemption_script(plaza_name)
-    approved_file = None
-    if use_approved:
-        approved_file = resolve_approved_exemption_file(plaza_name, approved_override)
-        if not approved_file:
+    if os.environ.get("FULL_EXEMPT_REFERENCE_FROM_S3", "").strip() == "1":
+        approved_file = (
+            Path(approved_override)
+            if approved_override and Path(approved_override).is_file()
+            else None
+        )
+        use_approved = approved_file is not None or uses_approved_exemption_script(
+            plaza_name
+        )
+        if use_approved and approved_file is None:
             return False, (
-                f"Plaza '{plaza_name}' requires an Approved Exemption file. "
-                "Upload one, or add/fix the default mapping in annexure_plaza_config.json."
+                f"Plaza '{plaza_name}' needs an Approved Exemption file that covers "
+                "this period. Upload it with Configure rates and other files."
             )
+    else:
+        use_approved = uses_approved_exemption_script(plaza_name)
+        approved_file = None
+        if use_approved:
+            approved_file = resolve_approved_exemption_file(
+                plaza_name, approved_override
+            )
+            if not approved_file:
+                return False, (
+                    f"Plaza '{plaza_name}' requires an Approved Exemption file. "
+                    "Upload one, or add/fix the default mapping in annexure_plaza_config.json."
+                )
 
     annexure_output_dir = Path(annexure_output_dir)
     annexure_output_dir.mkdir(parents=True, exist_ok=True)
@@ -2349,7 +2385,11 @@ def _run_annexure_after_final(
         detail = (combined or "").strip()[-600:] or f"exit code {returncode}"
         return False, f"Concessionaire merge failed: {detail}"
 
-    script_name = annexure_script_name_for_plaza(plaza_name)
+    script_name = (
+        APPROVED_EXEMPTION_SCRIPT
+        if use_approved
+        else annexure_script_name_for_plaza(plaza_name)
+    )
     annexure_script = script_root / script_name
     if not annexure_script.is_file():
         return False, f"Annexure script not found: {script_name}"
@@ -2362,11 +2402,15 @@ def _run_annexure_after_final(
             "EXEMPT_ANNEXURE_NONINTERACTIVE": "1",
             "ANNEXURE_SOURCE_DIR": str(Path(source_workbook).resolve()),
             "ANNEXURE_EXEMPTION_FILE": str(merged_exemption.resolve()),
-            "ANNEXURE_RATES_FILE": str(rates_file.resolve()),
             "ANNEXURE_OUTPUT_FOLDER": str(annexure_output_dir.resolve()),
             "ANNEXURE_TARGET_SHEET": FINAL_EXEMPT_ANNEXURE_TARGET_SHEET,
         }
     )
+    if use_python_rates:
+        annexure_env["ANNEXURE_PYTHON_RATES"] = "1"
+        annexure_env["ANNEXURE_PLAZA_KEY"] = str(plaza_name)
+    else:
+        annexure_env["ANNEXURE_RATES_FILE"] = str(rates_file.resolve())
     if approved_file:
         annexure_env["ANNEXURE_APPROVED_EXEMPTION_FILE"] = str(approved_file.resolve())
 
@@ -4378,12 +4422,22 @@ def _annexure_ready_for_plaza(plaza_name, concessionaire_files, rates_override_f
     """Return (ready: bool, error_message_or_empty)."""
     if not concessionaire_files:
         return False, "Upload at least one Concessionaire / Project Vehicle file."
-    rates_ok = bool(rates_override_files) or bool(resolve_rates_file(plaza_name))
+    from_s3 = os.environ.get("FULL_EXEMPT_REFERENCE_FROM_S3", "").strip() == "1"
+    if from_s3 and uses_approved_exemption_script(plaza_name) and not approved_override_files:
+        return False, (
+            f"Plaza '{plaza_name}' needs an Approved Exemption file that covers this period. "
+            "Upload it with Configure rates and other files."
+        )
+    rates_ok = (
+        bool(rates_override_files)
+        or (not from_s3 and bool(resolve_rates_file(plaza_name)))
+        or has_plaza_rates(plaza_name)
+    )
     if not rates_ok:
         return False, (
-            f"No rates file for plaza '{plaza_name}'. Upload a rates file or map a default."
+            f"No rates file for plaza '{plaza_name}', and that plaza is not in plaza_rates.py."
         )
-    if uses_approved_exemption_script(plaza_name):
+    if not from_s3 and uses_approved_exemption_script(plaza_name):
         approved_ok = bool(approved_override_files) or bool(
             resolve_approved_exemption_file(plaza_name)
         )

@@ -1,4 +1,8 @@
-e04: failed — RuntimeError: Pass Type value(s) not defined in config.json: 'Local Tariff Pass Comm'. Add each one to mp_pass_type_values or lt_pass_type_values. Stopping.
-e10: failed — RuntimeError: TC Class column not found on merged VRN. Available: ['vehicle_reg_no', 'tc_class', 'SWB Wt/Std. Weight', 'Lane Weight', 'Lane/Chg Standard Weight', 'LANE OVERLOAD AMT', 'SWB AMT', 'date_part', 'time_part', 'read_datetime']
+Also provide an option to download the uploaded configured fiels. So user can check them it they need to.
 
-Got this new errors. Please explain.
+
+Getting this eror in browser console and it goes into infinite loading when I select a plaza and month in exceptions pipeline page.
+
+react-dom_client.js?v=262d7dc9:2634 Maximum update depth exceeded. This can happen when a component calls setState inside useEffect, but useEffect either doesn't have a dependency array, or one of the dependencies changes on every render.
+
+Fix this.

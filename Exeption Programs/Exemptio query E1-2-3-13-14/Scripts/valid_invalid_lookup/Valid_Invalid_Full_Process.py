@@ -14,7 +14,7 @@ PORTAL_ROOT = Path(__file__).resolve().parents[2]
 EXCEPTION_PROGRAMS_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 E4_DIR = EXCEPTION_PROGRAMS_ROOT / "E4"
-# Prefer E4/plaza_rates.py (canonical). Do not use Scripts/plaza_rates.py.
+# Rates live in Website/backend/app/plaza_rates.py.
 if str(E4_DIR) not in sys.path:
     sys.path.insert(0, str(E4_DIR))
 if str(PORTAL_ROOT) not in sys.path:
@@ -30,7 +30,9 @@ load_dotenv(
 
 from Header_Mapping.header_mapping import VALID_INVALID_LOOKUP_HEADER_MAPPING
 from header_matching import normalize_header_match
-from plaza_rates import (  # noqa: E402  — E4/plaza_rates.py
+if str(EXCEPTION_PROGRAMS_ROOT) not in sys.path:
+    sys.path.insert(0, str(EXCEPTION_PROGRAMS_ROOT))
+from common.plaza_rates_loader import (  # noqa: E402
     APR26_RATES_START_DATE,
     get_all_plaza_names,
     normalize_plaza_rate_key,

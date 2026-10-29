@@ -62,12 +62,22 @@ def programs_catalog():
 
 @exception_jobs_bp.get("/annexure-defaults")
 def annexure_defaults():
-    """Server-side default rates / approved exemption for a pipeline plaza key."""
+    """Rates and approved-exemption files stored for this plaza that cover today."""
     plaza_key = (request.args.get("pipeline_plaza_key") or "").strip().upper()
-    if not plaza_key:
-        return jsonify({"error": "pipeline_plaza_key is required"}), 400
-    defaults = load_annexure_server_defaults(plaza_key)
-    log_ok(f"annexure defaults for {plaza_key}")
+    plaza_identifier = (request.args.get("plaza_identifier") or "").strip()
+    if not plaza_key and not plaza_identifier:
+        return jsonify({"error": "pipeline_plaza_key or plaza_identifier is required"}), 400
+    year = request.args.get("year")
+    month = request.args.get("month")
+    try:
+        year_i = int(year) if year else None
+        month_i = int(month) if month else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "year and month must be integers"}), 400
+    defaults = load_annexure_server_defaults(
+        plaza_key, plaza_identifier, year_i, month_i
+    )
+    log_ok(f"annexure defaults for {plaza_key or plaza_identifier}")
     return jsonify(defaults)
 
 
@@ -861,6 +871,24 @@ def start_job(job_uuid: str):
             jsonify({"error": "Missing required uploads: " + ", ".join(missing)}),
             400,
         )
+
+    if job.program_code == "full_exempt_e1_e2_e3_e13_e14":
+        from app.services.plaza_reference_files import (
+            full_exempt_reference_block_reason,
+            job_reference_period,
+        )
+
+        period_start, period_end = job_reference_period(job)
+        block = full_exempt_reference_block_reason(
+            plaza_identifier=job.plaza_identifier,
+            pipeline_plaza_key=job.pipeline_plaza_key,
+            start=period_start,
+            end=period_end,
+            has_rates_upload=bool(files_by_slot.get("rates")),
+            has_approved_upload=bool(files_by_slot.get("approved_exemption")),
+        )
+        if block:
+            return jsonify({"error": block}), 400
 
     # Analytics (and similar): at least one of several slots must have files.
     any_slots = [

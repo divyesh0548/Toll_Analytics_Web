@@ -49,16 +49,15 @@ FULL_EXEMPT_PROGRAM = {
         },
         {
             "key": "rates",
-            "label": "Rates (optional override)",
+            "label": "Rates (optional)",
             "required": False,
             "multiple": False,
             "accept": ".xlsx,.xls,.xlsm",
-            # Plaza default already exists on the Exempt portal server.
             "server_default": True,
         },
         {
             "key": "approved_exemption",
-            "label": "Approved exemption (optional override)",
+            "label": "Approved exemption",
             "required": False,
             "multiple": False,
             "accept": ".xlsx,.xls,.xlsm",
@@ -534,55 +533,72 @@ def resolve_pipeline_plaza_key(plaza_identifier: str) -> str | None:
     return load_plaza_identifier_to_pipeline_key().get(key)
 
 
-def load_annexure_server_defaults(pipeline_plaza_key: str) -> dict:
-    """
-    Default rates / approved-exemption files already on the Exempt portal server
-    for this plaza key (from annexure_plaza_config.json). Upload is optional override.
-    """
-    key = str(pipeline_plaza_key or "").strip().upper()
-    empty = {
-        "pipeline_plaza_key": key,
-        "rates": {"file_name": None, "exists": False},
-        "approved_exemption": {
+def _file_cover_payload(row) -> dict:
+    if row is None:
+        return {
             "file_name": None,
             "exists": False,
-            "uses_approved_script": False,
-        },
+            "valid_from": None,
+            "valid_to": None,
+        }
+    return {
+        "file_name": row.original_file_name,
+        "exists": True,
+        "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+        "valid_to": row.valid_to.isoformat() if row.valid_to else None,
     }
-    if not key:
-        return empty
 
-    import sys
 
-    final_dir = (
-        exempt_portal_root()
-        / "Scripts"
-        / "Excempy_Query"
-        / "Final_7_scripts"
+def load_annexure_server_defaults(
+    pipeline_plaza_key: str,
+    plaza_identifier: str | None = None,
+    year: int | None = None,
+    month: int | None = None,
+) -> dict:
+    """
+    Uploaded rates and approved-exemption workbooks that cover the period.
+    Website runs do not use the local Excel folders.
+    """
+    from datetime import date
+
+    from app.services.plaza_reference_files import (
+        find_covering,
+        month_bounds,
+        plaza_requires_approved_exemption,
+        python_rates_available,
     )
-    if str(final_dir) not in sys.path:
-        sys.path.insert(0, str(final_dir))
 
-    try:
-        from annexure_plaza_config import (  # noqa: WPS433
-            resolve_approved_exemption_file,
-            resolve_rates_file,
-            uses_approved_exemption_script,
-        )
-    except Exception:  # noqa: BLE001
-        return empty
+    key = str(pipeline_plaza_key or "").strip().upper()
+    identifier = str(plaza_identifier or "").strip()
+    if not identifier and key:
+        for plaza_id, plaza_key in load_plaza_identifier_to_pipeline_key().items():
+            if plaza_key == key:
+                identifier = plaza_id
+                break
 
-    rates_path = resolve_rates_file(key)
-    approved_path = resolve_approved_exemption_file(key)
+    if year and month:
+        start, end = month_bounds(int(year), int(month))
+    else:
+        today = date.today()
+        start, end = today, today
+
+    uses_approved = plaza_requires_approved_exemption(key) if key else False
+    rates = find_covering(identifier, "rates", start, end) if identifier else None
+    approved = (
+        find_covering(identifier, "approved_exemption", start, end)
+        if identifier
+        else None
+    )
+    rates_payload = _file_cover_payload(rates)
+    rates_payload["python_fallback"] = python_rates_available(key)
+    approved_payload = _file_cover_payload(approved)
+    approved_payload["uses_approved_script"] = uses_approved
+    approved_payload["blocks_run"] = bool(uses_approved and approved is None)
     return {
         "pipeline_plaza_key": key,
-        "rates": {
-            "file_name": rates_path.name if rates_path else None,
-            "exists": bool(rates_path and rates_path.is_file()),
-        },
-        "approved_exemption": {
-            "file_name": approved_path.name if approved_path else None,
-            "exists": bool(approved_path and approved_path.is_file()),
-            "uses_approved_script": bool(uses_approved_exemption_script(key)),
-        },
+        "plaza_identifier": identifier or None,
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "rates": rates_payload,
+        "approved_exemption": approved_payload,
     }

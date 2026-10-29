@@ -9,6 +9,7 @@ export function Dialog({ open, onClose, title, description, children, className 
     if (!open) return undefined
     function onKeyDown(event) {
       if (event.key !== 'Escape') return
+      if (event.target?.closest?.('[data-calendar-panel]')) return
       const tag = event.target?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       onClose?.()

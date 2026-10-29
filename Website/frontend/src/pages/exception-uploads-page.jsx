@@ -320,7 +320,12 @@ export function ExceptionUploadsPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const data = await getAnnexureServerDefaults(key)
+        const data = await getAnnexureServerDefaults(
+          key,
+          activeJob?.plaza_identifier || plazaIdentifier,
+          activeJob?.year,
+          activeJob?.month,
+        )
         if (!cancelled) setServerDefaults(data)
       } catch {
         if (!cancelled) setServerDefaults(null)
@@ -329,7 +334,13 @@ export function ExceptionUploadsPage() {
     return () => {
       cancelled = true
     }
-  }, [activeJob?.pipeline_plaza_key, pipelinePlazaKey, selectedProgram?.code])
+  }, [
+    activeJob?.pipeline_plaza_key,
+    activeJob?.plaza_identifier,
+    pipelinePlazaKey,
+    plazaIdentifier,
+    selectedProgram?.code,
+  ])
 
   // Staging invalid_table list for E05 main process (latest first).
   useEffect(() => {
@@ -813,6 +824,16 @@ export function ExceptionUploadsPage() {
     if (!serverDefaults || !slotKey) return null
     return serverDefaults[slotKey] || null
   }
+
+  const jobSlots = new Set((activeJob?.files || []).map((file) => file.slot))
+  const exemptReferenceBlocksStart =
+    selectedProgram?.code === FULL_EXEMPT_CODE &&
+    ((serverDefaults?.approved_exemption?.blocks_run &&
+      !jobSlots.has('approved_exemption')) ||
+      (serverDefaults &&
+        !serverDefaults.rates?.exists &&
+        !serverDefaults.rates?.python_fallback &&
+        !jobSlots.has('rates')))
 
   if (loading) {
     return <p className="text-body text-muted-foreground">Loading exception programs…</p>
@@ -1324,12 +1345,32 @@ export function ExceptionUploadsPage() {
                         {hasServerFile && !hasOverrideUpload ? (
                           <div className="rounded-sm border border-dashed border-border bg-secondary/30 px-3 py-2 text-small">
                             <p className="text-body">
-                              On server: <span className="font-medium">{defaults.file_name}</span>
+                              Uploaded file: <span className="font-medium">{defaults.file_name}</span>
                             </p>
                             <p className="text-muted-foreground">
-                              No need to upload unless you want to override this default.
+                              Valid {defaults.valid_from} to {defaults.valid_to || 'open'}.
+                              This job uses it when the period sits inside these dates.
+                              Upload a file here only to override it for this job.
                             </p>
                           </div>
+                        ) : null}
+
+                        {slot.key === 'rates' && !hasServerFile && !hasOverrideUpload ? (
+                          <p className="text-small text-muted-foreground">
+                            {defaults?.python_fallback
+                              ? 'No uploaded rates file for this period. The server rate table will be used.'
+                              : 'No uploaded rates file for this period, and this plaza is not in the server rate table.'}
+                          </p>
+                        ) : null}
+
+                        {slot.key === 'approved_exemption' &&
+                        defaults?.uses_approved_script &&
+                        !hasServerFile &&
+                        !hasOverrideUpload ? (
+                          <p className="text-small text-destructive">
+                            This plaza cannot run Exempt Query until an Approved exemption
+                            file that covers the period is uploaded.
+                          </p>
                         ) : null}
 
                         {hasServerFile && hasOverrideUpload ? (
@@ -1342,7 +1383,12 @@ export function ExceptionUploadsPage() {
                         {!isUploading &&
                         slotFiles.length === 0 &&
                         !hasServerFile &&
-                        !(pendingBySlot[slot.key] || []).length ? (
+                        !(pendingBySlot[slot.key] || []).length &&
+                        slot.key !== 'rates' &&
+                        !(
+                          slot.key === 'approved_exemption' &&
+                          defaults?.uses_approved_script
+                        ) ? (
                           <p className="text-small text-muted-foreground">No files yet.</p>
                         ) : null}
 
@@ -1392,7 +1438,11 @@ export function ExceptionUploadsPage() {
                             ? `Upload ${pendingCount} file${pendingCount === 1 ? '' : 's'}`
                             : 'Upload files'}
                       </Button>
-                      <Button type="button" disabled={busy || isUploading} onClick={handleStart}>
+                      <Button
+                        type="button"
+                        disabled={busy || isUploading || exemptReferenceBlocksStart}
+                        onClick={handleStart}
+                      >
                         {busy && !isUploading ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (

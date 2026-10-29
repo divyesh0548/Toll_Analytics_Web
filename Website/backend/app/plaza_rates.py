@@ -1104,7 +1104,6 @@ Plaza_Rates_Apr26_onwards = {
             6: 325,
         },
     },
-
     "balibhasa": {
         "single": {
             1: 95,
@@ -1391,6 +1390,84 @@ Plaza_Rates_Apr26_onwards = {
             6: 380,
         },
     },
+    "khawasa": {
+        "single": {
+            1: 115,
+            2: 180,
+            3: 380,
+            4: 415,
+            5: 600,
+            6: 730,
+        },
+        "return": {
+            1: 55,
+            2: 95,
+            3: 190,
+            4: 210,
+            5: 295,
+            6: 360,
+        },
+        "local": {
+            1: 55,
+            2: 90,
+            3: 190,
+            4: 210,
+            5: 300,
+            6: 365,
+        },
+    },
+    "kherwasani": {
+        "single": {
+            1: 175,
+            2: 280,
+            3: 585,
+            4: 640,
+            5: 915,
+            6: 1115,
+        },
+        "return": {
+            1: 85,
+            2: 140,
+            3: 295,
+            4: 315,
+            5: 460,
+            6: 560,
+        },
+        "local": {
+            1: 85,
+            2: 140,
+            3: 295,
+            4: 320,
+            5: 460,
+            6: 560,
+        },
+    },
+    "mohtara": {
+        "single": {
+            1: 130,
+            2: 215,
+            3: 445,
+            4: 485,
+            5: 700,
+            6: 850,
+        },
+        "return": {
+            1: 70,
+            2: 105,
+            3: 225,
+            4: 245,
+            5: 350,
+            6: 425,
+        },
+        "local": {
+            1: 65,
+            2: 105,
+            3: 225,
+            4: 245,
+            5: 350,
+            6: 425,
+        },
+    },
     "marripalem": {
         "single": {
             1: 50,
@@ -1441,6 +1518,32 @@ Plaza_Rates_Apr26_onwards = {
             4: 265,
             5: 380,
             6: 460,
+        },
+    },
+    "mokha": {
+        "single": {
+            1: 130,
+            2: 210,
+            3: 435,
+            4: 475,
+            5: 685,
+            6: 835,
+        },
+        "return": {
+            1: 65,
+            2: 105,
+            3: 220,
+            4: 240,
+            5: 340,
+            6: 415,
+        },
+        "local": {
+            1: 65,
+            2: 105,
+            3: 220,
+            4: 240,
+            5: 340,
+            6: 415,
         },
     },
     "patgaon": {
@@ -1545,32 +1648,6 @@ Plaza_Rates_Apr26_onwards = {
             4: 195,
             5: 280,
             6: 340,
-        },
-    },
-    "mokha": {
-        "single": {
-            1: 130,
-            2: 210,
-            3: 435,
-            4: 475,
-            5: 685,
-            6: 835,
-        },
-        "return": {
-            1: 65,
-            2: 105,
-            3: 220,
-            4: 240,
-            5: 340,
-            6: 415,
-        },
-        "local": {
-            1: 65,
-            2: 105,
-            3: 220,
-            4: 240,
-            5: 340,
-            6: 415,
         },
     },
     "kognoli": {
@@ -1752,11 +1829,23 @@ def get_all_plaza_names():
     return list(PLAZA_RATES.keys())
 
 
+# Full Exempt plaza keys (codes_dump) that are not the entity_name used here.
+_PLAZA_KEY_ALIASES = {
+    "bahoripar": "boharipar",
+    "balibhasha": "balibhasa",
+    "chalageri": "chalageri",
+    "chappar": "chhapar",
+    "odakhi": "odhaki_paipkhar",
+    "mudipar": "mudhipar",
+}
+
+
 def normalize_plaza_rate_key(plaza_name):
     """Normalize UI / DB plaza names to plaza_rates dictionary keys."""
     if plaza_name is None:
         return ""
-    return str(plaza_name).strip().lower().replace(" ", "_")
+    key = str(plaza_name).strip().lower().replace(" ", "_")
+    return _PLAZA_KEY_ALIASES.get(key, key)
 
 
 # New tariff applies from April 2026 onwards (inclusive).
